@@ -74,6 +74,7 @@ const Chat = (() => {
     const entry = streaming[mid];
     if (!entry) return;
     entry.content.innerHTML = Markdown.render(payload.content || entry.partial || "");
+    if (window.MermaidRender) MermaidRender.process(entry.content);
     if (entry.cursor) entry.cursor.remove();
     delete streaming[mid];
     const div = entry.content.closest(".msg");
@@ -145,6 +146,7 @@ const Chat = (() => {
     box.innerHTML = "";
     const messages = await Api.get(`/api/conversations/${id}/messages`);
     for (const m of messages) box.appendChild(messageElement(m));
+    if (window.MermaidRender) MermaidRender.process(box);
     box.scrollTop = box.scrollHeight;
     refreshConversations();
     el("chat-delete").style.display = "inline-block";

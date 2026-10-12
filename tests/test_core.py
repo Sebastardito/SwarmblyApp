@@ -170,3 +170,30 @@ class TestEvents:
         bus.subscribe(seen.append)
         bus.publish("x")  # must not raise
         assert len(seen) == 1
+
+    def test_async_subscriber_from_background_thread(self):
+        """Regression: chat/P2P publish from a non-asyncio thread; the async
+        subscriber (WebSocket bridge) must still receive the event."""
+        import asyncio
+        import threading
+        bus = EventBus()
+        loop = asyncio.new_event_loop()
+        bus.set_loop(loop)
+        received: list[dict] = []
+
+        async def handler(event):
+            received.append(event)
+
+        bus.subscribe_async(handler)
+
+        def publish():
+            bus.publish("thread.event", value=42)
+
+        thread = threading.Thread(target=publish)
+        thread.start()
+        thread.join()
+        # let the scheduled coroutine run on the captured loop
+        loop.run_until_complete(asyncio.sleep(0.05))
+        loop.close()
+        assert len(received) == 1
+        assert received[0]["payload"]["value"] == 42

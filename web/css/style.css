@@ -216,6 +216,53 @@ select:focus, input:focus { border-color: var(--accent); }
 .md hr { border: none; border-top: 1px solid var(--border); margin: 0.8em 0; }
 .md strong { color: #fff; }
 .md em { color: var(--text); }
+.md del { color: var(--text-dim); }
+.md img { max-width: 100%; border-radius: 8px; border: 1px solid var(--border); }
+
+/* tables */
+.md table { border-collapse: collapse; margin: 0.6em 0; width: 100%;
+  font-size: 0.9em; display: block; overflow-x: auto; }
+.md table th, .md table td { border: 1px solid var(--border); padding: 5px 10px; text-align: left; }
+.md table th { background: var(--bg-raised); color: var(--accent-2);
+  font-family: var(--mono); font-weight: 600; }
+
+/* code blocks with a language label */
+.md .code-block { margin: 0.6em 0; }
+.md .code-block .code-label { display: inline-block; font-family: var(--mono);
+  font-size: 0.66rem; color: var(--accent-2); background: var(--bg-raised);
+  border: 1px solid var(--border); border-bottom: none; border-radius: 6px 6px 0 0;
+  padding: 2px 10px; text-transform: uppercase; letter-spacing: 0.06em; }
+.md .code-block pre { margin: 0; border-radius: 0 6px 6px 6px; }
+.md .code-block pre code { white-space: pre; }
+
+/* ASCII trees / box-drawing figures */
+.md pre.ascii { background: transparent; border: 1px dashed var(--border);
+  color: var(--accent-2); line-height: 1.25; font-size: 0.82em; }
+
+/* task lists */
+.md li input[type="checkbox"] { margin-right: 6px; accent-color: var(--accent); }
+
+/* callout / admonition boxes */
+.md .callout { margin: 0.6em 0; padding: 10px 14px; border-radius: 8px;
+  border: 1px solid var(--border); border-left-width: 4px; background: var(--bg-raised); }
+.md .callout .callout-title { font-weight: 600; font-family: var(--mono);
+  margin-bottom: 2px; letter-spacing: 0.04em; }
+.md .callout p { margin: 0.3em 0; }
+.md .callout.note    { border-left-color: var(--accent-2); }
+.md .callout.note .callout-title    { color: var(--accent-2); }
+.md .callout.tip     { border-left-color: var(--accent); }
+.md .callout.tip .callout-title     { color: var(--accent); }
+.md .callout.important { border-left-color: var(--accent-2); }
+.md .callout.important .callout-title { color: var(--accent-2); }
+.md .callout.warning { border-left-color: var(--warning); }
+.md .callout.warning .callout-title { color: var(--warning); }
+.md .callout.caution { border-left-color: var(--danger); }
+.md .callout.caution .callout-title { color: var(--danger); }
+
+/* mermaid */
+.md .mermaid-wrap { margin: 0.6em 0; overflow-x: auto; }
+.md pre.mermaid { background: var(--bg-raised); padding: 12px; }
+.md pre.mermaid svg { max-width: 100%; }
 
 /* ---------- light theme ---------- */
 body.light {

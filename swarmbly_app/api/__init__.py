@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -16,8 +18,16 @@ WEB_DIR = Path(__file__).resolve().parent.parent.parent / "web"
 
 
 def create_app(state: AppState) -> FastAPI:
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # The WebSocket bridge lives on this loop; chat/P2P publish from other
+        # threads, so capture the loop for run_coroutine_threadsafe dispatch.
+        state.bus.set_loop(asyncio.get_running_loop())
+        yield
+
     app = FastAPI(title="Swarmbly App", version="0.1.0",
-                  docs_url="/api/docs", openapi_url="/api/openapi.json")
+                  docs_url="/api/docs", openapi_url="/api/openapi.json",
+                  lifespan=lifespan)
     app.state.swarmbly = state
     state.bus.subscribe_async(_on_event_factory(app))
 
@@ -267,6 +277,7 @@ def create_app(state: AppState) -> FastAPI:
     # ---- websocket -----------------------------------------------------------------
     @app.websocket("/ws")
     async def websocket_endpoint(ws: WebSocket) -> None:
+        state.bus.set_loop(asyncio.get_running_loop())
         await ws.accept()
         hub = getattr(app.state, "ws_hub", None)
         if hub is not None:

@@ -3,6 +3,11 @@
 Events are the only mechanism the UI and the monitor consume: no polling.
 Names follow ``domain.action`` (e.g. ``chat.delta``, ``request.stage``,
 ``node.discovered``). Payloads are JSON-serializable dicts.
+
+Publishers may run on any thread (the chat engine and the P2P loop are
+separate threads). Async subscribers (the WebSocket bridge) are therefore
+dispatched onto a captured event loop with ``run_coroutine_threadsafe`` when
+the publishing thread has no running loop of its own.
 """
 
 from __future__ import annotations
@@ -15,14 +20,21 @@ from collections import deque
 from typing import Any, Callable
 
 Handler = Callable[[dict[str, Any]], None]
+AsyncHandler = Callable[[dict[str, Any]], Any]
 
 
 class EventBus:
     def __init__(self, history: int = 500):
         self._subscribers: list[Handler] = []
-        self._async_subscribers: list[Callable[[dict[str, Any]], Any]] = []
+        self._async_subscribers: list[AsyncHandler] = []
         self._lock = threading.Lock()
         self._history: deque[dict[str, Any]] = deque(maxlen=history)
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Capture the main asyncio loop (uvicorn) for cross-thread dispatch."""
+        with self._lock:
+            self._loop = loop
 
     def subscribe(self, handler: Handler) -> None:
         with self._lock:
@@ -33,11 +45,11 @@ class EventBus:
             if handler in self._subscribers:
                 self._subscribers.remove(handler)
 
-    def subscribe_async(self, coro_handler: Callable[[dict[str, Any]], Any]) -> None:
+    def subscribe_async(self, coro_handler: AsyncHandler) -> None:
         with self._lock:
             self._async_subscribers.append(coro_handler)
 
-    def unsubscribe_async(self, coro_handler: Callable[[dict[str, Any]], Any]) -> None:
+    def unsubscribe_async(self, coro_handler: AsyncHandler) -> None:
         with self._lock:
             if coro_handler in self._async_subscribers:
                 self._async_subscribers.remove(coro_handler)
@@ -53,6 +65,7 @@ class EventBus:
         with self._lock:
             subs = list(self._subscribers)
             async_subs = list(self._async_subscribers)
+            loop = self._loop
         for handler in subs:
             try:
                 handler(event)
@@ -60,10 +73,27 @@ class EventBus:
                 pass
         for coro_handler in async_subs:
             try:
-                asyncio.ensure_future(coro_handler(event))
+                coro = coro_handler(event)
             except Exception:
-                pass
+                continue
+            self._dispatch_async(coro, loop)
         return event
+
+    def _dispatch_async(self, coro: Any, loop: asyncio.AbstractEventLoop | None) -> None:
+        """Run the coroutine on a live loop, whatever thread we are on."""
+        try:
+            current = asyncio.get_running_loop()
+        except RuntimeError:
+            current = None
+        try:
+            if current is not None:
+                asyncio.ensure_future(coro)
+            elif loop is not None and not loop.is_closed():
+                # Queues even if the loop is not running yet (it runs when the
+                # loop starts); call_soon_threadsafe is safe from any thread.
+                asyncio.run_coroutine_threadsafe(coro, loop)
+        except Exception:
+            pass
 
     def recent(self, n: int = 100) -> list[dict[str, Any]]:
         return list(self._history)[-n:]
