@@ -1,9 +1,11 @@
-/* Chat panel: conversations, streaming messages, modes, stop/retry/export. */
+/* Chat panel: conversations, live streaming (buffered against WS race),
+   Markdown rendering, modes, stop/retry/export, full re-render on language. */
 "use strict";
 
 const Chat = (() => {
   let activeConv = null;
-  let streaming = {};  // messageId -> element
+  let streaming = {};   // message_id -> {content, partial, cursor}
+  let buffers = {};     // message_id -> {partial, done, content, meta, status, error}
 
   function el(id) { return document.getElementById(id); }
 
@@ -24,69 +26,102 @@ const Chat = (() => {
       if (m === "internet") opt.disabled = true; // Phase 3 (rendezvous)
       modeSel.appendChild(opt);
     });
-    modeSel.value = App.state.config?.swarm?.mode || "local";
     modeSel.addEventListener("change", refreshMetaInfo);
-    refreshConversations();
-    refreshModels();
-    refreshMetaInfo();
-
+    App.onRender(render);
     App.onEvent(handleEvent);
+  }
+
+  async function render() {
+    await refreshConversations();
+    await refreshModels();
+    refreshMetaInfo();
+    if (activeConv) await openConversation(activeConv);
   }
 
   function handleEvent(event) {
     const { type, payload } = event;
-    if (type === "chat.delta" && streaming[payload.message_id]) {
-      appendDelta(payload.message_id, payload.delta);
-    }
-    if (type === "chat.done") {
-      finishMessage(payload);
-    }
-    if (type === "request.started" || type === "request.stage") {
-      Monitor.noteEvent(event);
-    }
-  }
-
-  function appendDelta(messageId, delta) {
-    const elt = streaming[messageId];
-    elt.lastChild.textContent += delta;
-    elt.scrollIntoView({ block: "end", behavior: "auto" });
-  }
-
-  function finishMessage(payload) {
-    const elt = streaming[payload.message_id];
-    if (elt) {
-      elt.lastChild.textContent = payload.content || "";
-      elt.classList.remove("error");
-      delete streaming[payload.message_id];
-      const meta = payload.meta || {};
-      const status = meta.status || payload.status;
-      if (status === "failed") {
-        elt.classList.add("error");
-        const line = document.createElement("span");
-        line.className = "meta-line";
-        line.textContent = `${I18n.t("chat.failed")}: ${payload.error || ""}`;
-        elt.appendChild(line);
-      } else if (status === "stopped") {
-        const line = document.createElement("span");
-        line.className = "meta-line";
-        line.textContent = I18n.t("chat.interrupted");
-        elt.appendChild(line);
-      } else if (meta.text || meta.model) {
-        attachMeta(elt, meta);
+    if (type === "chat.delta") {
+      const mid = payload.message_id;
+      if (streaming[mid]) {
+        streaming[mid].partial += payload.delta;
+        streaming[mid].content.textContent = streaming[mid].partial;
+        scrollBottom();
+      } else {
+        buffers[mid] = buffers[mid] || { partial: "", done: false };
+        buffers[mid].partial += payload.delta;
       }
+    } else if (type === "chat.done") {
+      const mid = payload.message_id;
+      if (streaming[mid]) {
+        finalize(mid, payload);
+      } else {
+        buffers[mid] = buffers[mid] || { partial: "", done: false };
+        buffers[mid].done = true;
+        buffers[mid].content = payload.content;
+        buffers[mid].meta = payload.meta;
+        buffers[mid].status = payload.status;
+        buffers[mid].error = payload.error;
+      }
+    }
+  }
+
+  function scrollBottom() {
+    const box = el("chat-messages");
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function finalize(mid, payload) {
+    const entry = streaming[mid];
+    if (!entry) return;
+    entry.content.innerHTML = Markdown.render(payload.content || entry.partial || "");
+    if (entry.cursor) entry.cursor.remove();
+    delete streaming[mid];
+    const div = entry.content.closest(".msg");
+    const meta = payload.meta || {};
+    if (payload.status === "failed") {
+      div.classList.add("error");
+      attachMetaLine(div, `${I18n.t("chat.failed")}: ${payload.error || ""}`);
+    } else if (payload.status === "stopped") {
+      attachMetaLine(div, I18n.t("chat.interrupted"));
+    } else {
+      attachMeta(div, meta);
     }
     el("chat-stop").disabled = Object.keys(streaming).length === 0;
   }
 
-  function attachMeta(elt, meta) {
-    const line = document.createElement("span");
-    line.className = "meta-line";
+  function attachMeta(div, meta) {
     const parts = [];
     if (meta.model) parts.push(meta.model);
+    if (meta.swarm) {
+      const s = meta.swarm;
+      parts.push(`ρ=${s.rho_achieved ?? "?"} · ${s.n_tasks ?? 0} tasks`);
+      parts.push(s.consensus ? `k=${s.consensus.k}` : "k=1");
+    }
     if (meta.completion_tokens != null) parts.push(`${meta.completion_tokens} tok`);
     if (meta.total_ms != null) parts.push(`${(meta.total_ms / 1000).toFixed(1)} s`);
-    line.textContent = parts.join(" · ");
-    elt.appendChild(line);
+    attachMetaLine(div, parts.join(" · "));
+  }
+
+  function attachMetaLine(div, text) {
+    const line = document.createElement("span");
+    line.className = "meta-line";
+    line.textContent = text;
+    div.appendChild(line);
+  }
+
+  function messageElement(m) {
+    const div = document.createElement("div");
+    div.className = `msg ${m.role}`;
+    if (m.role === "assistant") {
+      const content = document.createElement("div");
+      content.className = "md";
+      content.innerHTML = Markdown.render(m.content || "");
+      div.appendChild(content);
+      if (m.meta && Object.keys(m.meta).length) attachMeta(div, m.meta);
+    } else {
+      div.textContent = m.content;
+    }
+    return div;
   }
 
   async function refreshConversations() {
@@ -109,18 +144,11 @@ const Chat = (() => {
     const box = el("chat-messages");
     box.innerHTML = "";
     const messages = await Api.get(`/api/conversations/${id}/messages`);
-    for (const m of messages) {
-      const div = document.createElement("div");
-      div.className = `msg ${m.role}`;
-      div.textContent = m.content;
-      if (m.role === "assistant" && m.meta && Object.keys(m.meta).length) {
-        attachMeta(div, m.meta);
-      }
-      box.appendChild(div);
-    }
+    for (const m of messages) box.appendChild(messageElement(m));
     box.scrollTop = box.scrollHeight;
     refreshConversations();
     el("chat-delete").style.display = "inline-block";
+    el("chat-export").style.display = "inline-block";
   }
 
   async function newConversation() {
@@ -131,10 +159,7 @@ const Chat = (() => {
   }
 
   function currentMode() {
-    const value = el("chat-mode").value;
-    // "auto" and "lan" route through the swarm engine (Phase 2); internet is
-    // disabled in the selector (Phase 3) and refused honestly by the backend.
-    return value;
+    return el("chat-mode").value;
   }
 
   async function send() {
@@ -157,12 +182,31 @@ const Chat = (() => {
       const a = resp.assistant_message;
       const div = document.createElement("div");
       div.className = "msg assistant";
-      const textEl = document.createElement("span");
-      textEl.className = "cursor";
-      div.appendChild(textEl);
+      const content = document.createElement("div");
+      content.className = "md";
+      const cursor = document.createElement("span");
+      cursor.className = "cursor";
+      div.appendChild(content);
+      div.appendChild(cursor);
       box.appendChild(div);
-      streaming[a.id] = div;
+      streaming[a.id] = { content, cursor, partial: "" };
       el("chat-stop").disabled = false;
+
+      // Replay any deltas / final result that arrived before the bubble existed.
+      const buffered = buffers[a.id];
+      if (buffered) {
+        if (buffered.partial) {
+          streaming[a.id].partial = buffered.partial;
+          content.textContent = buffered.partial;
+        }
+        if (buffered.done) {
+          finalize(a.id, {
+            message_id: a.id, content: buffered.content, meta: buffered.meta,
+            status: buffered.status, error: buffered.error,
+          });
+        }
+        delete buffers[a.id];
+      }
       box.scrollTop = box.scrollHeight;
     } catch (err) {
       const div = document.createElement("div");
@@ -173,18 +217,7 @@ const Chat = (() => {
   }
 
   async function stop() {
-    // stop the newest active stream known to this panel
-    const ids = Object.keys(streaming);
-    if (ids.length) {
-      const messageId = ids[ids.length - 1];
-      // find request id via message element mapping is unavailable; use API:
-      // the backend exposes active requests; simplest: ask the server
-      try {
-        await Api.post("/api/requests/_stop_last", {});
-      } catch (_) {
-        try { await Api.post(`/api/requests/${messageId}/stop`, {}); } catch (_) {}
-      }
-    }
+    await Api.post("/api/requests/_stop_last", {});
   }
 
   async function deleteConversation() {
@@ -224,7 +257,7 @@ const Chat = (() => {
   function refreshMetaInfo() {
     const span = el("chat-meta-info");
     if (!span) return;
-    const mode = App.state.config?.swarm?.mode || "local";
+    const mode = currentMode() || App.state.config?.swarm?.mode || "local";
     span.textContent = `${I18n.t(`chat.${mode}`, mode)} · ${el("chat-model").value || I18n.t("chat.noModel")}`;
   }
 
@@ -235,5 +268,5 @@ const Chat = (() => {
     window.open(`/api/conversations/${activeConv}/export?format=${fmt}`, "_blank");
   }
 
-  return { init, openConversation, exportConversation, refreshModels };
+  return { init, render, openConversation, exportConversation, refreshModels };
 })();

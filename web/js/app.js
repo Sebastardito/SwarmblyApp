@@ -1,4 +1,4 @@
-/* App shell: boot, navigation, global state, live event fan-out. */
+/* App shell: boot, navigation, global state, live event fan-out, re-render. */
 "use strict";
 
 const App = (() => {
@@ -9,9 +9,11 @@ const App = (() => {
     health: null,
     activePanel: "chat",
     eventHandlers: [],
+    renderers: [],
   };
 
   function onEvent(handler) { state.eventHandlers.push(handler); }
+  function onRender(handler) { state.renderers.push(handler); }
 
   async function boot() {
     try {
@@ -30,14 +32,33 @@ const App = (() => {
       state.eventHandlers.forEach((h) => { try { h(event); } catch (_) {} });
     });
 
-    if (!state.config || !state.config.setup_completed) {
-      Wizard.show();
-    }
-    updateStatusBar();
+    // initialize panels once (registers listeners + renderers)
     Chat.init();
     Monitor.init();
     Lce.init();
     Settings.init();
+
+    applyTheme(state.config?.theme || "dark");
+    renderAll();
+
+    if (!state.config || !state.config.setup_completed) {
+      Wizard.show();
+    }
+    updateStatusBar();
+  }
+
+  function renderAll() {
+    state.renderers.forEach((render) => { try { render(); } catch (e) { console.error(e); } });
+    I18n.applyAll(document);
+  }
+
+  /* Reload a language and re-render every panel (selects, hints, lists…). */
+  async function setLanguage(lang) {
+    await Api.put("/api/config", { language: lang });
+    state.config = await Api.get("/api/config");
+    await I18n.load(lang);
+    renderAll();
+    updateStatusBar();
   }
 
   function navigate(panel) {
@@ -58,9 +79,14 @@ const App = (() => {
     nodeEl.textContent = `${I18n.t("status.nodeId")} ${state.health?.node_id || "—"}`;
   }
 
+  function applyTheme(theme) {
+    document.body.classList.toggle("light", theme === "light");
+  }
+
   function refreshConfig() {
     return Api.get("/api/config").then((cfg) => {
       state.config = cfg;
+      applyTheme(cfg.theme || "dark");
       updateStatusBar();
       return cfg;
     });
@@ -72,5 +98,6 @@ const App = (() => {
     boot();
   });
 
-  return { state, onEvent, navigate, refreshConfig, updateStatusBar };
+  return { state, onEvent, onRender, navigate, refreshConfig, updateStatusBar,
+           renderAll, setLanguage, applyTheme };
 })();

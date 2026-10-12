@@ -15,6 +15,7 @@ const Monitor = (() => {
     const pipeline = el("pipeline");
     pipeline.innerHTML = "";
     App.onEvent(noteEvent);
+    App.onRender(() => { renderSystem(); refreshLive(); });
     setInterval(() => {
       if (App.state.activePanel === "monitor") refreshLive();
     }, 4000);
@@ -29,22 +30,22 @@ const Monitor = (() => {
     const rows = [];
     if (sys.os) {
       const os = sys.os.value || {};
-      rows.push(["OS", `${os.system || "?"} ${os.release || ""} (${os.machine || "?"})`, sys.os.confidence]);
-      rows.push(["Python", os.python || "?", "measured"]);
+      rows.push([I18n.t("monitor.sys.os"), `${os.system || "?"} ${os.release || ""} (${os.machine || "?"})`, sys.os.confidence]);
+      rows.push([I18n.t("monitor.sys.python"), os.python || "?", "measured"]);
     }
     if (sys.cpu) {
       const cpu = sys.cpu.value || {};
-      rows.push(["CPU", `${cpu.brand || "unknown"} — ${cpu.cores_logical ?? "?"} logical cores`, sys.cpu.confidence]);
+      rows.push([I18n.t("monitor.sys.cpu"), `${cpu.brand || "unknown"} — ${cpu.cores_logical ?? "?"} ${I18n.t("monitor.sys.cores")}`, sys.cpu.confidence]);
     }
     if (sys.memory) {
       const mem = sys.memory.value || {};
       if (mem.total_bytes) {
-        rows.push(["RAM", `${(mem.total_bytes / 1024 ** 3).toFixed(1)} GB total · ${(mem.available_bytes / 1024 ** 3).toFixed(1)} GB available`, sys.memory.confidence]);
+        rows.push([I18n.t("monitor.sys.ram"), `${(mem.total_bytes / 1024 ** 3).toFixed(1)} GB · ${(mem.available_bytes / 1024 ** 3).toFixed(1)} GB ${I18n.t("monitor.sys.available")}`, sys.memory.confidence]);
       }
     }
     if (sys.gpu) {
       const gpus = sys.gpu.value.gpus || [];
-      rows.push(["GPU", gpus.length ? gpus.map((g) => g.name).join(", ") : "none detected", sys.gpu.confidence]);
+      rows.push([I18n.t("monitor.sys.gpu"), gpus.length ? gpus.map((g) => g.name).join(", ") : I18n.t("monitor.sys.none"), sys.gpu.confidence]);
     }
     for (const [label, value, confidence] of rows) {
       const div = document.createElement("div");
@@ -76,8 +77,8 @@ const Monitor = (() => {
       const div = document.createElement("div");
       div.className = "metric";
       div.innerHTML = `<div class="value">${String(metric.value)}</div>
-        <div class="label">${name}</div>
-        <div style="font-size:0.65rem;color:var(--text-dim)">${metric.source || ""}</div>`;
+        <div class="label">${I18n.t(`monitor.healthMetrics.${name}`, name)}</div>
+        <div style="font-size:0.65rem;color:var(--text-dim)">${I18n.t(`monitor.healthMetrics.${name}.src`, metric.source || "")}</div>`;
       box.appendChild(div);
     }
   }
@@ -86,11 +87,11 @@ const Monitor = (() => {
     const box = el("monitor-contribution");
     if (!box) return;
     const rows = [
-      ["Tasks served", cont.tasks_served],
-      ["Processing time", `${(cont.processing_time_ms / 1000).toFixed(1)} s`],
-      ["Tokens generated", cont.tokens_generated],
-      ["Bytes in/out", `${cont.bytes_transferred.in} / ${cont.bytes_transferred.out}`],
-      ["Requests made", cont.tasks_requested],
+      [I18n.t("monitor.c.tasksServed"), cont.tasks_served],
+      [I18n.t("monitor.c.processingTime"), `${(cont.processing_time_ms / 1000).toFixed(1)} s`],
+      [I18n.t("monitor.c.tokens"), cont.tokens_generated],
+      [I18n.t("monitor.c.bytes"), `${cont.bytes_transferred.in} / ${cont.bytes_transferred.out}`],
+      [I18n.t("monitor.c.requests"), cont.tasks_requested],
     ];
     box.innerHTML = "";
     for (const [label, value] of rows) {
@@ -108,14 +109,14 @@ const Monitor = (() => {
     box.innerHTML = "";
     if (!peers.length) {
       const li = document.createElement("li");
-      li.textContent = "No authenticated peers yet. Enable LAN in Settings or add a peer manually.";
+      li.textContent = I18n.t("monitor.noPeers");
       box.appendChild(li);
     }
     for (const p of peers) {
       const li = document.createElement("li");
       const models = (p.models || []).map((m) => m.family || m.version).join(", ");
       li.innerHTML = `<code>${p.short_id || p.node_id.slice(0, 12)}</code> @ ${p.address}:${p.port}
-        <span class="tag">${p.verified ? "verified" : "unverified"}</span>
+        <span class="tag">${p.verified ? I18n.t("monitor.verified") : I18n.t("monitor.unverified")}</span>
         ${models ? `<span class="tag">${models}</span>` : ""}`;
       box.appendChild(li);
     }
@@ -143,16 +144,13 @@ const Monitor = (() => {
         .map(([k, v]) => `${k}=${String(v).slice(0, 60)}`).join(" ");
       addStage(pipeline, payload.stage, status, extra, ts);
     } else if (type === "node.discovered") {
-      const pipeline = el("pipeline");
-      addStage(pipeline, "NODE DISCOVERED", "completed",
+      addStage(el("pipeline"), "NODE DISCOVERED", "completed",
                `${payload.address}:${payload.port} (${payload.source})`, ts);
     } else if (type === "node.connected") {
-      const pipeline = el("pipeline");
-      addStage(pipeline, "NODE CONNECTED", "completed",
+      addStage(el("pipeline"), "NODE CONNECTED", "completed",
                `${payload.short_id} @ ${payload.address}`, ts);
     } else if (type === "node.handshake_failed") {
-      const pipeline = el("pipeline");
-      addStage(pipeline, "HANDSHAKE FAILED", "failed",
+      addStage(el("pipeline"), "HANDSHAKE FAILED", "failed",
                `${payload.address || ""} ${payload.reason || ""}`, ts);
     } else if (type === "chat.done" && payload.status === "done") {
       const pipeline = el("pipeline");
@@ -170,6 +168,7 @@ const Monitor = (() => {
   }
 
   function addStage(container, name, status, extra, ts) {
+    if (!container) return;
     if (container.children.length >= MAX_STAGES) {
       container.removeChild(container.firstChild);
     }

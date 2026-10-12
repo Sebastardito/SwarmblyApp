@@ -71,15 +71,15 @@
         </div>
         <div class="notice" data-i18n="monitor.phase2Notice"></div>
         <div class="panel-header" style="border-top:1px solid var(--border)">
-          <h2>Swarm Health</h2>
+          <h2 data-i18n="monitor.health">Swarm Health</h2>
         </div>
         <div class="metrics" id="monitor-health"></div>
         <div class="panel-header" style="border-top:1px solid var(--border)">
-          <h2>Nodes (authenticated)</h2>
+          <h2 data-i18n="monitor.nodes">Nodes (authenticated)</h2>
         </div>
         <div style="padding:4px 18px"><ul class="model-list" id="monitor-nodes"></ul></div>
         <div class="panel-header" style="border-top:1px solid var(--border)">
-          <h2>My contribution</h2>
+          <h2 data-i18n="monitor.contribution">My contribution</h2>
         </div>
         <div style="padding:8px 18px" id="monitor-contribution"></div>
         <div class="panel-header" style="border-top:1px solid var(--border)">
@@ -100,23 +100,29 @@
         <div class="settings-body">
           <div class="settings-section">
             <h3 data-i18n="lce.status">Status</h3>
-            <div class="check-row"><span data-i18n="lce.status">Status</span><span class="val" id="lce-state">—</span></div>
-            <div class="check-row"><span data-i18n="lce.level">Level</span><span class="val" id="lce-note">—</span></div>
-            <div class="check-row"><span>swarmbly_lce</span><span class="val" id="lce-package">—</span></div>
-            <div style="margin-top:12px">
-              <button class="btn primary" id="lce-activate" data-i18n="lce.activate">Activate</button>
-              <button class="btn danger" id="lce-deactivate" style="display:none" data-i18n="lce.deactivate">Deactivate</button>
+            <div class="field">
+              <label data-i18n="settings.lceEnabled">Enable LCE</label>
+              <input type="checkbox" id="lce-enabled">
+              <span class="hint" data-i18n="settings.help.lceEnabled"></span>
             </div>
+            <div class="field">
+              <label data-i18n="lce.level">Level</label>
+              <select id="lce-level"></select>
+              <span class="hint" data-i18n="settings.help.lceLevel"></span>
+            </div>
+            <div class="check-row"><span>swarmbly_lce</span><span class="val" id="lce-package">—</span></div>
+            <div class="check-row"><span data-i18n="lce.status">Status</span><span class="val" id="lce-state">—</span></div>
+            <div class="check-row"><span data-i18n="lce.level">Level note</span><span class="val" id="lce-note">—</span></div>
           </div>
           <div class="settings-section">
             <h3 data-i18n="lce.sources">Source documents</h3>
             <ul class="model-list" id="lce-sources"></ul>
             <p class="hint" data-i18n="lce.c1note" style="color:var(--text-dim); font-size:0.78rem"></p>
+            <p class="hint" style="color:var(--text-dim); font-size:0.8rem" data-i18n="lce.workers"></p>
           </div>
           <div class="settings-section">
             <h3>C0 · C1</h3>
             <p class="hint" style="color:var(--text-dim); font-size:0.8rem" data-i18n="lce.c0note"></p>
-            <p class="hint" style="color:var(--text-dim); font-size:0.8rem" data-i18n="lce.workers"></p>
           </div>
         </div>
       </section>
@@ -130,11 +136,14 @@
           <div class="settings-section">
             <h3 data-i18n="settings.general">General</h3>
             <div class="field"><label data-i18n="settings.language">Language</label>
-              <select id="set-language"><option value="en">English</option><option value="es">Español</option></select></div>
+              <select id="set-language"><option value="en">English</option><option value="es">Español</option></select>
+              <span class="hint" data-i18n="settings.help.language"></span></div>
             <div class="field"><label data-i18n="settings.theme">Theme</label>
-              <select id="set-theme"><option value="dark">Dark</option><option value="light">Light</option></select></div>
+              <select id="set-theme"><option value="dark" data-i18n="settings.themeDark">Dark</option><option value="light" data-i18n="settings.themeLight">Light</option></select>
+              <span class="hint" data-i18n="settings.help.theme"></span></div>
             <div class="field"><label data-i18n="settings.reduceMotion">Reduce motion</label>
-              <input type="checkbox" id="set-reduce-motion"></div>
+              <input type="checkbox" id="set-reduce-motion">
+              <span class="hint" data-i18n="settings.help.reduceMotion"></span></div>
             <div class="field"><label data-i18n="settings.dataDir">Data directory</label>
               <span id="set-data-dir" style="font-family:var(--mono);font-size:0.78rem;color:var(--accent-2)">—</span>
               <span class="hint" id="set-data-dir-hint"></span></div>
@@ -142,15 +151,21 @@
           <div class="settings-section">
             <h3 data-i18n="settings.models">Models</h3>
             <div class="field"><label data-i18n="settings.backend">Backend</label>
-              <select id="set-backend"><option value="auto">Auto (Ollama first)</option><option value="ollama">Ollama</option><option value="openai_compat">OpenAI-compatible</option></select></div>
+              <select id="set-backend"><option value="auto" data-i18n="settings.backendAuto">Auto (Ollama first)</option><option value="ollama">Ollama</option><option value="openai_compat" data-i18n="settings.backendOpenAI">OpenAI-compatible</option></select>
+              <span class="hint" data-i18n="settings.help.backend"></span></div>
             <div class="field"><label data-i18n="settings.backendUrl">Backend URL</label>
-              <input type="text" id="set-backend-url" placeholder="http://127.0.0.1:11434"></div>
+              <input type="text" id="set-backend-url" placeholder="http://127.0.0.1:11434">
+              <span class="hint" data-i18n="settings.help.backendUrl"></span></div>
             <div class="field"><label data-i18n="settings.apiKey">API key</label>
-              <input type="password" id="set-api-key" placeholder="optional"></div>
+              <input type="password" id="set-api-key" placeholder="optional">
+              <span class="hint" data-i18n="settings.help.apiKey"></span></div>
             <div class="field"><label data-i18n="settings.modelName">Default model</label>
-              <input type="text" id="set-model-name" placeholder="llama3.2:3b"></div>
-            <div class="field"><label>max_tokens</label><input type="number" id="set-max-tokens" min="64" max="8192"></div>
-            <div class="field"><label>temperature</label><input type="number" id="set-temperature" min="0" max="2" step="0.1"></div>
+              <input type="text" id="set-model-name" placeholder="llama3.2:3b">
+              <span class="hint" data-i18n="settings.help.modelName"></span></div>
+            <div class="field"><label>max_tokens</label><input type="number" id="set-max-tokens" min="64" max="8192">
+              <span class="hint" data-i18n="settings.help.maxTokens"></span></div>
+            <div class="field"><label>temperature</label><input type="number" id="set-temperature" min="0" max="2" step="0.1">
+              <span class="hint" data-i18n="settings.help.temperature"></span></div>
             <h3 style="margin-top:14px" data-i18n="settings.detected">Detected models</h3>
             <ul class="model-list" id="settings-detected"></ul>
             <h3 data-i18n="settings.recommendations">Recommendations</h3>
@@ -161,51 +176,65 @@
             <h3 data-i18n="settings.swarm">Swarm</h3>
             <div class="field"><label data-i18n="settings.mode">Execution mode</label>
               <select id="set-swarm-mode">
-                <option value="local">Local</option>
-                <option value="lan">Swarm LAN</option>
-                <option value="auto">Automatic</option>
-              </select></div>
-            <div class="field"><label>LAN discovery (mDNS)</label>
-              <input type="checkbox" id="set-lan-enabled"></div>
-            <div class="field"><label>Worker (serve micro-tasks)</label>
-              <input type="checkbox" id="set-worker-enabled"></div>
-            <div class="field"><label>Worker only when idle</label>
-              <input type="checkbox" id="set-worker-idle"></div>
-            <div class="field"><label>Max concurrent tasks</label>
-              <input type="number" id="set-worker-concurrent" min="1" max="8" style="width:90px"></div>
-            <div class="field"><label>Redundancy k (min–max)</label>
+                <option value="local" data-i18n="settings.modeLocal">Local only</option>
+                <option value="lan" data-i18n="settings.modeLan">Swarm LAN</option>
+                <option value="auto" data-i18n="settings.modeAuto">Automatic</option>
+              </select>
+              <span class="hint" data-i18n="settings.help.mode"></span></div>
+            <div class="field"><label data-i18n="settings.lan">LAN discovery (mDNS)</label>
+              <input type="checkbox" id="set-lan-enabled">
+              <span class="hint" data-i18n="settings.help.lan"></span></div>
+            <div class="field"><label data-i18n="settings.worker">Worker (serve micro-tasks)</label>
+              <input type="checkbox" id="set-worker-enabled">
+              <span class="hint" data-i18n="settings.help.worker"></span></div>
+            <div class="field"><label data-i18n="settings.workerIdle">Worker only when idle</label>
+              <input type="checkbox" id="set-worker-idle">
+              <span class="hint" data-i18n="settings.help.workerIdle"></span></div>
+            <div class="field"><label data-i18n="settings.workerConcurrent">Max concurrent tasks</label>
+              <input type="number" id="set-worker-concurrent" min="1" max="8" style="width:90px">
+              <span class="hint" data-i18n="settings.help.workerConcurrent"></span></div>
+            <div class="field"><label data-i18n="settings.redundancy">Redundancy k (min–max)</label>
               <span style="display:flex;gap:8px">
                 <input type="number" id="set-k-min" min="1" max="4" style="width:70px">
                 <input type="number" id="set-k-max" min="1" max="4" style="width:70px">
-              </span></div>
-            <div class="field"><label>ρ target</label>
-              <input type="number" id="set-rho" min="1" max="4" step="0.1" style="width:90px"></div>
-            <p class="hint" style="color:var(--text-dim)" data-i18n="settings.swarmPhase2"></p>
+              </span>
+              <span class="hint" data-i18n="settings.help.redundancy"></span></div>
+            <div class="field"><label data-i18n="settings.rho">ρ target (context budget)</label>
+              <input type="number" id="set-rho" min="1" max="4" step="0.1" style="width:90px">
+              <span class="hint" data-i18n="settings.help.rho"></span></div>
           </div>
           <div class="settings-section">
             <h3 data-i18n="settings.privacy">Privacy &amp; security</h3>
             <div class="field"><label data-i18n="settings.tier">Privacy tier</label>
-              <select id="set-tier"><option value="LOCAL">LOCAL</option><option value="GLOBAL">GLOBAL</option><option value="TRUSTED">TRUSTED (mTLS — Phase 2.1)</option></select></div>
-            <p class="hint" style="color:var(--text-dim)" data-i18n="settings.tierNote"></p>
+              <select id="set-tier"><option value="LOCAL">LOCAL</option><option value="GLOBAL">GLOBAL</option><option value="TRUSTED">TRUSTED</option></select>
+              <span class="hint" data-i18n="settings.help.tier"></span></div>
           </div>
           <div class="settings-section">
             <h3 data-i18n="settings.lce">LCE</h3>
             <div class="field"><label data-i18n="settings.lceEnabled">Enable LCE</label>
-              <input type="checkbox" id="set-lce-enabled" disabled title="Manage in the Memory panel"></div>
-            <div class="check-row"><span data-i18n="settings.lceLevel">Level</span><span class="val" id="set-lce-level">C0</span></div>
-            <div class="check-row"><span data-i18n="settings.learning">Learning</span><span class="val">off</span></div>
+              <input type="checkbox" id="set-lce-enabled">
+              <span class="hint" data-i18n="settings.help.lceEnabled"></span></div>
+            <div class="field"><label data-i18n="settings.lceLevel">Level</label>
+              <select id="set-lce-level"></select>
+              <span class="hint" data-i18n="settings.help.lceLevel"></span></div>
+            <div class="field"><label data-i18n="settings.learning">Learning (training)</label>
+              <input type="checkbox" id="set-lce-learning" disabled>
+              <span class="hint" data-i18n="settings.help.learning"></span></div>
           </div>
           <div class="settings-section">
             <h3 data-i18n="settings.results">Results</h3>
             <div class="field"><label data-i18n="settings.exportFormat">Export format</label>
-              <select id="set-export-format"><option value="markdown">Markdown</option><option value="json">JSON</option><option value="html">HTML</option></select></div>
+              <select id="set-export-format"><option value="markdown">Markdown</option><option value="json">JSON</option><option value="html">HTML</option></select>
+              <span class="hint" data-i18n="settings.help.exportFormat"></span></div>
             <div class="field"><label data-i18n="settings.reportDetail">Report detail</label>
-              <select id="set-report-detail"><option value="minimal">Minimal</option><option value="standard">Standard</option><option value="full">Full</option></select></div>
+              <select id="set-report-detail"><option value="minimal" data-i18n="settings.detailMinimal">Minimal</option><option value="standard" data-i18n="settings.detailStandard">Standard</option><option value="full" data-i18n="settings.detailFull">Full</option></select>
+              <span class="hint" data-i18n="settings.help.reportDetail"></span></div>
           </div>
           <div class="settings-section">
             <h3 data-i18n="settings.profile">Profile</h3>
             <div class="field"><label></label>
-              <select id="set-profile"><option value="automatic" data-i18n="settings.profileAuto">Automatic</option><option value="custom" data-i18n="settings.profileCustom">Custom</option><option value="advanced" data-i18n="settings.profileAdvanced">Advanced</option></select></div>
+              <select id="set-profile"><option value="automatic" data-i18n="settings.profileAuto">Automatic</option><option value="custom" data-i18n="settings.profileCustom">Custom</option><option value="advanced" data-i18n="settings.profileAdvanced">Advanced</option></select>
+              <span class="hint" data-i18n="settings.help.profile"></span></div>
           </div>
           <div style="display:flex; gap:10px; align-items:center">
             <button class="btn primary" id="settings-save" data-i18n="settings.save">Save settings</button>
@@ -219,6 +248,7 @@
 
   <script src="/js/i18n.js"></script>
   <script src="/js/api.js"></script>
+  <script src="/js/md.js"></script>
   <script src="/js/app.js"></script>
   <script src="/js/chat.js"></script>
   <script src="/js/monitor.js"></script>

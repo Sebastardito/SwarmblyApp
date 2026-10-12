@@ -1,13 +1,21 @@
-/* Settings panel: general, models, swarm (Phase 2 notice), privacy, LCE, results. */
+/* Settings panel: general, models, swarm, privacy, results, profile.
+   LCE is owned by Lce (immediate persist); language applies immediately;
+   theme previews immediately and persists on Save. */
 "use strict";
 
 const Settings = (() => {
   function el(id) { return document.getElementById(id); }
 
   function init() {
-    render();
     el("settings-save").addEventListener("click", save);
     el("settings-reset").addEventListener("click", reset);
+    el("set-language").addEventListener("change", async (e) => {
+      await App.setLanguage(e.target.value);
+    });
+    el("set-theme").addEventListener("change", (e) => {
+      App.applyTheme(e.target.value);
+    });
+    App.onRender(render);
   }
 
   function render() {
@@ -15,8 +23,8 @@ const Settings = (() => {
     el("set-language").value = cfg.language || "en";
     el("set-theme").value = cfg.theme || "dark";
     el("set-reduce-motion").checked = !!cfg.reduce_motion;
-    el("set-data-dir").textContent = cfg.data_dir || "";
-    el("set-data-dir-hint").textContent = `${I18n.t("settings.dataDirHint")} (${App.state.health?.data_dir || "—"})`;
+    el("set-data-dir").textContent = App.state.health?.data_dir || cfg.data_dir || "—";
+    el("set-data-dir-hint").textContent = I18n.t("settings.dataDirHint");
 
     const m = cfg.model || {};
     el("set-backend").value = m.backend || "auto";
@@ -25,9 +33,6 @@ const Settings = (() => {
     el("set-model-name").value = m.model_name || "";
     el("set-max-tokens").value = m.max_tokens ?? 1024;
     el("set-temperature").value = m.temperature ?? 0.2;
-
-    const p = cfg.privacy || {};
-    el("set-tier").value = p.tier || "LOCAL";
 
     const s = cfg.swarm || {};
     el("set-swarm-mode").value = s.mode || "local";
@@ -39,9 +44,8 @@ const Settings = (() => {
     el("set-k-max").value = s.k_max ?? 2;
     el("set-rho").value = s.rho_target ?? 1.5;
 
-    const l = cfg.lce || {};
-    el("set-lce-enabled").checked = !!l.enabled;
-    el("set-lce-level").textContent = l.level || "C0";
+    const p = cfg.privacy || {};
+    el("set-tier").value = p.tier || "LOCAL";
 
     const r = cfg.results || {};
     el("set-export-format").value = r.export_format || "markdown";
@@ -81,7 +85,6 @@ const Settings = (() => {
 
   async function save() {
     const body = {
-      language: el("set-language").value,
       theme: el("set-theme").value,
       reduce_motion: el("set-reduce-motion").checked,
       model: {
@@ -111,8 +114,7 @@ const Settings = (() => {
     };
     await Api.put("/api/config", body);
     await App.refreshConfig();
-    await I18n.load(el("set-language").value);
-    I18n.applyAll(document);
+    App.renderAll();
     Chat.refreshModels();
     const note = el("settings-saved");
     note.textContent = I18n.t("settings.saved");
@@ -123,7 +125,7 @@ const Settings = (() => {
   async function reset() {
     await Api.post("/api/config/reset", {});
     await App.refreshConfig();
-    render();
+    App.renderAll();
   }
 
   return { init, render };
