@@ -9,15 +9,19 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from ..config import ConfigError, validate_changes
 from ..state import AppState
+from .security import ApiGuard, GuardMiddleware
 
-WEB_DIR = Path(__file__).resolve().parent.parent.parent / "web"
+WEB_DIR = Path(__file__).resolve().parent.parent / "web"
+REPORT_FORMATS = {"json": "application/json", "markdown": "text/markdown",
+                  "html": "text/html"}
 
 
-def create_app(state: AppState) -> FastAPI:
+def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # The WebSocket bridge lives on this loop; chat/P2P publish from other
@@ -29,7 +33,22 @@ def create_app(state: AppState) -> FastAPI:
                   docs_url="/api/docs", openapi_url="/api/openapi.json",
                   lifespan=lifespan)
     app.state.swarmbly = state
+    api_host = str((state.config.get("api") or {}).get("host") or "")
+    guard = guard or ApiGuard(extra_hosts={api_host.lower()})
+    app.state.guard = guard
+    try:
+        guard.write_token(state.dirs.root / "api_token")
+    except OSError:
+        pass
+    app.add_middleware(GuardMiddleware, guard=guard)
     state.bus.subscribe_async(_on_event_factory(app))
+
+    def _index() -> HTMLResponse:
+        html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+        return HTMLResponse(guard.inject(html))
+
+    app.add_api_route("/", _index, methods=["GET"], include_in_schema=False)
+    app.add_api_route("/index.html", _index, methods=["GET"], include_in_schema=False)
 
     # ---- health / system ------------------------------------------------------
     @app.get("/api/health")
@@ -63,6 +82,68 @@ def create_app(state: AppState) -> FastAPI:
             },
         }
 
+    # ---- dependencies (doctor) ------------------------------------------------------
+    @app.get("/api/doctor")
+    def doctor() -> dict:
+        from ..doctor import run_checks
+        return run_checks(state)
+
+    @app.post("/api/doctor/install")
+    def doctor_install(body: dict[str, Any]) -> dict:
+        job = state.installer.start(list(body.get("packages") or []),
+                                    consent=bool(body.get("consent")))
+        if job.status == "refused":
+            raise HTTPException(status_code=400, detail="; ".join(job.log))
+        return {"status": job.status, "packages": job.packages}
+
+    @app.get("/api/doctor/install")
+    def doctor_install_status() -> dict:
+        job = state.installer.job
+        return {"status": "idle"} if job is None else {
+            "status": job.status, "packages": job.packages, "log": job.log[-20:],
+            "verified": job.verified}
+
+    # ---- model downloads through Ollama (consent required) -----------------------
+    @app.get("/api/models/preview")
+    def model_preview(name: str) -> dict:
+        try:
+            return state.ollama.preview(name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/models/pull")
+    def model_pull(body: dict[str, Any]) -> dict:
+        if state.config.get("permissions.model_downloads") is False:
+            raise HTTPException(status_code=403,
+                                detail="model downloads are disabled in Permissions")
+        try:
+            job = state.ollama.start_pull(str(body.get("name", "")),
+                                          consent=bool(body.get("consent")))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if job.status == "failed":
+            raise HTTPException(status_code=400, detail=job.detail)
+        return job.to_dict()
+
+    @app.post("/api/models/pull/cancel")
+    def model_pull_cancel(body: dict[str, Any]) -> dict:
+        return {"cancelled": state.ollama.cancel(str(body.get("name", "")))}
+
+    @app.get("/api/models/pulls")
+    def model_pulls() -> list[dict]:
+        return [j.to_dict() for j in state.ollama.jobs.values()]
+
+    @app.get("/api/models/info")
+    def model_info(name: str) -> dict:
+        try:
+            data = state.ollama.show(name)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Ollama: {exc}") from exc
+        return {"name": name, "details": data.get("details"),
+                "license": (data.get("license") or "")[:4000],
+                "parameters": data.get("parameters"),
+                "modified_at": data.get("modified_at")}
+
     # ---- config -----------------------------------------------------------------
     @app.get("/api/config")
     def get_config() -> dict:
@@ -71,15 +152,89 @@ def create_app(state: AppState) -> FastAPI:
     @app.put("/api/config")
     def put_config(body: dict[str, Any]) -> dict:
         try:
-            return state.config.update(body)
-        except Exception as exc:
+            changes = validate_changes(body)
+        except ConfigError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        merged = state.config.update(changes)
+        swarm = merged["swarm"]
+        if int(swarm.get("k_max", 1)) < int(swarm.get("k_min", 1)):
+            merged = state.config.update({"swarm.k_max": int(swarm["k_min"])})
+        state.on_config_changed()
+        return merged
 
     @app.post("/api/config/reset")
     def reset_config(body: dict[str, Any] | None = None) -> dict:
         section = (body or {}).get("section")
+        if section == "api":
+            raise HTTPException(status_code=400,
+                                detail="api settings are changed from the command line")
         state.config.reset(section)
+        state.on_config_changed()
         return state.config.all()
+
+    # ---- setup: recommended profile (explained, reversible) ----------------------
+    def _recommendation() -> dict:
+        from ..advisor import recommend
+        cfg = state.config.all()["model"]
+        state.model_manager.invalidate()
+        infos = state.model_manager.detect_cached(cfg.get("backend", "auto"),
+                                                  cfg.get("backend_url", ""))
+        return recommend(state.system_report(), [i.to_dict() for i in infos],
+                         state.config.all())
+
+    @app.get("/api/setup/recommendation")
+    def setup_recommendation() -> dict:
+        return _recommendation()
+
+    @app.post("/api/setup/apply")
+    def setup_apply(body: dict[str, Any] | None = None) -> dict:
+        """Apply the recommendation (or a subset of its keys). The previous
+        configuration is saved first and can be restored with /revert."""
+        rec = _recommendation()
+        keys = (body or {}).get("keys")
+        changes = {k: v for k, v in rec["changes"].items() if not keys or k in keys}
+        try:
+            changes = validate_changes(changes)
+        except ConfigError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        state.backup_config("before-profile")
+        merged = state.config.update({**changes, "profile": "automatic"})
+        state.on_config_changed()
+        return {"applied": changes, "config": merged}
+
+    @app.post("/api/setup/revert")
+    def setup_revert() -> dict:
+        if not state.restore_config("before-profile"):
+            raise HTTPException(status_code=404, detail="no previous configuration saved")
+        state.on_config_changed()
+        return state.config.all()
+
+    @app.post("/api/permissions")
+    def set_permissions(body: dict[str, Any]) -> dict:
+        """Explicit consent for network access (asked in the setup assistant)."""
+        import time as _time
+        changes: dict[str, Any] = {}
+        for key in ("lan_discovery", "internet", "model_downloads"):
+            if key in body:
+                changes[f"permissions.{key}"] = bool(body[key])
+        if not changes:
+            raise HTTPException(status_code=400, detail="nothing to set")
+        changes["permissions.asked_at"] = _time.time()
+        if changes.get("permissions.lan_discovery") is False:
+            changes["swarm.lan_enabled"] = False
+            changes["swarm.worker_enabled"] = False
+        if changes.get("permissions.internet") is False:
+            changes["swarm.internet_enabled"] = False
+        state.config.update(changes)
+        state.on_config_changed()
+        return state.config.all()["permissions"]
+
+    @app.get("/api/lce/levels")
+    def lce_levels() -> dict:
+        from ..advisor import lce_levels as levels, memory_budget
+        hw = state.system_report()
+        has_model = bool(state.config.get("model.model_name"))
+        return levels(hw, memory_budget(hw), has_model)
 
     # ---- conversations -----------------------------------------------------------
     @app.get("/api/conversations")
@@ -203,7 +358,7 @@ def create_app(state: AppState) -> FastAPI:
                        ("mode", "lan_enabled", "internet_enabled",
                         "worker_enabled", "worker_allow_lan",
                         "worker_allow_internet", "worker_max_concurrent",
-                        "worker_only_idle", "k_min", "k_max", "rho_target",
+                        "worker_only_idle", "k_min", "k_max",
                         "n_fragments_max", "discovery_enabled")},
             "worker": state.worker.status() if state.worker else None,
         }
@@ -227,15 +382,20 @@ def create_app(state: AppState) -> FastAPI:
 
     @app.post("/api/swarm/rescan")
     def swarm_rescan() -> dict:
-        if state.nodes.discovery is not None:
-            state.nodes.discovery.rescan()
-        return {"rescanned": True}
+        """Active mDNS search: a real query; entries refresh only on answers."""
+        try:
+            return {"rescanned": True, **state.nodes.rescan()}
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @app.post("/api/swarm/worker")
     def swarm_worker(body: dict) -> dict:
         enabled = bool(body.get("enabled", False))
-        state.config.update({"swarm": {"worker_enabled": enabled,
-                                       "lan_enabled": enabled}})
+        changes: dict[str, Any] = {"swarm.worker_enabled": enabled}
+        if enabled:  # a worker is only reachable with LAN on (v0.1)
+            changes["swarm.lan_enabled"] = True
+        state.config.update(changes)
+        state.on_config_changed()
         return state.worker.status() if state.worker else {"policy": {}}
 
     @app.get("/api/requests/{request_id}")
@@ -246,15 +406,25 @@ def create_app(state: AppState) -> FastAPI:
         return req
 
     @app.get("/api/requests/{request_id}/report")
-    def request_report(request_id: str, format: str = "markdown") -> Any:
-        req = state.db.get_request(request_id)
-        if req is None:
+    def request_report(request_id: str, format: str = "markdown",
+                       detail: str | None = None, save: bool = False) -> Any:
+        """Generated on demand; written to the output directory only if
+        ``save=true`` (spec §11: viewable without being stored)."""
+        if format not in REPORT_FORMATS:
+            raise HTTPException(status_code=400, detail="format must be json|markdown|html")
+        if state.db.get_request(request_id) is None:
             raise HTTPException(status_code=404, detail="request not found")
         from ..reports import render_report
-        content = render_report(req, fmt=format)
-        media = {"json": "application/json", "markdown": "text/markdown",
-                 "html": "text/html"}[format]
-        return Response(content=content, media_type=media)
+        detail = detail or state.config.get("results.report_detail") or "standard"
+        content = render_report(state.db, request_id, fmt=format, detail=detail)
+        headers = {}
+        if save:
+            ext = {"markdown": "md", "json": "json", "html": "html"}[format]
+            path = state.output_dir("reports") / f"report-{request_id}.{ext}"
+            path.write_text(content, encoding="utf-8")
+            headers["X-Saved-To"] = str(path)
+        return Response(content=content, media_type=REPORT_FORMATS[format],
+                        headers=headers)
 
     @app.get("/api/monitor")
     def monitor_summary() -> dict:
@@ -270,13 +440,22 @@ def create_app(state: AppState) -> FastAPI:
                 "workers_available": len(state.nodes.available_workers()),
                 "uptime_s": int(__import__("time").time() - state.started_at),
             },
-            "tasks": {"completed": sum(s["tasks_requested"] for s in stats),
-                      "served": sum(s["tasks_served"] for s in stats)},
+            "tasks": {"local_requests": sum(s.get("tasks_requested", 0) for s in stats),
+                      "distributed_requests": sum(s.get("distributed_requests", 0)
+                                                  for s in stats),
+                      "dispatched": sum(s.get("dispatched", 0) for s in stats),
+                      "dispatch_failed": sum(s.get("dispatch_failed", 0) for s in stats),
+                      "served": sum(s.get("tasks_served", 0) for s in stats),
+                      "window_days": 30},
         }
 
     # ---- websocket -----------------------------------------------------------------
     @app.websocket("/ws")
     async def websocket_endpoint(ws: WebSocket) -> None:
+        reason = guard.check_websocket(ws.headers, ws.query_params.get("token"))
+        if reason:
+            await ws.close(code=1008, reason=reason)
+            return
         state.bus.set_loop(asyncio.get_running_loop())
         await ws.accept()
         hub = getattr(app.state, "ws_hub", None)

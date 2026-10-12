@@ -11,6 +11,8 @@ from swarmbly_app.p2p.worker import WorkerService, render_packet_prompt
 
 
 def make_worker(app_state, fake_backend):
+    if not app_state.config.get("model.model_name"):
+        app_state.config.update({"model": {"model_name": "fake-model:1b"}})
     return WorkerService(app_state.config, app_state.db, app_state.bus,
                          app_state.identity_manager, app_state.lce,
                          lambda: fake_backend)
@@ -26,13 +28,47 @@ def task_message(**overrides):
         predecessors=[],
         task={"instruction": "answer this", "kind": "generate",
               "expects": {"format": "prose", "max_tokens": 300}},
-        deadline_ms=int(__import__("time").time() * 1000) + 60000,
+        deadline_ms=60000,  # a duration (SPEC §8 example), not an epoch
         lane="PUBLIC", tier="GLOBAL")
     message.update(overrides)
     return message
 
 
 class TestWorkerPolicy:
+    def test_epoch_deadline_rejected_as_schema_error(self, app_state, fake_chat):
+        """Absolute timestamps break across unsynchronised clocks."""
+        app_state.config.update({"swarm": {"worker_enabled": True}})
+        _, fake = fake_chat
+        worker = make_worker(app_state, fake)
+        reply = asyncio.run(worker.handle(
+            "peer", task_message(deadline_ms=int(__import__("time").time() * 1000))))
+        assert reply["code"] == "E_SCHEMA"
+
+    def test_disabled_worker_advertises_no_kinds(self, app_state, fake_chat):
+        _, fake = fake_chat
+        worker = make_worker(app_state, fake)
+        assert worker.policy()["kinds"] == []
+        app_state.config.update({"swarm": {"worker_enabled": True}})
+        assert "generate" in worker.policy()["kinds"]
+
+    def test_model_family_hint_selects_shared_model(self, app_state, fake_chat):
+        app_state.config.update({"swarm": {"worker_enabled": True,
+                                           "worker_models": ["llama3.2:3b", "qwen2.5:3b"]}})
+        _, fake = fake_chat
+        worker = make_worker(app_state, fake)
+        reply = asyncio.run(worker.handle("peer", task_message(
+            constraints={"model_family": "qwen2.5"})))
+        assert reply["type"] == "result"
+        assert reply["profile"]["model_version"] == "qwen2.5:3b"
+        assert fake.calls[-1]["model"] == "qwen2.5:3b"
+
+    def test_paused_worker_refuses(self, app_state, fake_chat):
+        app_state.config.update({"swarm": {"worker_enabled": True, "worker_paused": True}})
+        _, fake = fake_chat
+        worker = make_worker(app_state, fake)
+        reply = asyncio.run(worker.handle("peer", task_message()))
+        assert reply["code"] == "E_POLICY"
+
     def test_disabled_worker_refuses(self, app_state, fake_chat):
         _, fake = fake_chat
         worker = make_worker(app_state, fake)

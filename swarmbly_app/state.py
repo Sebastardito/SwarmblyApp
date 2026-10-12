@@ -23,18 +23,24 @@ from .p2p.worker import WorkerService
 
 
 def _build_advertisement(state: "AppState") -> dict:
-    """SPEC §12 node profile from live state (models, resources, policy)."""
+    """SPEC §12 node profile from live state.
+
+    ``models`` lists only what this node actually serves to third parties
+    (worker role on); ``policy.kinds`` is empty while the role is off, so no
+    peer offers us a task we would refuse. ``endpoint`` (app extension, SPEC
+    §3-tolerant) tells inbound peers which port to dial back.
+    """
     import psutil
     cfg = state.config.all()
-    model_cfg = cfg["model"]
-    model_name = model_cfg.get("model_name", "")
+    worker_policy = state.worker.policy() if state.worker else {"kinds": []}
     models = []
-    if model_name:
-        models.append({"family": model_name.split(":")[0],
-                       "version": model_name,
-                       "quantization": "",
-                       "ctx": 8192, "tok_per_s_est": None})
-    worker_policy = state.worker.policy() if state.worker else {}
+    if worker_policy.get("kinds") and state.worker is not None:
+        for name in state.worker.shared_models():
+            info = state.model_info(name)
+            models.append({"family": info.get("family") or name.split(":")[0],
+                           "version": name,
+                           "quantization": info.get("quantization", ""),
+                           "ctx": None, "tok_per_s_est": None})
     vm = psutil.virtual_memory()
     return {
         "node_id": state.identity.node_id,
@@ -44,8 +50,11 @@ def _build_advertisement(state: "AppState") -> dict:
         "resources": {"vram_mb": None, "ram_mb": int(vm.total // (1024 ** 2))},
         "policy": {"max_tokens_per_task":
                    int(cfg["swarm"].get("worker_max_tokens_per_task", 800)),
-                   "kinds": list(worker_policy.get("kinds", []))},
+                   "kinds": list(worker_policy.get("kinds", [])),
+                   # app extension: concurrent tasks this node accepts
+                   "max_concurrent": int(worker_policy.get("max_concurrent", 1))},
         "reputation": None,  # self-reported reputation is never trusted (SPEC §12)
+        "endpoint": {"port": state.nodes.listen_port},
     }
 
 
@@ -54,6 +63,7 @@ class AppState:
 
     def __init__(self, data_dir: str | None = None):
         self.started_at = time.time()
+        self._stopped = False
         # 1. Boot dirs (CLI/env) → 2. config may override data_dir → 3. effective dirs
         boot_dirs = DataDirs(data_dir)
         self.config = Config(boot_dirs)
@@ -74,20 +84,90 @@ class AppState:
                                  dirs=self.dirs)
         self.worker: WorkerService | None = None
         self.orchestrator = None  # built lazily with a live local backend
+        self.latency = None       # p95 history shared across orchestrator rebuilds
         self.chat = ChatService(self.db, self.bus, self.backends,
                                 self.config.all, self.get_orchestrator)
+        self.chat.report_sink = self._auto_report
+        from .doctor import Installer
+        from .model_manager import OllamaModels
+        self.installer = Installer(self.bus)
+        self.ollama = OllamaModels(self.bus, self._ollama_url, lambda: self.dirs.root)
+        # A finished download changes what is installed: refresh detection.
+        self.bus.subscribe(lambda e: self.model_manager.invalidate()
+                           if e["type"] == "models.pull"
+                           and e["payload"].get("status") == "done" else None)
 
     # -- P2P lifecycle -----------------------------------------------------------
     def start_p2p(self) -> None:
         if self.worker is None:
             self.worker = WorkerService(
                 self.config, self.db, self.bus, self.identity_manager,
-                self.lce, lambda: self.backends.resolve(self.config.all()))
+                self.lce, lambda: self.backends.resolve(self.config.all()),
+                model_info=self.model_info)
             self.nodes.start(task_handler=self.worker.handle)
 
+    def _ollama_url(self) -> str:
+        model_cfg = self.config.all()["model"]
+        if model_cfg.get("backend") in ("auto", "ollama") and model_cfg.get("backend_url"):
+            return model_cfg["backend_url"]
+        return "http://127.0.0.1:11434"
+
+    def model_info(self, name: str) -> dict:
+        """Family/quantization of an installed model as its backend reports it."""
+        try:
+            model_cfg = self.config.all()["model"]
+            infos = self.model_manager.detect_cached(
+                model_cfg.get("backend", "auto"), model_cfg.get("backend_url", ""))
+        except Exception:
+            return {}
+        for info in infos:
+            for model in info.models or []:
+                if model.name == name:
+                    return {"family": model.family, "quantization": model.quantization,
+                            "size_bytes": model.size_bytes}
+        return {}
+
+    def output_dir(self, kind: str = "") -> "Path":
+        """Configured output directory (default ``<data>/output``), created on use.
+        Never inside the installed package (which may be read-only)."""
+        from pathlib import Path
+        configured = (self.config.get("results.export_dir")
+                      or self.config.get("output_dir"))
+        base = Path(configured).expanduser() if configured else self.dirs.root / "output"
+        path = base / kind if kind else base
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def backup_config(self, name: str) -> None:
+        import json
+        path = self.dirs.root / f"config.{name}.json"
+        path.write_text(json.dumps(self.config.all(), indent=2, ensure_ascii=False),
+                        encoding="utf-8")
+
+    def restore_config(self, name: str) -> bool:
+        import json
+        path = self.dirs.root / f"config.{name}.json"
+        if not path.exists():
+            return False
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data.pop("api", None)  # never restored from a file written by the UI flow
+        self.config.update(data)
+        return True
+
+    def on_config_changed(self) -> None:
+        """Apply configuration at runtime (no restart): discovery on/off,
+        re-advertise, rebuild the orchestrator with the current model."""
+        self.orchestrator = None
+        self.nodes.apply_config()
+
     def stop(self) -> None:
+        if self._stopped:
+            return
+        self._stopped = True
         self.nodes.stop()
         self.db.close()
+
+    close = stop  # the CLI and tests may use either name
 
     # -- one-shot helpers ------------------------------------------------------
     def system_report(self) -> dict:
@@ -106,11 +186,46 @@ class AppState:
         }
 
     def get_orchestrator(self):
+        """Built lazily and rebuilt after any configuration change, so it
+        always uses the current local model and backend."""
         from .engine.orchestrator import Orchestrator
+        from .engine.scheduler import LatencyStats
         if self.orchestrator is None:
-            model_name = self.config.all()["model"].get("model_name", "")
+            if self.latency is None:
+                self.latency = LatencyStats()
+            cfg = self.config.all()
+            try:
+                local_stream = self.backends.resolve(cfg)
+            except Exception:
+                local_stream = None  # bridges degrade to plain splices, recorded
             self.orchestrator = Orchestrator(
-                self.nodes, self.bus,
-                self.backends.resolve(self.config.all()),
-                self.config.all, local_model=model_name)
+                self.nodes, self.bus, local_stream, self.config.all,
+                local_model=cfg["model"].get("model_name", ""),
+                latency=self.latency, stats_sink=self._client_stats,
+                local_pool_factory=self._local_pool)
         return self.orchestrator
+
+    def _local_pool(self):
+        """The device's own multi-model pool, when enabled with ≥2 models."""
+        from .engine.directory import LocalPool
+        model_cfg = self.config.all()["model"]
+        models = [m for m in (model_cfg.get("local_models") or []) if m]
+        if not model_cfg.get("multi_model") or len(models) < 2 or self.worker is None:
+            return None
+        families = {m: (self.model_info(m) or {}).get("family") or m.split(":")[0]
+                    for m in models}
+        return LocalPool(self.identity.node_id, self.worker, models, families,
+                         parallel=int(model_cfg.get("local_parallel", 1) or 1))
+
+    def _auto_report(self, request_id: str) -> None:
+        from .reports import render_report
+        detail = self.config.get("results.report_detail") or "standard"
+        fmt = self.config.get("results.export_format") or "markdown"
+        ext = {"markdown": "md", "json": "json", "html": "html"}.get(fmt, "md")
+        content = render_report(self.db, request_id, fmt=fmt, detail=detail)
+        (self.output_dir("reports") / f"report-{request_id}.{ext}").write_text(
+            content, encoding="utf-8")
+
+    def _client_stats(self, **fields: int) -> None:
+        import datetime
+        self.db.add_stats(datetime.date.today().isoformat(), **fields)

@@ -80,20 +80,30 @@ class EventBus:
         return event
 
     def _dispatch_async(self, coro: Any, loop: asyncio.AbstractEventLoop | None) -> None:
-        """Run the coroutine on a live loop, whatever thread we are on."""
+        """Run the coroutine on the captured (UI) loop, whatever thread we are on.
+
+        Publishers on *another* running loop (the P2P loop) must not schedule
+        the WebSocket coroutine on their own loop: it would never reach the UI.
+        """
         try:
             current = asyncio.get_running_loop()
         except RuntimeError:
             current = None
         try:
-            if current is not None:
+            if loop is not None and not loop.is_closed():
+                if current is loop:
+                    asyncio.ensure_future(coro)
+                else:
+                    asyncio.run_coroutine_threadsafe(coro, loop)
+            elif current is not None:
                 asyncio.ensure_future(coro)
-            elif loop is not None and not loop.is_closed():
-                # Queues even if the loop is not running yet (it runs when the
-                # loop starts); call_soon_threadsafe is safe from any thread.
-                asyncio.run_coroutine_threadsafe(coro, loop)
+            else:
+                coro.close()  # no loop to deliver to (headless, no UI yet)
         except Exception:
-            pass
+            try:
+                coro.close()
+            except Exception:
+                pass
 
     def recent(self, n: int = 100) -> list[dict[str, Any]]:
         return list(self._history)[-n:]

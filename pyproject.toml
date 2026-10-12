@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "swarmbly-app"
-version = "0.1.0"
+version = "0.2.0"
 description = "Swarmbly App — integrated decentralized AI client and network dashboard for SwarmblyAI + SwarmblyLCE. Fragments the problem, not the model."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -55,7 +55,8 @@ LCE = "https://github.com/Sebastardito/SwarmblyLCE"
 include = ["swarmbly_app*"]
 
 [tool.setuptools.package-data]
-"swarmbly_app" = ["web/index.html", "web/css/*.css", "web/js/*.js", "web/i18n/*.json"]
+"swarmbly_app" = ["web/index.html", "web/css/*.css", "web/js/*.js",
+                   "web/js/vendor/*.js", "web/i18n/*.json", "web/img/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -110,19 +110,48 @@ def detect_gpu() -> Probe:
                 gpus.append({"name": "drm-card", "vram": "unknown"})
             source, confidence = "sysfs (vendor only)", "unknown"
     elif system == "Windows":
-        out = _run(["wmic", "path", "win32_VideoController",
-                    "get", "Name,AdapterRAM"])
+        # wmic was removed from Windows 11 24H2; PowerShell CIM works on 10/11.
+        out = _run(["powershell", "-NoProfile", "-Command",
+                    "Get-CimInstance Win32_VideoController | "
+                    "Select-Object -ExpandProperty Name"], timeout=10)
+        if out is None:
+            out = _run(["wmic", "path", "win32_VideoController", "get", "Name"])
+            out = "\n".join(out.splitlines()[1:]) if out else None
         if out:
-            for line in out.splitlines()[1:]:
+            for line in out.splitlines():
                 if line.strip():
+                    # AdapterRAM is a 32-bit field (wrong above 4 GB): not reported.
                     gpus.append({"name": line.strip(), "vram": "unknown"})
-            source, confidence = "wmic", "measured"
-    return Probe({"gpus": gpus}, source, confidence)
+            source, confidence = "powershell/wmic (names only)", "measured"
+        nvidia = _run(["nvidia-smi", "--query-gpu=name,memory.total",
+                       "--format=csv,noheader"])
+        if nvidia:
+            gpus = [{"name": p[0], "vram": p[1] if len(p) > 1 else "unknown"}
+                    for p in (l.split(",") for l in nvidia.splitlines()) if p]
+            source, confidence = "nvidia-smi", "measured"
+    return Probe({"gpus": gpus, "unified_memory": _apple_silicon()}, source, confidence)
+
+
+def _apple_silicon() -> bool:
+    return platform.system() == "Darwin" and platform.machine() in ("arm64", "aarch64")
+
+
+def detect_power() -> Probe:
+    """Battery / AC state (for the worker's 'only when plugged in' option)."""
+    try:
+        battery = psutil.sensors_battery()
+    except Exception:
+        battery = None
+    if battery is None:
+        return Probe({"has_battery": False, "plugged": None, "percent": None},
+                     "psutil (no battery reported)", "unknown")
+    return Probe({"has_battery": True, "plugged": bool(battery.power_plugged),
+                  "percent": round(float(battery.percent), 1)}, "psutil", "measured")
 
 
 def detect_python_and_deps() -> Probe:
     deps: dict[str, str] = {}
-    for name in ("numpy", "httpx", "fastapi", "cryptography", "zeroconf",
+    for name in ("numpy", "httpx", "fastapi", "uvicorn", "cryptography", "zeroconf",
                  "psutil", "swarmbly_v0", "swarmbly_lce"):
         try:
             module = __import__(name)
@@ -156,6 +185,7 @@ def detect_all(data_dir_hint: str | None = None) -> dict[str, Any]:
         "gpu": detect_gpu(),
         "python_deps": detect_python_and_deps(),
         "network": detect_network(),
+        "power": detect_power(),
     }
     for name, probe in probes.items():
         result[name] = {"value": probe.value, "source": probe.source,

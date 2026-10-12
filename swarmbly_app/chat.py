@@ -45,6 +45,7 @@ class ChatService:
         self.config = config_getter
         self.orchestrator = orchestrator_getter  # distributed engine (Phase 2)
         self._active: dict[str, ActiveRequest] = {}
+        self.report_sink: Callable[[str], None] | None = None  # set by AppState
         self._lock = threading.Lock()
 
     # -- conversations -------------------------------------------------------
@@ -85,6 +86,11 @@ class ChatService:
         model = model or conv["model"] or cfg["model"]["model_name"] or ""
 
         user_msg = self.db.add_message(conversation_id, "user", text)
+        if conv.get("title") in ("", "New conversation"):
+            first_line = " ".join(text.strip().split())
+            self.db.update_conversation(conversation_id,
+                                        title=(first_line[:56] + "…") if len(first_line) > 56
+                                        else first_line)
         assistant_msg = self.db.add_message(conversation_id, "assistant", "",
                                             meta={"mode": mode, "model": model,
                                                   "status": "running"})
@@ -124,27 +130,43 @@ class ChatService:
                 return self._fail(request, "no user message in context")
             user_text = context[-1]["content"]
 
-            # Distributed modes route through the swarm engine (Phase 2).
-            if mode in ("lan", "internet", "auto") and self.orchestrator is not None:
+            # Distributed modes route through the swarm engine.
+            local_reason = ""
+            routing_stages: list[dict[str, Any]] | None = None
+            routing_meta: dict[str, Any] = {}
+            multi_local = mode == "local" and bool(self.config()["model"].get("multi_model"))
+            if (mode in ("lan", "internet", "auto") or multi_local) \
+                    and self.orchestrator is not None:
                 if mode == "internet":
                     return self._fail(
                         request, "Internet swarms are Phase 3 (rendezvous not implemented)")
                 try:
-                    outcome = self.orchestrator().run(user_text, mode=mode)
+                    outcome = self.orchestrator().run(
+                        user_text, mode=mode, request_id=request.request_id,
+                        cancel=request.stop_event)
                 except Exception as exc:
                     return self._fail(request, f"swarm execution failed: {exc}")
-                if outcome.get("routed") == "distributed":
+                routed = outcome.get("routed")
+                if routed == "distributed":
                     self._finish_distributed(request, outcome["text"],
-                                             outcome["metadata"],
-                                             outcome["stages"])
+                                             outcome["metadata"], outcome["stages"])
                     return
-                if outcome.get("routed") == "error":
-                    return self._fail(request, outcome.get("reason", "swarm error"))
-                # routed == "local": privacy tier or the router refused to fragment.
+                if routed == "error":
+                    if outcome.get("status") == "stopped":
+                        return self._finish(request, None, status="stopped",
+                                            note="interrupted by user",
+                                            stages=outcome.get("stages"))
+                    return self._fail(request, outcome.get("reason", "swarm error"),
+                                      stages=outcome.get("stages"),
+                                      swarm=outcome.get("metadata"))
+                # routed == "local": privacy, router, admission or no workers.
+                local_reason = outcome.get("reason", "")
+                routing_stages = outcome.get("stages")
+                routing_meta = outcome.get("metadata") or {}
                 self.bus.publish("chat.notice", request_id=request.request_id,
                                  conversation_id=conv_id,
                                  message_id=request.message_id,
-                                 note=outcome.get("reason", ""))
+                                 note=local_reason)
 
             backend = self.registry.resolve(self.config())
             model = model or (backend.list_models() or [""])[0]
@@ -162,12 +184,19 @@ class ChatService:
                 temperature=float(self.config()["model"].get("temperature", 0.2)),
                 on_delta=on_delta,
                 interrupt=request.stop_event.is_set)
-            self._finish(request, result)
+            extra = {}
+            if local_reason:
+                extra = {"executed": "local", "local_reason": local_reason,
+                         "swarm": routing_meta}
+            self._finish(request, result, note=local_reason, stages=routing_stages,
+                         extra=extra)
         except Interrupted:
             self._finish(request, None, status="stopped",
                          note="interrupted by user")
         except (BackendError, IncompleteSettings, KeyError) as exc:
             self._fail(request, str(exc))
+        except Exception as exc:  # never leave a request hanging in "running"
+            self._fail(request, f"unexpected error: {exc}")
 
     def _finish_distributed(self, request: ActiveRequest, text: str,
                             metadata: dict[str, Any],
@@ -175,7 +204,8 @@ class ChatService:
         """Complete a distributed request: assembled text + SPEC §19 metadata."""
         meta: dict[str, Any] = {"status": "done", "note": "",
                                 "mode": request.mode, "model": request.model,
-                                "text": text, "swarm": metadata}
+                                "request_id": request.request_id,
+                                "executed": "distributed", "swarm": metadata}
         try:
             self.db.update_message(request.message_id, content=text,
                                    meta=meta, stages=stages)
@@ -185,15 +215,25 @@ class ChatService:
             pass
         with self._lock:
             self._active.pop(request.request_id, None)
+        if self.config().get("results", {}).get("auto_report") and self.report_sink:
+            try:
+                self.report_sink(request.request_id)
+            except Exception:
+                pass  # a report failure never affects the answer
         self.bus.publish("chat.done", request_id=request.request_id,
                          conversation_id=request.conversation_id,
                          message_id=request.message_id, status="done",
                          content=text, meta=meta)
 
     def _finish(self, request: ActiveRequest, result: GenerationResult | None,
-                status: str = "done", note: str = "") -> None:
+                status: str = "done", note: str = "",
+                stages: list[dict[str, Any]] | None = None,
+                extra: dict[str, Any] | None = None) -> None:
         meta: dict[str, Any] = {"status": status, "note": note,
-                                "mode": request.mode, "model": request.model}
+                                "mode": request.mode, "model": request.model,
+                                "request_id": request.request_id,
+                                "executed": "local"}
+        meta.update(extra or {})
         content = ""
         if result is not None:
             content = result.text
@@ -201,7 +241,8 @@ class ChatService:
         try:
             if result is not None:
                 self._record_stats(result)
-            self.db.update_message(request.message_id, content=content, meta=meta)
+            self.db.update_message(request.message_id, content=content, meta=meta,
+                                   **({"stages": stages} if stages else {}))
             self.db.finish_request(request.request_id, status, meta)
             self.db.touch_conversation(request.conversation_id)
         except Exception:  # database may be closing during shutdown
@@ -213,12 +254,18 @@ class ChatService:
                          message_id=request.message_id, status=status,
                          content=content, meta=meta)
 
-    def _fail(self, request: ActiveRequest, error: str) -> None:
-        meta = {"status": "failed", "error": error,
-                "mode": request.mode, "model": request.model}
+    def _fail(self, request: ActiveRequest, error: str,
+              stages: list[dict[str, Any]] | None = None,
+              swarm: dict[str, Any] | None = None) -> None:
+        meta: dict[str, Any] = {"status": "failed", "error": error,
+                                "mode": request.mode, "model": request.model,
+                                "request_id": request.request_id}
+        if swarm:
+            meta["swarm"] = swarm
         try:
             self.db.update_message(request.message_id,
-                                   content=f"[Error] {error}", meta=meta)
+                                   content=f"[Error] {error}", meta=meta,
+                                   **({"stages": stages} if stages else {}))
             self.db.finish_request(request.request_id, "failed", meta)
             self.db.touch_conversation(request.conversation_id)
         except Exception:  # database may be closing during shutdown
@@ -233,6 +280,7 @@ class ChatService:
     def _record_stats(self, result: GenerationResult) -> None:
         import datetime
         day = datetime.date.today().isoformat()
+        # Local (consumed) work only; served-to-others lives in served_* columns.
         self.db.add_stats(day,
                           tasks_requested=1,
                           tokens_out=result.completion_tokens or 0,

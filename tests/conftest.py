@@ -21,8 +21,11 @@ class FakeBackend:
 
     name = "fake"
 
-    def __init__(self, reply: str = "Hello from the fake backend."):
+    def __init__(self, reply: str = "Hello from the fake backend.",
+                 delay: float = 0.0, fail: bool = False):
         self.reply = reply
+        self.delay = delay
+        self.fail = fail
         self.calls: list[dict] = []
 
     def available(self) -> bool:
@@ -35,6 +38,12 @@ class FakeBackend:
                     temperature=0.2, on_delta=None, interrupt=None,
                     system=None, **kw):
         self.calls.append({"messages": messages, "model": model})
+        if self.delay:
+            import time as _t
+            _t.sleep(self.delay)
+        if self.fail:
+            from swarmbly_app.inference.base import BackendError
+            raise BackendError("simulated backend failure")
         if interrupt and interrupt():
             from swarmbly_app.inference.base import Interrupted
             raise Interrupted("interrupted")

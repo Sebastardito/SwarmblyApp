@@ -17,6 +17,9 @@ import httpx
 OLLAMA_DEFAULT_URL = "http://127.0.0.1:11434"
 
 
+EMBEDDING_HINTS = ("embed", "bert", "minilm", "bge", "e5-", "gte-")
+
+
 @dataclass
 class DetectedModel:
     name: str
@@ -25,6 +28,26 @@ class DetectedModel:
     quantization: str = ""
     backend: str = "ollama"
     source: str = "backend"
+    parameter_size: str = ""        # as reported, e.g. "3.2B"
+    kind: str = "chat"              # chat | embedding
+
+    @property
+    def params_b(self) -> float | None:
+        """Parameter count in billions, when the backend reports it."""
+        text = (self.parameter_size or "").strip().upper()
+        try:
+            if text.endswith("B"):
+                return float(text[:-1])
+            if text.endswith("M"):
+                return float(text[:-1]) / 1000.0
+        except ValueError:
+            return None
+        return None
+
+
+def classify_kind(name: str, family: str = "") -> str:
+    label = f"{name} {family}".lower()
+    return "embedding" if any(h in label for h in EMBEDDING_HINTS) else "chat"
 
 
 @dataclass
@@ -41,7 +64,7 @@ class BackendInfo:
             "url": self.url,
             "available": self.available,
             "error": self.error,
-            "models": [m.__dict__ for m in (self.models or [])],
+            "models": [dict(m.__dict__, params_b=m.params_b) for m in (self.models or [])],
         }
 
 
@@ -70,7 +93,9 @@ class ModelManager:
                         name=name, family=family,
                         size_bytes=item.get("size") or None,
                         quantization=quant, backend="ollama",
-                        source="ollama /api/tags"))
+                        source="ollama /api/tags",
+                        parameter_size=str(detail.get("parameter_size") or ""),
+                        kind=classify_kind(name, family)))
                 info.models = models
         except httpx.HTTPError as exc:
             info.error = str(exc)
@@ -93,7 +118,8 @@ class ModelManager:
                     name = item.get("id", "")
                     models.append(DetectedModel(
                         name=name, backend="openai_compat",
-                        source="openai-compatible /models"))
+                        source="openai-compatible /models",
+                        kind=classify_kind(name)))
                 info.models = models
         except httpx.HTTPError as exc:
             info.error = str(exc)
@@ -114,6 +140,10 @@ class ModelManager:
         if configured_backend == "auto" and configured_url:
             infos.append(self.probe_openai_compat(configured_url))
         return infos
+
+    def invalidate(self) -> None:
+        with self._lock:
+            self._cache.clear()
 
     def detect_cached(self, configured_backend: str = "auto",
                       configured_url: str = "", ttl: float = 15.0) -> list[BackendInfo]:

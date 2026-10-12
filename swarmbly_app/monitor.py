@@ -35,13 +35,16 @@ def swarm_health(swarm: dict[str, Any]) -> dict[str, Any]:
             "verified": len(verified),
             # announced ≠ reachable; only handshake-verified nodes count as usable
             "value": f"{len(verified)} verified / {len(discovered)} discovered",
-            "source": "handshake-verified peers (mDNS + Ed25519)",
+            "source": "Ed25519 handshake bound to TLS (identity proven, "
+                      "capacity not yet verified by a task)",
         },
         "model_diversity": {
             "families": sorted(families),
             "distinct_families": len(families),
             "value": f"{len(families)} model families",
             "source": "peer advertisements after authenticated handshake",
+            "caveat": "family diversity attenuates correlated errors; it does "
+                      "not remove them (SwarmblyAI L23)",
         },
         "capacity": {
             "announced_models": announced_models,
@@ -49,26 +52,38 @@ def swarm_health(swarm: dict[str, Any]) -> dict[str, Any]:
             "value": f"{verified_models} verified / {announced_models} announced models",
             "source": "verified by handshake only, not by task completion",
         },
+        "latency": _latency(peers),
         "stability": {
-            "value": "not yet measured (uptime of links arrives with Phase 2.1)",
+            "value": "not yet measured",
             "source": "no simulated values",
         },
     }
 
 
 def contribution(stats: list[dict[str, Any]]) -> dict[str, Any]:
-    """What this node has contributed (worker role) and consumed (client)."""
-    served = sum(s.get("tasks_served", 0) for s in stats)
-    gen_ms = sum(s.get("gen_ms", 0) for s in stats)
-    tokens_out = sum(s.get("tokens_out", 0) for s in stats)
-    bytes_in = sum(s.get("bytes_in", 0) for s in stats)
-    bytes_out = sum(s.get("bytes_out", 0) for s in stats)
-    requested = sum(s.get("tasks_requested", 0) for s in stats)
+    """What this node gave to others (worker role) — never mixed with what it
+    consumed locally. All counters are measured, from local SQLite."""
+    def total(key: str) -> int:
+        return sum(int(s.get(key, 0) or 0) for s in stats)
     return {
-        "tasks_served": served,
-        "processing_time_ms": gen_ms,
-        "tokens_generated": tokens_out,
-        "bytes_transferred": {"in": bytes_in, "out": bytes_out},
-        "tasks_requested": requested,
+        "tasks_served": total("tasks_served"),
+        "processing_time_ms": total("served_ms"),
+        "tokens_generated": total("served_tokens"),
+        "bytes_transferred": {"in": total("bytes_in"), "out": total("bytes_out")},
+        "consumed": {"local_requests": total("tasks_requested"),
+                     "local_generation_ms": total("gen_ms"),
+                     "distributed_requests": total("distributed_requests"),
+                     "tasks_dispatched": total("dispatched")},
+        "window_days": len(stats),
         "source": "local SQLite counters (measured)",
     }
+
+
+def _latency(peers: list[dict[str, Any]]) -> dict[str, Any]:
+    rtts = sorted(p["rtt_ms"] for p in peers
+                  if p.get("connected") and p.get("rtt_ms") is not None)
+    if not rtts:
+        return {"value": "not measured yet", "source": "ping/pong every 30 s"}
+    median = rtts[len(rtts) // 2]
+    return {"median_rtt_ms": median, "max_rtt_ms": rtts[-1],
+            "value": f"median RTT {median} ms", "source": "ping/pong (measured)"}

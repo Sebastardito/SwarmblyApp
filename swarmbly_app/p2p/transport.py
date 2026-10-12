@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import asyncio
 import datetime
-import ipaddress
+import hashlib
+import os
 import ssl
+import struct
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -55,10 +57,29 @@ def generate_cert(cert_path: Path, key_path: Path) -> None:
     )
     cert_path.parent.mkdir(parents=True, exist_ok=True)
     cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
-    key_path.write_bytes(key.private_bytes(
-        serialization.Encoding.PEM,
-        serialization.PrivateFormat.TraditionalOpenSSL,
-        serialization.NoEncryption()))
+    # The TLS private key gets the same 0600 treatment as the Ed25519 key.
+    fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption()))
+
+
+def cert_fingerprint(cert_path: Path) -> str:
+    """SHA-256 over the DER certificate, hex. Signed into the handshake."""
+    cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
+    return hashlib.sha256(cert.public_bytes(serialization.Encoding.DER)).hexdigest()
+
+
+def peer_fingerprint(writer: asyncio.StreamWriter) -> str:
+    """Fingerprint of the certificate the remote endpoint actually presented."""
+    try:
+        ssl_object = writer.get_extra_info("ssl_object")
+        der = ssl_object.getpeercert(binary_form=True) if ssl_object else None
+    except Exception:
+        der = None
+    return hashlib.sha256(der).hexdigest() if der else ""
 
 
 def server_ssl_context(cert_path: Path, key_path: Path) -> ssl.SSLContext:
@@ -69,8 +90,9 @@ def server_ssl_context(cert_path: Path, key_path: Path) -> ssl.SSLContext:
 
 
 def client_ssl_context() -> ssl.SSLContext:
-    """Clients accept any certificate: authenticity comes from the Ed25519
-    handshake signatures, not from a CA (P2P nodes have no CA)."""
+    """No CA in P2P: the certificate is not validated by TLS. Instead its
+    fingerprint is bound to the peer's Ed25519 identity in the handshake
+    (see handshake.py), so a substituted certificate is rejected."""
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     context.minimum_version = ssl.TLSVersion.TLSv1_3
     context.check_hostname = False
@@ -91,17 +113,23 @@ class PeerSession:
     initiator: bool = False
     connected_at: float = 0.0
     last_seen: float = 0.0
+    write_lock: asyncio.Lock | None = None
 
     def close(self) -> None:
         try:
             self.writer.close()
         except Exception:
             pass
+        try:  # abort the transport so pending reads end immediately
+            transport = self.writer.transport
+            if transport is not None:
+                transport.abort()
+        except Exception:
+            pass
 
 
 async def read_frame(reader: asyncio.StreamReader) -> dict[str, Any]:
     header = await reader.readexactly(4)
-    import struct
     (length,) = struct.unpack(">I", header)
     if length > 4 * 1024 * 1024:
         raise WireError(f"frame too large: {length}")
@@ -169,11 +197,13 @@ class TLSServer:
 
 async def dial(host: str, port: int, hello_message: dict[str, Any],
                timeout: float = HELLO_TIMEOUT_S
-               ) -> tuple[PeerSession, dict[str, Any]]:
-    """Initiate a connection: TLS → HELLO → HELLO_ACK → return session+ack."""
+               ) -> tuple[PeerSession, dict[str, Any], str]:
+    """Initiate: TLS → HELLO → HELLO_ACK. Returns session, ack and the
+    fingerprint of the certificate the responder presented."""
     ctx = client_ssl_context()
     reader, writer = await asyncio.wait_for(
         asyncio.open_connection(host, port, ssl=ctx), timeout=timeout)
+    observed = peer_fingerprint(writer)
     session = PeerSession(
         node_id="", address=host, port=port, advertisement={},
         reader=reader, writer=writer, initiator=True)
@@ -184,4 +214,4 @@ async def dial(host: str, port: int, hello_message: dict[str, Any],
         raise WireError("expected hello_ack")
     session.node_id = str(ack_message.get("node_id", ""))
     session.advertisement = ack_message.get("advertisement") or {}
-    return session, ack_message
+    return session, ack_message, observed

@@ -135,10 +135,12 @@ class LCEAdapter:
                             "size_bytes": size})
         return out
 
-    def worker_guard(self):
-        """WorkerGuard (invariant I2) for the worker role; None without LCE."""
+    def worker_guard(self, declared_model: str):
+        """WorkerGuard (invariant I2) bound to the base model this node
+        advertises; it refuses to run if the serving backend differs or carries
+        a personal adapter. None only if swarmbly_lce is missing."""
         try:
             from swarmbly_lce.worker import WorkerGuard
-            return WorkerGuard(declared_model="base")
+            return WorkerGuard(declared_model=declared_model)
         except Exception:
             return None

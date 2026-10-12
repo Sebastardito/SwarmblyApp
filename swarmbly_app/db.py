@@ -66,6 +66,18 @@ CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, create
 """
 
 
+# Additive migrations (columns added after v0.1.0). Each is idempotent.
+_MIGRATIONS = [
+    # Served-to-others vs. consumed-locally are separate counters (Swarm
+    # Contribution must never mix the two).
+    ("stats_daily", "served_ms", "INTEGER NOT NULL DEFAULT 0"),
+    ("stats_daily", "served_tokens", "INTEGER NOT NULL DEFAULT 0"),
+    ("stats_daily", "dispatched", "INTEGER NOT NULL DEFAULT 0"),
+    ("stats_daily", "dispatch_failed", "INTEGER NOT NULL DEFAULT 0"),
+    ("stats_daily", "distributed_requests", "INTEGER NOT NULL DEFAULT 0"),
+]
+
+
 class Database:
     def __init__(self, path: str | Path):
         self._path = Path(path)
@@ -76,6 +88,11 @@ class Database:
         self._conn.execute("PRAGMA foreign_keys=ON")
         with self._lock:
             self._conn.executescript(_SCHEMA)
+            for table, column, decl in _MIGRATIONS:
+                cols = {r[1] for r in self._conn.execute(f"PRAGMA table_info({table})")}
+                if column not in cols:
+                    self._conn.execute(
+                        f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
             self._conn.commit()
 
     def close(self) -> None:

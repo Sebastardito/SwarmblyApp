@@ -1,9 +1,17 @@
 """Worker role (product spec §7.4): voluntarily serve micro-tasks.
 
 Every gate is enforced in code, not in the UI: worker disabled → refuse;
-LAN/internet scopes; task kind and token budget; concurrency limit; idle-only
-mode; deadline. Execution is wrapped in LCE ``WorkerGuard`` (invariant I2:
-serve the base model, never a personal adapter, never retain task content).
+LAN/internet scopes; lane/tier; task kind and token budget; concurrency
+limit; idle-only mode; deadline. Execution is wrapped in LCE ``WorkerGuard``
+(invariant I2: serve the base model, never a personal adapter, never retain
+task content).
+
+``deadline_ms`` is read as a **duration** from receipt (as in the SPEC §8
+example), so nodes with unsynchronised clocks interoperate; generation is cut
+when it expires. ``constraints.model_family`` (Swarmbly App extension, ignored
+by implementations that do not know it, SPEC §3) lets an orchestrator ask a
+multi-model worker for a specific family; the result's ``profile`` always
+reports the model actually used (SPEC §10).
 """
 
 from __future__ import annotations
@@ -11,174 +19,261 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 from ..config import Config
 from ..db import Database
 from ..events import EventBus
 from ..identity import IdentityManager
-from ..inference.base import StreamBackend
+from ..inference.base import Interrupted, StreamBackend
 from ..lce_adapter import LCEAdapter
-from .messages import error, result
+from .messages import canonical_bytes, error, result
 
 ALLOWED_KINDS = ("extract", "classify", "generate", "summarize",
                  "transform", "judge")
+MAX_DEADLINE_MS = 10 * 60 * 1000
 
 
 class PromptBackend:
     """Adapts a StreamBackend to the ServingBackend protocol used by the LCE
     WorkerGuard: exposes ``model`` and ``generate(prompt, **kw)``."""
 
-    def __init__(self, stream: StreamBackend, model: str):
+    def __init__(self, stream: StreamBackend, model: str,
+                 interrupt: Callable[[], bool] | None = None):
         self._stream = stream
         self.model = model
         self.adapter = None  # invariant I2: no personal adapter on workers
+        self._interrupt = interrupt
+        self.last = None
 
     def generate(self, prompt: str, **kw: Any) -> str:
         out = self._stream.stream_chat(
             [{"role": "user", "content": prompt}], model=self.model,
             max_tokens=kw.get("max_tokens", 800),
-            temperature=kw.get("temperature", 0.2))
+            temperature=kw.get("temperature", 0.2),
+            interrupt=self._interrupt)
+        self.last = out
         return out.text
+
+
+def model_family(name: str) -> str:
+    """Family of an Ollama-style tag: ``llama3.2:3b`` → ``llama3.2``."""
+    return (name or "").split(":")[0].split("/")[-1] or "unknown"
 
 
 class WorkerService:
     def __init__(self, config: Config, db: Database, bus: EventBus,
                  identity: IdentityManager, lce: LCEAdapter,
-                 backend_factory):
+                 backend_factory, model_info: Callable[[str], dict] | None = None):
         self.config = config
         self.db = db
         self.bus = bus
         self.identity = identity
         self.lce = lce
         self.backend_factory = backend_factory  # () -> StreamBackend
+        self.model_info = model_info or (lambda name: {})
         self._tasks_now = 0
         self._lock = threading.Lock()
 
     # -- policy -----------------------------------------------------------------
+    def shared_models(self) -> list[str]:
+        """Models this node offers to third parties (never a personal adapter)."""
+        cfg = self.config.all()
+        shared = [m for m in (cfg["swarm"].get("worker_models") or []) if m]
+        if not shared and cfg["model"].get("model_name"):
+            shared = [cfg["model"]["model_name"]]
+        return shared
+
     def policy(self) -> dict[str, Any]:
         cfg = self.config.all()["swarm"]
+        enabled = bool(cfg.get("worker_enabled")) and bool(self.shared_models())
         return {
-            "enabled": bool(cfg.get("worker_enabled")),
+            "enabled": enabled,
             "allow_lan": bool(cfg.get("worker_allow_lan", True)),
             "allow_internet": bool(cfg.get("worker_allow_internet", False)),
-            "max_concurrent": int(cfg.get("worker_max_concurrent", 1)),
+            "max_concurrent": max(1, int(cfg.get("worker_max_concurrent", 1))),
             "max_tokens_per_task": int(cfg.get("worker_max_tokens_per_task", 800)),
-            "kinds": list(ALLOWED_KINDS),
+            "max_task_seconds": int(cfg.get("worker_max_task_seconds", 120)),
+            # Advertised kinds are empty while the worker role is off, so
+            # peers never offer us a task we would refuse.
+            "kinds": list(ALLOWED_KINDS) if enabled else [],
             "idle_only": bool(cfg.get("worker_only_idle", False)),
+            "only_plugged": bool(cfg.get("worker_only_plugged", False)),
+            "paused": bool(cfg.get("worker_paused", False)),
         }
-
-    def _refuse(self, code: str, detail: str,
-                attempt_id: str | None) -> dict[str, Any]:
-        return error(code, detail, attempt_id)
 
     # -- handler -------------------------------------------------------------------
     async def handle(self, node_id: str, message: dict[str, Any]) -> dict[str, Any]:
         """Process one SPEC §8 packet. Runs on the P2P event loop."""
+        received = time.monotonic()
         policy = self.policy()
         attempt_id = message.get("attempt_id")
         if not policy["enabled"]:
-            return self._refuse("E_POLICY", "worker role disabled", attempt_id)
+            return error("E_POLICY", "worker role disabled", attempt_id)
+        if policy["paused"]:
+            return error("E_POLICY", "worker paused by its owner", attempt_id)
         if not policy["allow_lan"]:  # v0.1 peers are LAN peers by construction
-            return self._refuse("E_POLICY", "LAN requests not accepted", attempt_id)
+            return error("E_POLICY", "LAN requests not accepted", attempt_id)
         lane = str(message.get("lane", "PUBLIC"))
         if lane == "SENSITIVE":
-            return self._refuse("E_LANE_VIOLATION",
-                                "sensitive packet offered to an open node", attempt_id)
+            return error("E_LANE_VIOLATION",
+                         "sensitive packet offered to an open node", attempt_id)
         tier = str(message.get("tier", "GLOBAL"))
         if tier == "TRUSTED":
-            return self._refuse("E_MTLS_REQUIRED",
-                                "trusted-swarm links require mutual TLS (not yet supported)",
-                                attempt_id)
+            return error("E_MTLS_REQUIRED",
+                         "trusted-swarm links require mutual TLS (not yet supported)",
+                         attempt_id)
+        if tier == "LOCAL":
+            return error("E_TIER_VIOLATION", "LOCAL requests are never serialized",
+                         attempt_id)
         task = message.get("task") or {}
         kind = str(task.get("kind", "generate"))
         if kind not in policy["kinds"]:
-            return self._refuse("E_KIND_UNSUPPORTED", f"kind {kind!r} not served",
-                                attempt_id)
+            return error("E_KIND_UNSUPPORTED", f"kind {kind!r} not served",
+                         attempt_id)
         expects = task.get("expects") or {}
-        max_tokens = int(expects.get("max_tokens", 0) or 0)
+        try:
+            max_tokens = int(expects.get("max_tokens", 0) or 0)
+            deadline_ms = int(message.get("deadline_ms", 60000) or 60000)
+        except (TypeError, ValueError):
+            return error("E_SCHEMA", "max_tokens/deadline_ms must be integers",
+                         attempt_id)
         if max_tokens > policy["max_tokens_per_task"]:
-            return self._refuse("E_BUDGET_EXCEEDED",
-                                f"max_tokens {max_tokens} above node policy "
-                                f"{policy['max_tokens_per_task']}", attempt_id)
-        deadline_ms = int(message.get("deadline_ms", 60000))
-        if time.time() * 1000 > deadline_ms:
-            return self._refuse("E_DEADLINE", "deadline already passed", attempt_id)
-        if policy["idle_only"] and not self._machine_idle():
-            return self._refuse("E_POLICY", "worker participates only when idle",
-                                attempt_id)
+            return error("E_BUDGET_EXCEEDED",
+                         f"max_tokens {max_tokens} above node policy "
+                         f"{policy['max_tokens_per_task']}", attempt_id)
+        if deadline_ms <= 0 or deadline_ms > MAX_DEADLINE_MS:
+            return error("E_SCHEMA", "deadline_ms must be a duration in "
+                         f"(0, {MAX_DEADLINE_MS}]", attempt_id)
+        budget_s = min(deadline_ms / 1000.0, float(policy["max_task_seconds"]))
+        if policy["only_plugged"] and self._on_battery():
+            return error("E_POLICY", "worker serves only on AC power", attempt_id)
+        if policy["idle_only"]:
+            idle = await asyncio.get_running_loop().run_in_executor(
+                None, self._machine_idle)
+            if not idle:
+                return error("E_POLICY", "worker participates only when idle",
+                             attempt_id)
         with self._lock:
             if self._tasks_now >= int(policy["max_concurrent"]):
-                return self._refuse("E_POLICY", "worker at concurrency limit",
-                                    attempt_id)
+                return error("E_POLICY", "worker at concurrency limit", attempt_id)
             self._tasks_now += 1
         try:
-            reply = await asyncio.get_running_loop().run_in_executor(
-                None, self._execute, message)
-            return reply
+            hard_deadline = received + budget_s
+            return await asyncio.get_running_loop().run_in_executor(
+                None, self._execute, message, hard_deadline,
+                int((time.monotonic() - received) * 1000))
         finally:
             with self._lock:
                 self._tasks_now -= 1
 
-    def _machine_idle(self) -> bool:
+    @staticmethod
+    def _machine_idle() -> bool:
+        """CPU-based heuristic (blocking 0.5 s, run in an executor)."""
         try:
             import psutil
-            return psutil.cpu_percent(interval=0.3) < 50.0
+            return psutil.cpu_percent(interval=0.5) < 50.0
         except Exception:
-            return True  # cannot detect → report honestly in stats, allow
+            return True
+
+    @staticmethod
+    def _on_battery() -> bool:
+        try:
+            import psutil
+            battery = psutil.sensors_battery()
+        except Exception:
+            return False
+        return battery is not None and not battery.power_plugged
+
+    def _pick_model(self, message: dict[str, Any],
+                    models: list[str] | None = None) -> str:
+        shared = models if models is not None else self.shared_models()
+        wanted = ((message.get("constraints") or {}).get("model_family") or "")
+        if wanted:
+            for name in shared:
+                fam = (self.model_info(name) or {}).get("family") or model_family(name)
+                if wanted in (fam, model_family(name), name):
+                    return name
+        return shared[0] if shared else "base"
 
     # -- execution (blocking; runs in an executor thread) -----------------------------
-    def _execute(self, message: dict[str, Any]) -> dict[str, Any]:
+    def _execute(self, message: dict[str, Any], hard_deadline: float,
+                 queue_ms: int, models: list[str] | None = None,
+                 serving_others: bool = True) -> dict[str, Any]:
+        """Execute one packet. ``models`` overrides the shared set (local pool);
+        contribution counters only count work served to *other* nodes."""
         started = time.monotonic()
+        attempt_id = str(message.get("attempt_id", ""))
         prompt = render_packet_prompt(message)
-        model_name = self.config.all()["model"].get("model_name", "") or "base"
+        model_name = self._pick_model(message, models)
+        task = message.get("task") or {}
+        constraints = message.get("constraints") or {}
+        max_tokens = int((task.get("expects") or {}).get("max_tokens") or 400)
+        temperature = float(constraints.get("temperature", 0.2) or 0.2)
         try:
             stream = self.backend_factory()
         except Exception as exc:
-            return self._refuse("E_POLICY", f"backend unavailable: {exc}",
-                                message.get("attempt_id"))
-        backend = PromptBackend(stream, model_name)
+            return error("E_EXECUTION", f"backend unavailable: {exc}", attempt_id)
+        backend = PromptBackend(stream, model_name,
+                                interrupt=lambda: time.monotonic() > hard_deadline)
         try:
-            guard = self.lce.worker_guard()
+            guard = self.lce.worker_guard(model_name)
             if guard is not None:
-                guard.declared_model = model_name
                 guard.forbid_sink(self._forbidden_sink)
-                text = guard.execute(backend, prompt)
+                text = guard.execute(backend, prompt, max_tokens=max_tokens,
+                                     temperature=temperature)
             else:
-                text = backend.generate(prompt)
+                text = backend.generate(prompt, max_tokens=max_tokens,
+                                        temperature=temperature)
+        except Interrupted:
+            return error("E_DEADLINE", "deadline reached during generation",
+                         attempt_id)
         except Exception as exc:
-            return self._refuse("E_POLICY", f"execution failed: {exc}",
-                                message.get("attempt_id"))
+            return error("E_EXECUTION", f"execution failed: {str(exc)[:160]}",
+                         attempt_id)
         gen_ms = int((time.monotonic() - started) * 1000)
-        ident = self.identity.load_or_create()
+        info = self.model_info(model_name) or {}
+        tokens_out = (backend.last.completion_tokens
+                      if backend.last is not None else None)
         profile = {
-            "model_family": model_name.split(":")[0],
+            "model_family": info.get("family") or model_family(model_name),
             "model_version": model_name,
-            "quantization": "",
-            "prompt_template_id": "default",
-            "sampling_params": {"temperature": 0.2},
-            "seed": 0,
+            "quantization": info.get("quantization", ""),
+            "prompt_template_id": "swarmbly-app/packet-v1",
+            "sampling_params": {"temperature": temperature,
+                                "max_tokens": max_tokens},
+            "seed": None,
         }
-        telemetry = {"gen_ms": gen_ms, "queue_ms": 0, "tokens_out": 0,
-                     "energy_j": None}
-        reply = result(str(message.get("attempt_id", "")), text, profile,
-                       telemetry, b"", commitment=None)
-        # Sign the canonical serialization (SPEC §4/§10).
-        from .messages import canonical_bytes
+        telemetry = {"gen_ms": gen_ms, "queue_ms": queue_ms,
+                     "tokens_out": tokens_out, "energy_j": None}
+        reply = result(attempt_id, text, profile, telemetry, b"", commitment=None)
         reply["sig"] = _b64(self.identity.sign(
             canonical_bytes({k: v for k, v in reply.items() if k != "sig"})))
-        self._record_stats(gen_ms, len(prompt), len(text))
-        self.bus.publish("worker.task_served", attempt_id=message.get("attempt_id"),
-                         model=model_name, gen_ms=gen_ms)
+        if serving_others:
+            self._record_stats(gen_ms, tokens_out or 0,
+                               len(canonical_bytes(message)), len(canonical_bytes(reply)))
+            # Only operational aggregates leave this method (I2 / LCE §9.6).
+            self.bus.publish("worker.task_served", model=model_name, gen_ms=gen_ms,
+                             tokens_out=tokens_out)
         return reply
+
+    def execute_local(self, message: dict[str, Any], models: list[str],
+                      timeout_s: float) -> dict[str, Any]:
+        """Run a packet on this device's own models (local multi-model pool).
+        Same packet, rendering, guard and signature as for a remote worker;
+        nothing leaves the device and nothing counts as served to others."""
+        return self._execute(message, time.monotonic() + timeout_s, 0,
+                             models=models, serving_others=False)
 
     def _forbidden_sink(self, text: str) -> None:
         raise RuntimeError("task content must never reach LCE stores (I2)")
 
-    def _record_stats(self, gen_ms: int, bytes_in: int, bytes_out: int) -> None:
+    def _record_stats(self, gen_ms: int, tokens_out: int, bytes_in: int,
+                      bytes_out: int) -> None:
         import datetime
         self.db.add_stats(datetime.date.today().isoformat(),
-                          tasks_served=1, gen_ms=gen_ms,
+                          tasks_served=1, served_ms=gen_ms,
+                          served_tokens=tokens_out,
                           bytes_in=bytes_in, bytes_out=bytes_out)
 
     def status(self) -> dict[str, Any]:
@@ -187,8 +282,9 @@ class WorkerService:
         import datetime
         today = datetime.date.today().isoformat()
         stats = self.db.get_stats(days=1)
-        served = sum(s["tasks_served"] for s in stats if s["day"] >= today)
+        served = sum(s.get("tasks_served", 0) for s in stats if s["day"] >= today)
         return {"policy": self.policy(), "busy_now": busy,
+                "shared_models": self.shared_models(),
                 "tasks_served_today": served}
 
 
@@ -196,34 +292,38 @@ def render_packet_prompt(message: dict[str, Any]) -> str:
     """Render a SPEC §8 packet into the worker's model prompt.
 
     The contract header is mandatory content (§9.1); predecessor summaries
-    and the task block follow. No ``session_id`` ever appears here.
+    and the task block follow. Fragments are data, never instructions: the
+    worker's prompt only ever contains what the packet carries. No
+    ``session_id`` ever appears here (the wire packet has none).
     """
     parts: list[str] = []
     contract = message.get("contract") or {}
     if contract:
         lines = ["[GLOBAL CONTRACT]"]
         for key in ("objective", "audience", "register", "format", "target_len"):
-            if contract.get(key) is not None:
+            if contract.get(key) not in (None, "", 0):
                 lines.append(f"{key}: {contract[key]}")
-        if contract.get("lexicon"):
-            lines.append("prefer: " + ", ".join(contract["lexicon"].get("prefer", [])))
-            lines.append("forbid: " + ", ".join(contract["lexicon"].get("forbid", [])))
+        lexicon = contract.get("lexicon") or {}
+        if lexicon.get("prefer"):
+            lines.append("prefer: " + ", ".join(map(str, lexicon["prefer"])))
+        if lexicon.get("forbid"):
+            lines.append("avoid: " + ", ".join(map(str, lexicon["forbid"])))
         if contract.get("entities"):
-            lines.append("entities: " + ", ".join(
-                f"{e.get('name')} ({e.get('canonical', e.get('name'))})"
-                for e in contract["entities"]))
+            lines.append("use these exact names: " + ", ".join(
+                str(e.get("canonical") or e.get("name")) for e in contract["entities"]
+                if isinstance(e, dict)))
         if contract.get("style_seed"):
-            lines.append(f"style_seed: {contract['style_seed']}")
+            lines.append(f"style: {contract['style_seed']}")
         parts.append("\n".join(lines))
     for pred in message.get("predecessors") or []:
-        if pred.get("summary"):
-            parts.append(f"[CONTEXT] {pred['summary']}")
+        if isinstance(pred, dict) and pred.get("summary"):
+            parts.append(f"[CONTEXT {str(pred.get('task_id', ''))[:8]}] {pred['summary']}")
     task = message.get("task") or {}
-    instruction = task.get("instruction") or ""
+    instruction = str(task.get("instruction") or "")
     expects = task.get("expects") or {}
     if expects.get("format"):
         instruction += f"\nRespond in {expects['format']} format."
-    parts.append(f"[TASK t{message.get('attempt_id', '')[-6:]}] {instruction}")
+    parts.append(f"[TASK]\n{instruction}")
     return "\n\n".join(parts)
 
 

@@ -8,7 +8,11 @@ from swarmbly_app.api import create_app
 
 
 def make_client(app_state):
-    return TestClient(create_app(app_state))
+    """A client that behaves like the real UI: loopback host + session token."""
+    app = create_app(app_state)
+    client = TestClient(app, base_url="http://127.0.0.1:8765")
+    client.headers["X-Swarmbly-Token"] = app.state.guard.token
+    return client
 
 
 class TestApi:
@@ -105,5 +109,44 @@ class TestLceAdapter:
         assert policy["sources"] == {}
 
     def test_worker_guard(self, app_state):
-        guard = app_state.lce.worker_guard()
+        guard = app_state.lce.worker_guard("llama3.2:3b")
         assert guard is not None  # swarmbly_lce is installed as a dependency
+
+        class Backend:
+            def __init__(self, model, adapter=None):
+                self.model, self.adapter = model, adapter
+
+            def generate(self, prompt, **kw):
+                return "ok"
+
+        assert guard.execute(Backend("llama3.2:3b"), "p") == "ok"
+        import pytest
+        from swarmbly_lce.errors import InvariantViolation
+        with pytest.raises(InvariantViolation):      # I2: not the declared model
+            guard.execute(Backend("qwen2.5:3b"), "p")
+        with pytest.raises(InvariantViolation):      # I2: personal adapter loaded
+            guard.execute(Backend("llama3.2:3b", adapter="my-lora"), "p")
+
+
+class TestReports:
+    def test_report_formats_and_minimal_excludes_content(self, app_state, fake_chat):
+        chat, fake = fake_chat
+        fake.reply = "The secret answer about my garden."
+        conv = chat.create_conversation(title="r")
+        chat.send(conv["id"], "Tell me about my garden plans", run_async=False)
+        request_id = app_state.db.list_requests(conv["id"])[0]["id"] \
+            if hasattr(app_state.db, "list_requests") else None
+        if request_id is None:
+            row = app_state.db._conn.execute(
+                "SELECT id FROM requests WHERE conversation_id=?", (conv["id"],)).fetchone()
+            request_id = row[0]
+        client = make_client(app_state)
+        for fmt in ("markdown", "json", "html"):
+            r = client.get(f"/api/requests/{request_id}/report?format={fmt}")
+            assert r.status_code == 200, r.text
+            assert "secret answer" in r.text  # standard detail includes the response
+        r = client.get(f"/api/requests/{request_id}/report?format=json&detail=minimal")
+        assert "secret answer" not in r.text and "garden plans" not in r.text
+        r = client.get(f"/api/requests/{request_id}/report?format=markdown&save=true")
+        saved = r.headers["x-saved-to"]
+        assert saved.startswith(str(app_state.dirs.root))

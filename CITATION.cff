@@ -7,8 +7,8 @@ authors:
     given-names: "Sebastián A."
     email: sebas_saeu@hotmail.com
     orcid: "https://orcid.org/0000-0003-1497-356X"
-version: 0.1.0
-date-released: "2026-10-11"
+version: 0.2.0
+date-released: "2026-10-12"
 license: AGPL-3.0-or-later
 keywords:
   - decentralized-ai

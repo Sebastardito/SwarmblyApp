@@ -36,7 +36,12 @@ DEFAULTS: dict[str, Any] = {
         "model_name": "",             # empty -> auto pick
         "max_tokens": 1024,
         "temperature": 0.2,
-        "embedder": "hash",           # hash | server | sentence_transformers
+        "embedder": "hash",           # hash (lexical) | server (Ollama /embeddings)
+        "embed_model": "nomic-embed-text",
+        "max_tokens_per_fragment": 400,
+        "multi_model": False,         # several local models (local consensus/workers)
+        "local_models": [],           # models used for local multi-model processing
+        "local_parallel": 1,          # local models generating at the same time
     },
     "swarm": {
         "mode": "local",              # local | lan | internet | auto
@@ -49,14 +54,20 @@ DEFAULTS: dict[str, Any] = {
         "worker_max_concurrent": 1,
         "worker_only_idle": False,
         "worker_max_tokens_per_task": 800,
-        "max_concurrency": 2,         # simultaneous tasks admitted
-        "k_min": 1,                   # redundancy floor (explicit)
-        "k_max": 2,                   # redundancy ceiling (explicit)
-        "n_fragments_max": 4,
-        "rho_target": 1.5,
+        "worker_models": [],          # models offered to others (empty: the chat model)
+        "worker_paused": False,
+        "worker_only_plugged": False, # serve others only on AC power (laptops)
+        "worker_max_task_seconds": 120,
+        "max_concurrency": 4,         # simultaneous micro-tasks in flight (client)
+        "k_min": 1,                   # replicas dispatched up front (k_epist)
+        "k_max": 2,                   # ceiling incl. hedges and retries (k_avail)
+        "n_fragments_max": 4,         # upper bound on N; N itself is derived
+        "rho_target": None,           # v0.3: ρ is derived and reported, not set
         "tau_sem": 0.5,               # placeholder seam threshold (flagged in reports)
         "timeout_ms": 60000,
+        "hedge_fallback_ms": 30000,   # hedge timer until p95 data exists
         "max_retries": 1,
+        "discovery_ttl_s": 300,
         "p2p_host": "0.0.0.0",        # P2P listener (independent of the admin API)
         "p2p_port": 9765,
         "rendezvous": [],             # rendezvous endpoints (Phase 3)
@@ -74,7 +85,14 @@ DEFAULTS: dict[str, Any] = {
         "learning_enabled": False,    # I8: nothing trains without permission
         "capsules_enabled": False,
     },
+    "permissions": {
+        "lan_discovery": None,        # None = not asked yet; True/False = answer
+        "internet": None,
+        "model_downloads": None,
+        "asked_at": None,
+    },
     "results": {
+        "auto_report": False,         # generate a report for each distributed request
         "export_dir": None,
         "export_format": "markdown",  # markdown | json | html
         "keep_stats": True,
@@ -161,3 +179,98 @@ class Config:
             elif section in DEFAULTS and isinstance(DEFAULTS[section], dict):
                 self._data[section] = copy.deepcopy(DEFAULTS[section])
         self.save()
+
+
+# ---------------------------------------------------------------------------
+# Validation of changes coming from the UI / API
+# ---------------------------------------------------------------------------
+
+class ConfigError(ValueError):
+    pass
+
+
+_ENUMS = {
+    "language": {"en", "es"},
+    "theme": {"dark", "light"},
+    "profile": {"automatic", "custom", "advanced"},
+    "model.backend": {"auto", "ollama", "openai_compat"},
+    "model.embedder": {"hash", "server"},
+    "swarm.mode": {"local", "lan", "internet", "auto"},
+    "privacy.tier": {"GLOBAL", "TRUSTED", "LOCAL"},
+    "privacy.manual_tier": {None, "GLOBAL", "TRUSTED", "LOCAL"},
+    "lce.level": {"C0", "C1", "C2", "C3", "C4"},
+    "results.export_format": {"markdown", "json", "html"},
+    "results.report_detail": {"minimal", "standard", "full"},
+}
+_RANGES = {
+    "model.max_tokens": (16, 32768),
+    "model.max_tokens_per_fragment": (16, 8192),
+    "model.temperature": (0.0, 2.0),
+    "model.local_parallel": (1, 4),
+    "swarm.k_min": (1, 8),
+    "swarm.k_max": (1, 8),
+    "swarm.n_fragments_max": (2, 16),
+    "swarm.max_concurrency": (1, 64),
+    "swarm.timeout_ms": (1000, 600000),
+    "swarm.hedge_fallback_ms": (200, 600000),
+    "swarm.max_retries": (0, 8),
+    "swarm.worker_max_concurrent": (1, 16),
+    "swarm.worker_max_tokens_per_task": (16, 8192),
+    "swarm.worker_max_task_seconds": (5, 3600),
+    "swarm.p2p_port": (1024, 65535),
+    "swarm.tau_sem": (0.0, 1.0),
+    "swarm.discovery_ttl_s": (30, 86400),
+    "log_retention_days": (1, 3650),
+}
+# Never changeable from the browser: binding the admin API elsewhere is a
+# security decision made on the command line, by the machine's owner.
+_LOCKED_PREFIXES = ("api.",)
+
+
+def _flatten(prefix: str, value: Any, out: dict[str, Any]) -> None:
+    if isinstance(value, dict) and value and prefix.split(".")[0] in DEFAULTS \
+            and not _is_leaf_dict(prefix):
+        for key, sub in value.items():
+            _flatten(f"{prefix}.{key}" if prefix else key, sub, out)
+    else:
+        out[prefix] = value
+
+
+def _is_leaf_dict(key: str) -> bool:
+    node: Any = DEFAULTS
+    for part in key.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return False
+        node = node[part]
+    return not isinstance(node, dict)
+
+
+def validate_changes(changes: dict[str, Any]) -> dict[str, Any]:
+    """Return flattened, validated changes or raise ConfigError."""
+    flat: dict[str, Any] = {}
+    for key, value in changes.items():
+        _flatten(key, value, flat)
+    for key, value in flat.items():
+        if key.startswith(_LOCKED_PREFIXES):
+            raise ConfigError(f"{key} can only be changed from the command line")
+        node: Any = DEFAULTS
+        parts = key.split(".")
+        for part in parts[:-1]:
+            if not isinstance(node, dict) or part not in node:
+                raise ConfigError(f"unknown setting {key!r}")
+            node = node[part]
+        if not isinstance(node, dict) or parts[-1] not in node:
+            raise ConfigError(f"unknown setting {key!r}")
+        default = node[parts[-1]]
+        if key in _ENUMS and value not in _ENUMS[key]:
+            raise ConfigError(f"{key} must be one of {sorted(map(str, _ENUMS[key]))}")
+        if key in _RANGES:
+            lo, hi = _RANGES[key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) \
+                    or not lo <= value <= hi:
+                raise ConfigError(f"{key} must be a number in [{lo}, {hi}]")
+        elif isinstance(default, bool) and not isinstance(value, bool):
+            raise ConfigError(f"{key} must be true or false")
+        elif isinstance(default, list) and not isinstance(value, list):
+            raise ConfigError(f"{key} must be a list")
+    return flat

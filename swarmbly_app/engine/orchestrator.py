@@ -1,29 +1,38 @@
 """Distributed request orchestrator (composes the SwarmblyAI pipeline).
 
-Reuses swarmbly_v0 for everything algorithmic (privacy classification, router,
-contract Γ, DAG plan, ρ-aware packing, micro consensus via multiple alignment,
-macro assembly select-then-splice, coherence metrics) and dispatches each
-micro-task as a real SPEC §8 packet to authenticated LAN workers. Every stage
-is emitted as an event with an honest status: pending → running → completed |
-skipped | not_available | failed. Stages that do not apply are skipped, never
-marked completed.
+Algorithms come from ``swarmbly_v0`` (tier classification, router, contract,
+plan, typed carries, consensus by multiple alignment, select-then-splice
+assembly, entity-grid coherence) and the LCE (lane classifier). This module
+adds only what upstream does not contain: plan admission (``admission.py``),
+wire packets built from fields (``packets.py``) and asynchronous dispatch
+(``scheduler.py``).
+
+Every stage reports an honest status: ``pending → running → completed |
+partial | skipped | failed``. Stages that do not apply are *skipped*, never
+completed; verification is *partial* (signatures checked, Layer-1
+commitments not available) and never presented as complete.
 """
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+import uuid
 from dataclasses import dataclass, field
-from typing import Any
-
-import numpy as np
+from typing import Any, Callable
 
 from ..events import EventBus
 from ..inference.base import StreamBackend
+from ..p2p.messages import new_session_id
 from ..p2p.node import NodeManager
-from .dispatch import DistributedBackend, NoWorkers
+from . import admission as admission_mod
+from .directory import Directory
+from .packets import (PacketPlan, build_message, contains_identifier, gamma_for,
+                      measure_rho, minimal_objective)
+from .scheduler import LatencyStats, Scheduler, TaskFailed, run_levels
 
-# SPEC v0.2 normative stages for observability (product spec §6.3)
 PIPELINE_STAGES = [
     "REQUEST RECEIVED",
     "PRIVACY CLASSIFICATION",
@@ -40,498 +49,645 @@ PIPELINE_STAGES = [
     "COHERENCE REPORT",
     "FINAL RESPONSE",
 ]
+DISTRIBUTED_ONLY = PIPELINE_STAGES[3:13]
+TIER_ORDER = {"GLOBAL": 0, "TRUSTED": 1, "LOCAL": 2}
 
-# Documented placeholders, on the same footing as SwarmblyAI's own defaults.
-ALPHA_HIGH_PLACEHOLDER = 0.80
-ALPHA_LOW_PLACEHOLDER = 0.55
+
+class Cancelled(RuntimeError):
+    pass
 
 
 @dataclass
 class Stage:
     name: str
-    status: str = "pending"          # pending|running|completed|skipped|not_available|failed
+    status: str = "pending"
     detail: dict[str, Any] = field(default_factory=dict)
-    started_ms: float | None = None
-    elapsed_ms: float | None = None
+    started: float | None = None
+    elapsed_ms: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {"stage": self.name, "status": self.status}
         out.update(self.detail)
         if self.elapsed_ms is not None:
-            out["elapsed_ms"] = int(self.elapsed_ms)
+            out["elapsed_ms"] = self.elapsed_ms
         return out
 
 
 class StageTracker:
-    def __init__(self, bus: EventBus):
+    def __init__(self, bus: EventBus, request_id: str):
         self.bus = bus
-        self.stages: dict[str, Stage] = {name: Stage(name)
-                                         for name in PIPELINE_STAGES}
-        self._running: dict[str, float] = {}
+        self.request_id = request_id
+        self.stages = {name: Stage(name) for name in PIPELINE_STAGES}
+
+    def _emit(self, stage: Stage) -> None:
+        self.bus.publish("request.stage", request_id=self.request_id,
+                         **stage.to_dict())
 
     def start(self, name: str, **detail: Any) -> None:
-        stage = self.stages.get(name)
-        if stage is None:
-            return
-        stage.status = "running"
-        stage.started_ms = time.time() * 1000
-        stage.detail = detail
-        self.bus.publish("request.stage", stage=name, status="running", **detail)
+        stage = self.stages[name]
+        stage.status, stage.started = "running", time.monotonic()
+        stage.detail.update(detail)
+        self._emit(stage)
+
+    def _end(self, name: str, status: str, detail: dict[str, Any]) -> None:
+        stage = self.stages[name]
+        if stage.started is not None:
+            stage.elapsed_ms = int((time.monotonic() - stage.started) * 1000)
+        stage.status = status
+        stage.detail.update(detail)
+        self._emit(stage)
 
     def complete(self, name: str, **detail: Any) -> None:
-        stage = self.stages.get(name)
-        if stage is None:
-            return
-        if stage.started_ms is not None:
-            stage.elapsed_ms = time.time() * 1000 - stage.started_ms
-        stage.status = "completed"
-        stage.detail.update(detail)
-        self.bus.publish("request.stage", stage=name, status="completed",
-                         elapsed_ms=stage.elapsed_ms, **stage.detail)
+        self._end(name, "completed", detail)
+
+    def partial(self, name: str, **detail: Any) -> None:
+        self._end(name, "partial", detail)
 
     def skip(self, name: str, reason: str) -> None:
-        stage = self.stages.get(name)
-        if stage is None:
-            return
-        stage.status = "skipped"
-        stage.detail = {"reason": reason}
-        self.bus.publish("request.stage", stage=name, status="skipped",
-                         reason=reason)
-
-    def unavailable(self, name: str, reason: str) -> None:
-        stage = self.stages.get(name)
-        if stage is None:
-            return
-        stage.status = "not_available"
-        stage.detail = {"reason": reason}
-        self.bus.publish("request.stage", stage=name, status="not_available",
-                         reason=reason)
+        self._end(name, "skipped", {"reason": reason})
 
     def fail(self, name: str, detail: str) -> None:
-        stage = self.stages.get(name)
-        if stage is None:
-            return
-        stage.status = "failed"
-        stage.detail = {"detail": detail}
-        self.bus.publish("request.stage", stage=name, status="failed",
-                         detail=detail)
+        self._end(name, "failed", {"detail": detail})
+
+    def skip_rest(self, names: list[str], reason: str) -> None:
+        for name in names:
+            if self.stages[name].status == "pending":
+                self.skip(name, reason)
 
     def list(self) -> list[dict[str, Any]]:
         return [s.to_dict() for s in self.stages.values()]
 
+    def timings(self) -> dict[str, int]:
+        return {s.name: s.elapsed_ms for s in self.stages.values()
+                if s.elapsed_ms is not None}
+
 
 class LocalPromptBackend:
-    """Adapts a streaming local backend to ``generate(prompt)`` for bridges
-    and judging — those always run on the local device (SPEC §14.3)."""
+    """``generate(prompt)`` on the local model, for transition bridges (SPEC
+    §14.3: bridges are generated by the local model). A failing local model
+    never aborts assembly: the seam is spliced and the failure recorded."""
 
-    def __init__(self, stream: StreamBackend, model: str):
+    def __init__(self, stream: StreamBackend | None, model: str):
         self._stream = stream
         self.model = model
+        self.failures = 0
+        self.calls = 0
 
     def generate(self, prompt: str, **kw: Any) -> str:
-        out = self._stream.stream_chat([{"role": "user", "content": prompt}],
-                                       model=self.model, **kw)
-        return out.text
+        self.calls += 1
+        if self._stream is None or not self.model:
+            self.failures += 1
+            return ""
+        try:
+            return self._stream.stream_chat(
+                [{"role": "user", "content": prompt}], model=self.model,
+                max_tokens=int(kw.get("max_tokens", 120)),
+                temperature=float(kw.get("temperature", 0.2))).text
+        except Exception:
+            self.failures += 1
+            return ""
 
 
 class Orchestrator:
     def __init__(self, nodes: NodeManager, bus: EventBus,
-                 local_stream: StreamBackend, config_getter,
-                 local_model: str = ""):
+                 local_stream: StreamBackend | None,
+                 config_getter: Callable[[], dict[str, Any]],
+                 local_model: str = "", latency: LatencyStats | None = None,
+                 stats_sink: Callable[..., None] | None = None,
+                 local_pool_factory: Callable[[], Any] | None = None):
         self.nodes = nodes
         self.bus = bus
         self.local_stream = local_stream
         self.config = config_getter
         self.local_model = local_model
+        self.latency = latency or LatencyStats()
+        self.stats_sink = stats_sink
+        self.local_pool_factory = local_pool_factory
 
     # -- public entry -----------------------------------------------------------
-    def run(self, text: str, *, mode: str = "lan",
-            k: int | None = None, rho_target: float | None = None,
-            n_fragments: int | None = None) -> dict[str, Any]:
-        """Execute one request through the distributed pipeline.
-
-        Returns ``{"routed": "distributed", "text", "metadata", "stages"}`` or
-        ``{"routed": "local", "reason", "metadata", "stages"}`` when privacy
-        or the router forbid fragmentation. Callers run the local path for the
-        latter.
-        """
+    def run(self, text: str, *, mode: str = "lan", request_id: str | None = None,
+            cancel: threading.Event | None = None) -> dict[str, Any]:
+        """Execute one request. Returns ``routed`` = distributed | local | error."""
+        request_id = request_id or uuid.uuid4().hex[:16]
         cfg = self.config()
-        swarm_cfg = cfg["swarm"]
-        privacy_cfg = cfg["privacy"]
-        k = k if k is not None else int(swarm_cfg.get("k_min", 1))
-        rho_target = rho_target if rho_target is not None else float(
-            swarm_cfg.get("rho_target", 1.5))
-        n_fragments = n_fragments if n_fragments is not None else int(
-            swarm_cfg.get("n_fragments_max", 4))
-        tracker = StageTracker(self.bus)
+        swarm_cfg, privacy_cfg = cfg["swarm"], cfg["privacy"]
+        tracker = StageTracker(self.bus, request_id)
         started = time.time()
-        metadata: dict[str, Any] = {}
+
+        def local(reason: str, **meta: Any) -> dict[str, Any]:
+            tracker.skip_rest(DISTRIBUTED_ONLY, reason)
+            tracker.skip("FINAL RESPONSE", "answered by the local model")
+            return {"routed": "local", "reason": reason,
+                    "metadata": {"routing_decision": reason, **meta},
+                    "stages": tracker.list()}
+
+        tracker.start("REQUEST RECEIVED")
+        tracker.complete("REQUEST RECEIVED", mode=mode)
+
+        # 1. Privacy: tier (SPEC §15c) and lane (SPEC §15), both on-device.
+        tracker.start("PRIVACY CLASSIFICATION")
+        decision = self._classify(text, privacy_cfg)
+        lane = self._lane(text)
+        routing_meta = {"tier": decision["tier"], "swarm_id": None,
+                        "classifier": decision["source"], "mtls": False,
+                        "lane": lane}
+        tracker.complete("PRIVACY CLASSIFICATION", tier=decision["tier"],
+                         lane=lane, source=decision["source"],
+                         rationale=decision["rationale"],
+                         note="automatic triage raises a tier; it never "
+                              "certifies the absence of sensitive content")
+        # Where may this request go? Remote peers only for GLOBAL + PUBLIC in a
+        # swarm mode; the local multi-model pool at any tier (nothing leaves).
+        egress_block = ""
+        if decision["tier"] == "LOCAL":
+            egress_block = "privacy tier LOCAL: nothing leaves the device"
+        elif decision["tier"] == "TRUSTED":
+            egress_block = ("tier TRUSTED requires mutual TLS (not implemented): "
+                            "nothing is sent")
+        elif lane == "SENSITIVE":
+            egress_block = "content classified SENSITIVE: local execution only (no TEE workers)"
+        elif lane == "SANITISABLE":
+            egress_block = ("content classified SANITISABLE: pseudonymisation is not "
+                            "implemented yet, so it stays local")
+        elif mode not in ("lan", "auto"):
+            egress_block = f"mode {mode}: no network dispatch"
+        pool = self.local_pool_factory() if self.local_pool_factory else None
+        directory = Directory(self.nodes, pool, remote_allowed=not egress_block)
+        routing_meta["remote_allowed"] = not egress_block
+        routing_meta["local_pool"] = pool.models if pool else []
+        if egress_block and pool is None:
+            tracker.skip("ROUTING / DECOMPOSABILITY", egress_block)
+            return local(egress_block, routing=routing_meta)
+
+        # 2. Router + plan admission.
+        tracker.start("ROUTING / DECOMPOSABILITY")
+        routing = self._route(text)
+        workers = directory.available_workers()
+        adm = admission_mod.admit(text, n_max=int(swarm_cfg.get("n_fragments_max", 4)),
+                                  n_workers=directory.capacity())
+        k_min = max(1, int(swarm_cfg.get("k_min", 1)))
+        whole = False
+        if not (routing.decomposable and adm.admitted) and pool is not None and k_min >= 2:
+            # Not fragmentable, but several local families can each answer the
+            # whole request and be aligned (SPEC §14b: replicas of one task;
+            # nothing is split). Local pool only: the full request never travels.
+            whole = True
+            directory = Directory(None, pool, remote_allowed=False)
+        tracker.complete("ROUTING / DECOMPOSABILITY",
+                         decomposable=bool(routing.decomposable),
+                         score=round(float(routing.score), 4),
+                         threshold=round(float(routing.threshold), 4),
+                         threshold_source="swarmbly_v0 default (uncalibrated)",
+                         admission=adm.to_dict(),
+                         path=("whole-request replicas on local models" if whole
+                               else "fragments"),
+                         remote_allowed=not egress_block,
+                         local_pool=len(pool.models) if pool else 0)
+        router_meta = {"decomposable": bool(routing.decomposable),
+                       "score": round(float(routing.score), 4),
+                       "admission": adm.to_dict(), "whole_request_replicas": whole}
+        if not whole:
+            if not routing.decomposable:
+                return local("the router judged the request not decomposable",
+                             routing=routing_meta, router=router_meta)
+            if not adm.admitted:
+                return local(f"not fragmented: {adm.reason}", routing=routing_meta,
+                             router=router_meta)
+        if not workers:
+            return local(egress_block or "no connected worker is available",
+                         routing=routing_meta, router=router_meta)
 
         try:
-            tracker.complete("REQUEST RECEIVED", mode=mode)
-            tracker.start("PRIVACY CLASSIFICATION")
-            decision = self._classify(text, privacy_cfg)
-            tier = decision.tier
-            tracker.complete("PRIVACY CLASSIFICATION", tier=tier,
-                             source=decision.source,
-                             rationale=decision.rationale)
-            if tier == "LOCAL":
-                tracker.skip("ROUTING / DECOMPOSABILITY", "tier LOCAL")
-                for later in ("TASK PLANNING", "PACKET GENERATION",
-                              "NODE SELECTION", "DISPATCHING",
-                              "MODEL EXECUTION", "RESULT RECEPTION",
-                              "CONSENSUS / ALIGNMENT", "ASSEMBLY",
-                              "COHERENCE REPORT", "FINAL RESPONSE"):
-                    tracker.skip(later, "LOCAL tier: nothing leaves the device")
-                return {"routed": "local",
-                        "reason": "privacy tier LOCAL forbids network dispatch",
-                        "metadata": {"tier": "LOCAL"},
-                        "stages": tracker.list()}
-            if tier == "TRUSTED":
-                tracker.fail("PRIVACY CLASSIFICATION",
-                             "TRUSTED tier requires mutual TLS (not yet supported)")
-                return {"routed": "error",
-                        "reason": "TRUSTED tier requires mTLS (Phase 2.1)",
-                        "metadata": {}, "stages": tracker.list()}
-
-            tracker.start("ROUTING / DECOMPOSABILITY")
-            routing = self._route(text)
-            tracker.complete("ROUTING / DECOMPOSABILITY",
-                             decomposable=routing.decomposable,
-                             score=round(float(routing.score), 4),
-                             threshold=round(float(routing.threshold), 4),
-                             rationale=routing.rationale)
-            if not routing.decomposable:
-                for later in ("TASK PLANNING", "PACKET GENERATION",
-                              "NODE SELECTION", "DISPATCHING",
-                              "MODEL EXECUTION", "RESULT RECEPTION",
-                              "CONSENSUS / ALIGNMENT", "ASSEMBLY",
-                              "COHERENCE REPORT", "FINAL RESPONSE"):
-                    tracker.skip(later, "router refused to fragment")
-                return {"routed": "local",
-                        "reason": "router refused to fragment (request not decomposable)",
-                        "metadata": {"router": routing.__dict__},
-                        "stages": tracker.list()}
-
-            tracker.start("TASK PLANNING")
-            contract, plan = self._plan(text, n_fragments)
-            if plan.sequential or len(plan.tasks) < 2:
-                tracker.fail("TASK PLANNING",
-                             "plan is a chain or too small to fragment")
-                return {"routed": "error",
-                        "reason": "plan not parallelizable (SPEC §7)",
-                        "metadata": {}, "stages": tracker.list()}
-            tracker.complete("TASK PLANNING", n_tasks=len(plan.tasks))
-
-            tracker.start("PACKET GENERATION")
-            packing = self._pack(contract, plan, rho_target)
-            tracker.complete("PACKET GENERATION",
-                             rho_target=packing.rho_target,
-                             rho_achieved=round(float(packing.rho_achieved), 4),
-                             rho_floor=round(float(packing.rho_floor), 4),
-                             rho_reachable=bool(packing.reachable))
-            metadata.update({
-                "rho_target": packing.rho_target,
-                "rho_achieved": round(float(packing.rho_achieved), 4),
-                "rho_floor": round(float(packing.rho_floor), 4),
-                "rho_reachable": bool(packing.reachable),
-            })
-
-            tracker.start("NODE SELECTION")
-            workers = self.nodes.available_workers()
-            if not workers:
-                tracker.fail("NODE SELECTION", "no connected workers")
-                raise NoWorkers("no connected workers available")
-            families = sorted({m.get("family", "unknown")
-                               for w in workers
-                               for m in w.advertisement.get("models", [])})
-            tracker.complete("NODE SELECTION", workers=len(workers),
-                             families=families)
-
-            backend = DistributedBackend(
-                self.nodes, self.bus, self._gamma_dict(contract),
-                lane="PUBLIC", tier=tier,
-                deadline_ms=int(swarm_cfg.get("timeout_ms", 60000)),
-                timeout_s=float(swarm_cfg.get("timeout_ms", 60000)) / 1000 + 10,
-                max_tokens=int(cfg["model"].get("max_tokens", 1024)))
-
-            tracker.start("DISPATCHING")
-            tracker.start("MODEL EXECUTION")
-            tracker.start("RESULT RECEPTION")
-            texts, consensus_block = self._dispatch_and_resolve(
-                backend, packing, plan, contract, k, tracker)
-            tracker.complete("DISPATCHING")
-            tracker.complete("MODEL EXECUTION")
-            tracker.complete("RESULT RECEPTION")
-
-            # VERIFICATION: Layer-1 commitment has no normative construction.
-            tracker.unavailable(
-                "VERIFICATION",
-                "Layer-1 commitment (lsh-activation-v1) has no normative "
-                "construction (SPEC §21.1); result signatures were verified")
-            if k > 1:
-                tracker.complete("CONSENSUS / ALIGNMENT", **consensus_block)
-            else:
-                tracker.skip("CONSENSUS / ALIGNMENT", "k=1 requested")
-                metadata["consensus"] = None
-                metadata["consensus_waived_reason"] = "k=1_requested"
-
-            tracker.start("ASSEMBLY")
-            assembly_text, seams = self._assemble(contract, plan, texts)
-            tracker.complete("ASSEMBLY", n_seams=len(seams))
-
-            tracker.start("COHERENCE REPORT")
-            coherence = self._coherence(assembly_text, seams)
-            tracker.complete("COHERENCE REPORT", **coherence)
-
-            metadata.update({
-                "n_tasks": len(plan.tasks),
-                "tau_sem": self._tau_sem(),
-                "tau_source": self._tau_source(),
-                "seams": seams,
-                "coherence": coherence,
-                "verification": {"commitments_checked": 0, "failures": 0,
-                                 "commitment_scheme": None,
-                                 "signatures_checked": len(texts)},
-                "consensus": consensus_block if k > 1 else None,
-                "consensus_waived_reason": None if k > 1 else "k=1_requested",
-                "routing": {"tier": tier, "classifier": decision.source},
-                "nodes": [{"node_id": w.node_id[:12], "role": "worker"}
-                          for w in workers],
-                "total_ms": int((time.time() - started) * 1000),
-            })
-            tracker.complete("FINAL RESPONSE", total_ms=metadata["total_ms"])
-            return {"routed": "distributed", "text": assembly_text,
-                    "metadata": metadata, "stages": tracker.list()}
+            return self._distributed(text, adm, decision, lane, routing_meta,
+                                     router_meta, directory, tracker, request_id,
+                                     started, cancel, mode, whole)
+        except Cancelled:
+            tracker.fail("FINAL RESPONSE", "interrupted by the user")
+            return {"routed": "error", "reason": "interrupted by the user",
+                    "metadata": {"routing": routing_meta}, "stages": tracker.list(),
+                    "status": "stopped"}
         except Exception as exc:
-            tracker.fail("FINAL RESPONSE", str(exc)[:200])
-            raise
+            for name in PIPELINE_STAGES:
+                if tracker.stages[name].status == "running":
+                    tracker.fail(name, str(exc)[:200])
+            tracker.skip_rest(PIPELINE_STAGES, "not reached")
+            if tracker.stages["FINAL RESPONSE"].status != "failed":
+                tracker.fail("FINAL RESPONSE", str(exc)[:200])
+            return {"routed": "error", "reason": f"distributed execution failed: {exc}",
+                    "metadata": {"routing": routing_meta, "router": router_meta},
+                    "stages": tracker.list()}
 
-    # -- pipeline pieces (reuse) ---------------------------------------------------
+    # -- the distributed path --------------------------------------------------------
+    def _distributed(self, text, adm, decision, lane, routing_meta, router_meta,
+                     directory, tracker, request_id, started, cancel, mode, whole=False):
+        from swarmbly_v0 import planner
+        from swarmbly_v0.schema import Plan, Task
+        cfg = self.config()
+        swarm_cfg = cfg["swarm"]
+        workers = directory.available_workers()
+
+        tracker.start("TASK PLANNING")
+        if whole:
+            contract = planner.global_contract(text, backend=None)
+            plan = Plan(prompt=text, tasks=[Task(task_id="t0", instruction=text)])
+        else:
+            contract = planner.global_contract(adm.prompt, backend=None)
+            plan = planner.plan(adm.prompt, backend=None, n_tasks=adm.n_tasks,
+                                contract=contract, force_sequential=False)
+            if plan.sequential or len(plan.tasks) < 2:
+                raise RuntimeError("the plan is a chain or a single task (SPEC §7)")
+        levels = _topological_levels(plan)
+        consumed = {t.task_id: (t.depends_on if planner.consumes_predecessor(t.instruction)
+                                else ()) for t in plan.tasks}
+        tracker.complete("TASK PLANNING", n_tasks=len(plan.tasks),
+                         n_levels=len(levels),
+                         path="whole request (replicas)" if whole else adm.path,
+                         dispatch_waves=len(_topological_levels_from(consumed)),
+                         edges_statement=sum(1 for t in plan.tasks
+                                             if t.depends_on and not consumed[t.task_id]))
+
+        tracker.start("PACKET GENERATION")
+        session_id = new_session_id()
+        positions: dict[str, tuple[int, int]] = {}
+        for level_no, level in enumerate(levels):
+            for index, task_id in enumerate(sorted(level, key=_order)):
+                positions[task_id] = (level_no, index)
+        max_tokens = int(cfg["model"].get("max_tokens_per_fragment",
+                                          min(400, int(cfg["model"].get("max_tokens", 1024)))))
+        objective = minimal_objective(adm, contract)
+        plans: dict[str, PacketPlan] = {}
+        gammas: dict[str, dict[str, Any]] = {}
+        for task in plan.tasks:
+            level_no, index = positions[task.task_id]
+            plans[task.task_id] = PacketPlan(
+                task_id=task.task_id, wire_task_id="", level=level_no, index=index,
+                instruction=task.instruction, consumes=bool(consumed[task.task_id]),
+                depends_on=tuple(task.depends_on), lane=lane)
+            gammas[task.task_id] = gamma_for(contract, objective, task.instruction,
+                                             max_tokens)
+        timeout_s = float(swarm_cfg.get("timeout_ms", 60000)) / 1000.0
+        temperature = float(cfg["model"].get("temperature", 0.2))
+
+        def make_builder(task_id: str, carries: dict[str, str]):
+            def build(attempt: int, family: str | None) -> dict[str, Any]:
+                return build_message(
+                    plans[task_id], gammas[task_id], session_id, attempt, carries,
+                    positions, max_tokens=self._clamp(max_tokens),
+                    deadline_ms=int(timeout_s * 1000), tier=decision["tier"],
+                    temperature=temperature, model_family=family)
+            return build
+
+        preview = [make_builder(t.task_id, {})(0, None) for t in plan.tasks]
+        rho = measure_rho(preview, text)
+        session_hex = contract.session_id
+        for message in preview:
+            leaks = contains_identifier(message, session_hex,
+                                        text if directory.remote_allowed else "")
+            if leaks:  # a refusal, not a warning
+                raise RuntimeError("privacy self-check blocked dispatch: packet "
+                                   f"would carry {', '.join(leaks)}")
+        tracker.complete("PACKET GENERATION", n_packets=len(preview),
+                         rho_achieved=rho["rho_achieved"], rho_floor=rho["rho_floor"],
+                         gamma_chars_max=rho["gamma_chars_max"],
+                         privacy_check=("passed: no session id, no complete request"
+                                        if directory.remote_allowed else
+                                        "local pool only: nothing leaves the device"))
+
+        tracker.start("NODE SELECTION")
+        k_min = max(1, int(swarm_cfg.get("k_min", 1)))
+        k_max = max(k_min, int(swarm_cfg.get("k_max", k_min + 1)))
+        families = sorted({str(m.get("family") or "unknown") for w in workers
+                           for m in (w.advertisement.get("models") or [])})
+        tracker.complete("NODE SELECTION", workers=len(workers), families=families,
+                         local_pool=any(getattr(w, "source", "") == "local" for w in workers),
+                         k_min=k_min, k_max=k_max,
+                         policy="maximise model-family diversity per task, "
+                                "then distinct machines, then lowest load")
+
+        scheduler = Scheduler(
+            directory, self.bus, request_id, k_min=k_min, k_max=k_max,
+            max_concurrency=int(swarm_cfg.get("max_concurrency", 4)),
+            timeout_s=timeout_s,
+            hedge_fallback_s=float(swarm_cfg.get("hedge_fallback_ms",
+                                                 int(timeout_s * 500))) / 1000.0,
+            latency=self.latency)
+        carries: dict[str, str] = {}
+        resolved: dict[str, dict[str, Any]] = {}
+        embedder, embedder_name = self._embedder()
+
+        async def run_one(task_id: str):
+            build = make_builder(task_id, carries)
+            replicas = await scheduler.run_task(task_id, build, max_tokens)
+            loop = asyncio.get_running_loop()
+            outcome = await loop.run_in_executor(
+                None, self._resolve, task_id, replicas, contract, embedder)
+            resolved[task_id] = outcome
+            carries[task_id] = planner.summarize_fragment(outcome["text"], typed=True)
+            return outcome
+
+        order = [t.task_id for t in sorted(plan.tasks, key=lambda t: positions[t.task_id])]
+        for name in ("DISPATCHING", "MODEL EXECUTION", "RESULT RECEPTION"):
+            tracker.start(name)
+        future = asyncio.run_coroutine_threadsafe(
+            run_levels(scheduler, order, consumed, run_one), self._loop())
+        deadline = time.monotonic() + timeout_s * max(2, k_max) * len(levels) + 30
+        while True:
+            try:
+                future.result(timeout=0.2)
+                break
+            except concurrent.futures.TimeoutError:
+                pass
+            if cancel is not None and cancel.is_set():
+                future.cancel()
+                raise Cancelled()
+            if time.monotonic() > deadline:
+                future.cancel()
+                raise RuntimeError("distributed execution exceeded its global deadline")
+
+        attempts = [a.to_dict() for a in scheduler.attempts]
+        accepted = [a for a in scheduler.attempts if a.status == "accepted"]
+        failed = [a for a in scheduler.attempts if a.status == "failed"]
+        tracker.complete("DISPATCHING", attempts=len(attempts), hedges=scheduler.hedges,
+                         retries=scheduler.retries,
+                         hedge_timer=",".join(sorted(scheduler.hedge_timer_source)))
+        tracker.complete("MODEL EXECUTION",
+                         gen_ms_total=sum(int((a.get("telemetry") or {}).get("gen_ms") or 0)
+                                          for r in resolved.values()
+                                          for a in r["replica_meta"]),
+                         tokens_out=sum(int(a.tokens_out or 0) for a in accepted))
+        tracker.complete("RESULT RECEPTION", accepted=len(accepted), failed=len(failed),
+                         timeouts=scheduler.timeouts)
+
+        signature_failures = sum(1 for a in scheduler.attempts if a.code == "E_VERIFY_FAILED")
+        schema_failures = sum(1 for a in scheduler.attempts if a.code == "E_SCHEMA")
+        tracker.start("VERIFICATION")
+        tracker.partial("VERIFICATION", signatures_checked=len(accepted) + signature_failures,
+                        signature_failures=signature_failures,
+                        schema_failures=schema_failures,
+                        layer1_commitment="not available (SPEC §21.1: no normative "
+                                          "construction) — not simulated",
+                        sampled_audit="not available")
+
+        multi = {tid: r for tid, r in resolved.items() if r["consensus"] is not None}
+        if multi:
+            tracker.start("CONSENSUS / ALIGNMENT")
+            tracker.complete("CONSENSUS / ALIGNMENT", tasks=len(multi),
+                             mean_agreement=round(sum(r["consensus"]["mean_agreement"]
+                                                      for r in multi.values()) / len(multi), 4),
+                             thresholds="placeholder α (uncalibrated)",
+                             caveat="agreement is convergence, not correctness; "
+                                    "cross-family errors are correlated (L23)")
+            waived = None
+        else:
+            waived = ("k_min=1_requested" if k_min == 1
+                      else "insufficient_distinct_node_family_pairs")
+            tracker.skip("CONSENSUS / ALIGNMENT", waived)
+
+        tracker.start("ASSEMBLY")
+        bridge_backend = LocalPromptBackend(self.local_stream, self.local_model)
+        texts, seams, seam_policy = self._assemble(plan, contract, resolved,
+                                                   bridge_backend, embedder, adm.path)
+        tracker.complete("ASSEMBLY", n_seams=len(seams), seam_policy=seam_policy,
+                         bridges=sum(1 for s in seams if s["path"] == "bridge"),
+                         bridge_failures=bridge_backend.failures,
+                         embedder=embedder_name)
+
+        tracker.start("COHERENCE REPORT")
+        coherence = self._coherence(texts, seams, embedder_name)
+        tracker.complete("COHERENCE REPORT", **{k: v for k, v in coherence.items()
+                                                if k != "errors"})
+
+        participants = {}
+        for a in accepted:
+            is_local = getattr(directory.peers.get(a.node_id), "source", "") == "local"
+            participants.setdefault((a.node_id, a.model), {
+                "node": a.node_id[:12], "family": a.family, "version": a.model,
+                "role": "local model" if is_local else "worker", "tasks": 0})
+            participants[(a.node_id, a.model)]["tasks"] += 1
+        p_observed = (len(failed) / len(attempts)) if attempts else 0.0
+        c = (len(attempts) / len(plan.tasks)) if plan.tasks else 0.0
+        total_ms = int((time.time() - started) * 1000)
+        consensus_meta = None
+        if multi:
+            consensus_meta = {
+                "k_min": k_min, "k_max": k_max,
+                "families": sorted({f for r in multi.values()
+                                    for f in r["consensus"]["families"]}),
+                "mean_agreement": round(sum(r["consensus"]["mean_agreement"]
+                                            for r in multi.values()) / len(multi), 4),
+                "per_task": {tid: r["consensus"] for tid, r in multi.items()},
+                "alpha_high": multi[next(iter(multi))]["consensus"]["alpha_high"],
+                "alpha_low": multi[next(iter(multi))]["consensus"]["alpha_low"],
+                "thresholds_source": "swarmbly_v0 provisional defaults (uncalibrated)",
+                "interpretation": "agreement, not accuracy (SPEC §14b.6, L13, L23)",
+            }
+        metadata = {
+            **{k: rho[k] for k in ("rho_achieved", "rho_target", "rho_floor",
+                                   "rho_reachable", "rho_policy")},
+            "n_tasks": len(plan.tasks), "n_levels": len(levels),
+            "tau_sem": self._tau_sem(), "tau_source": self._tau_source(embedder_name),
+            "seams": seams,
+            "coherence": coherence,
+            "verification": {"commitments_checked": 0, "failures": signature_failures,
+                             "audited": 0, "signatures_checked":
+                             len(accepted) + signature_failures,
+                             "commitment": "not_available"},
+            "consensus": consensus_meta,
+            "consensus_waived_reason": waived,
+            "coverage": {"c": round(c, 3), "p_observed": round(p_observed, 3),
+                         "c_eff": round(c * (1 - p_observed), 3),
+                         "expected_uncovered_fraction": round(p_observed ** max(c, 1), 4),
+                         "source": "measured attempts of this request (estimate)"},
+            "routing": routing_meta,
+            "nodes": list(participants.values()),
+            "router": router_meta,
+            "attempts": attempts,
+            "hedges": scheduler.hedges, "retries": scheduler.retries,
+            "timeouts": scheduler.timeouts,
+            "bytes": {"out": sum(a["bytes_out"] for a in attempts),
+                      "in": sum(a["bytes_in"] for a in attempts)},
+            "stage_ms": tracker.timings(),
+            "total_ms": total_ms,
+            "embedder": embedder_name,
+            "seam_policy": seam_policy,
+            "mode": mode,
+            "spec": "SwarmblyAI SPEC v0.2 (rev. 2); app extensions documented",
+        }
+        if self.stats_sink is not None:
+            try:
+                self.stats_sink(dispatched=len(attempts), dispatch_failed=len(failed),
+                                distributed_requests=1)
+            except Exception:
+                pass
+        tracker.start("FINAL RESPONSE")
+        tracker.complete("FINAL RESPONSE", total_ms=total_ms)
+        return {"routed": "distributed", "text": texts, "metadata": metadata,
+                "stages": tracker.list()}
+
+    # -- pieces ---------------------------------------------------------------------
+    def _resolve(self, task_id, replicas, contract, embedder) -> dict[str, Any]:
+        """One text per task: the only replica, or upstream consensus (§14b)."""
+        meta = [{"node": r.node_id[:12], "family": r.family, "model": r.model,
+                 "elapsed_ms": r.elapsed_ms, "telemetry": r.telemetry}
+                for r in replicas]
+        if len(replicas) < 2:
+            return {"text": replicas[0].text, "consensus": None, "replica_meta": meta}
+        from swarmbly_v0.consensus import Replica as UpReplica, consensus
+        result = consensus([UpReplica(replica_id=f"r{i}", text=r.text, family=r.family,
+                                      model=r.model) for i, r in enumerate(replicas)],
+                           contract, embedder)
+        block = {
+            "k": result.k, "families": list(result.families),
+            "mean_agreement": round(float(result.mean_agreement), 4),
+            "units": [{"label": u.label, "agreement": round(float(u.agreement), 4),
+                       "text": u.text[:160]} for u in result.units],
+            "low_confidence_regions": [
+                {"start": r.start, "end": r.end,
+                 "mean_agreement": round(float(r.mean_agreement), 4),
+                 "text": r.text[:200]} for r in result.low_confidence_regions],
+            "alpha_high": result.alpha_high, "alpha_low": result.alpha_low,
+        }
+        return {"text": result.text or replicas[0].text, "consensus": block,
+                "replica_meta": meta}
+
+    def _assemble(self, plan, contract, resolved, bridge_backend, embedder, path):
+        """Select-then-splice (SPEC §14). For an enumerated batch the items
+        are independent by construction: junctions are spliced, never bridged
+        (a transition sentence between list items only adds noise); seam
+        similarities are still measured and reported."""
+        from swarmbly_v0.assembler import fragments_from_mapping, select_then_splice
+        mapping = {t.task_id: [resolved[t.task_id]["text"]] for t in plan.tasks
+                   if t.task_id in resolved}
+        fragments = fragments_from_mapping(mapping, plan=plan)
+        if path == "enumerated":
+            tau, join, policy = -2.0, True, "list: independent items, spliced (no bridges)"
+        else:
+            tau, join, policy = self._tau_sem(), False, "τ_sem: bridge below threshold"
+        assembly = select_then_splice(fragments, contract, bridge_backend, tau,
+                                      plan=plan, embedder=embedder,
+                                      paragraph_join=join)
+        seams = [{"left": s.left_task, "right": s.right_task,
+                  "similarity": round(float(s.similarity), 4),
+                  "path": "bridge" if s.bridged else "splice"}
+                 for s in assembly.seams]
+        return assembly.text, seams, policy
+
     @staticmethod
-    def _classify(text: str, privacy_cfg: dict[str, Any]):
+    def _coherence(text: str, seams: list[dict[str, Any]], embedder_name: str) -> dict[str, Any]:
+        from swarmbly_v0.metrics import entity_grid
+        grid = entity_grid(text)
+        return {"entity_grid": round(float(grid.score), 4),
+                "entity_grid_note": "unreliable on short answers (whitepaper v2 L14)",
+                "seam_free_sentence_fraction": None,
+                "n_seams": len(seams),
+                "mean_seam_similarity": (round(sum(s["similarity"] for s in seams)
+                                               / len(seams), 4) if seams else None),
+                "similarity_kind": ("lexical overlap (hash embedder)"
+                                    if embedder_name.startswith("hash")
+                                    else "embedding cosine"),
+                "errors": {}}
+
+    def _classify(self, text: str, privacy_cfg: dict[str, Any]) -> dict[str, Any]:
+        """Tier before anything else. The per-request manual flag is
+        authoritative (SPEC §15c.1); otherwise the configured default applies
+        and automatic triage may raise it, never lower it (§15c.2)."""
         from swarmbly_v0 import classify
         manual = privacy_cfg.get("manual_tier")
-        decision = classify(text, swarm_id=None)
         if manual in ("GLOBAL", "TRUSTED", "LOCAL"):
-            decision = decision.__class__(
-                tier=manual, source="manual", entity_classes=(),
-                swarm_id=None, rationale="manual tier is authoritative")
-        elif privacy_cfg.get("tier") == "LOCAL":
-            decision = decision.__class__(
-                tier="LOCAL", source="config", entity_classes=(),
-                swarm_id=None, rationale="configured default tier LOCAL")
-        return decision
+            try:
+                d = classify(text, manual=manual.lower())
+                return {"tier": d.tier, "source": "manual", "rationale": d.rationale}
+            except ValueError as exc:  # TRUSTED without a resolvable swarm
+                return {"tier": "TRUSTED", "source": "manual",
+                        "rationale": f"{exc} — kept on this device"}
+        default = str(privacy_cfg.get("tier") or "LOCAL").upper()
+        try:
+            d_tier, d_rationale = (lambda d: (d.tier, d.rationale))(classify(text, manual=None))
+        except ValueError as exc:
+            # Triage raised the request to TRUSTED but no trusted swarm is
+            # configured (E_SWARM_UNKNOWN). SPEC §20: never fall back to GLOBAL.
+            d_tier, d_rationale = "TRUSTED", (
+                "regulated entities detected; no trusted swarm configured "
+                f"(E_SWARM_UNKNOWN): {str(exc)[:120]}")
+        tier = max((default, d_tier), key=lambda t: TIER_ORDER.get(t, 2))
+        source = "auto" if tier == d_tier and tier != default else "config"
+        return {"tier": tier, "source": source,
+                "rationale": d_rationale if source == "auto"
+                else f"configured default tier {default}"}
+
+    @staticmethod
+    def _lane(text: str) -> str:
+        try:
+            from swarmbly_lce.projection import HeuristicClassifier
+            return HeuristicClassifier().classify(text).name
+        except Exception:
+            return "SENSITIVE"  # cannot classify → never leave the device
 
     @staticmethod
     def _route(text: str):
         from swarmbly_v0.router import is_decomposable
         return is_decomposable(text)
 
-    def _plan(self, text: str, n_fragments: int):
-        from swarmbly_v0 import planner
-        contract = planner.global_contract(text, backend=None)
-        plan = planner.plan(text, backend=None, n_tasks=n_fragments,
-                            contract=contract, force_sequential=False)
-        return contract, plan
+    def _loop(self):
+        loop = getattr(self.nodes, "loop", None)
+        if loop is None or not loop.is_running():
+            raise RuntimeError("P2P loop not running")
+        return loop
 
-    @staticmethod
-    def _pack(contract, plan, rho_target: float):
-        from swarmbly_v0.packing import build_packets
-        return build_packets(contract, plan, rho_target)
-
-    def _dispatch_and_resolve(self, backend: DistributedBackend, packing,
-                              plan, contract, k: int, tracker: StageTracker):
-        """Dispatch packets level-by-level; resolve k replicas per task.
-
-        The upstream pipeline walks the DAG level by level so that a packet
-        carries only summaries of predecessors that actually produced output.
-        Workers are spread round-robin across the available (connected) nodes
-        so that fragments land on different machines/families; with k>1 each
-        task is sent to k *distinct* workers.
-        """
-        mapping: dict[str, list[str]] = {}
-        consensus_block: dict[str, Any] = {}
-        levels = _topological_levels(plan)
-        summaries: dict[str, str] = {}
-        families_used: set[str] = set()
-        workers = sorted(self.nodes.available_workers(), key=lambda p: p.node_id)
-        if not workers:
-            raise NoWorkers("no connected workers available")
-        task_index = 0
-        for level in levels:
-            tasks = [t for t in plan.tasks if t.task_id in level]
-            for task in tasks:
-                from swarmbly_v0.packing import build_packets
-                pkg = build_packets(contract, plan, packing.rho_target,
-                                    summaries=summaries,
-                                    only_tasks=[task.task_id])
-                packet = pkg.packets[0]
-                replicas: list[str] = []
-                replica_errors: list[str] = []
-                for attempt in range(k):
-                    worker = workers[(task_index * k + attempt) % len(workers)]
-                    family = _worker_family(worker)
-                    families_used.add(family)
-                    replica_backend = backend.for_replica(family, worker.node_id)
-                    try:
-                        text = replica_backend.generate(packet.text)
-                    except (NoWorkers, RuntimeError) as exc:
-                        replica_errors.append(f"{worker.node_id[:8]}:{exc}")
-                        continue  # redundancy tolerates a failed replica
-                    replicas.append(text)
-                if not replicas:
-                    # Every replica failed: honest failure, never an empty fragment.
-                    raise RuntimeError(
-                        f"all {k} replicas failed for {task.task_id}: "
-                        + "; ".join(replica_errors[:3]))
-                if k > 1 and len(replicas) > 1:
-                    chosen, units, mean_agreement = self._micro_consensus(
-                        replicas)
-                    mapping[task.task_id] = [chosen]
-                    consensus_block["units"] = units
-                    consensus_block["mean_agreement"] = mean_agreement
-                    consensus_block["k"] = len(replicas)
-                else:
-                    mapping[task.task_id] = replicas[:1]
-                summaries[task.task_id] = (mapping[task.task_id][0])[:400]
-                task_index += 1
-        if k > 1:
-            consensus_block.setdefault("k", k)
-            consensus_block["families"] = sorted(families_used)
-            consensus_block.setdefault("mean_agreement", 0.0)
-            consensus_block["alpha_high"] = ALPHA_HIGH_PLACEHOLDER
-            consensus_block["alpha_low"] = ALPHA_LOW_PLACEHOLDER
-            consensus_block["thresholds_source"] = "placeholder"
-        else:
-            consensus_block["families"] = sorted(families_used)
-        return mapping, consensus_block
-
-    def _micro_consensus(self, replicas: list[str]):
-        import dataclasses
-        from swarmbly_v0.consensus import (align_multiple, agreement_score,
-                                           segment_units)
-        embedder = self._embedder()
-        units_per_replica: list[list[Any]] = []
-        for i, text in enumerate(replicas):
-            units = segment_units(text)
-            # Each replica's units must carry a distinct replica_id so the
-            # aligner can key its per-replica vectors (SPEC §14b).
-            units_per_replica.append(
-                [dataclasses.replace(u, replica_id=f"r{i}") for u in units])
-        columns = align_multiple(units_per_replica, embedder)
-        out_parts: list[str] = []
-        unit_reports: list[dict[str, Any]] = []
-        for column in columns:
-            score = float(agreement_score(column, embedder))
-            label = ("HIGH" if score >= ALPHA_HIGH_PLACEHOLDER
-                     else "MEDIUM" if score >= ALPHA_LOW_PLACEHOLDER else "LOW")
-            text = _column_medoid(column)
-            out_parts.append(text)
-            unit_reports.append({"label": label, "agreement": round(score, 4),
-                                 "text": text[:120]})
-        mean_agreement = (sum(u["agreement"] for u in unit_reports) /
-                          len(unit_reports)) if unit_reports else 0.0
-        return " ".join(out_parts), unit_reports, round(float(mean_agreement), 4)
-
-    def _assemble(self, contract, plan, texts: dict[str, list[str]]):
-        from swarmbly_v0.assembler import fragments_from_mapping, select_then_splice
-        fragments = fragments_from_mapping(texts, plan=plan)
-        local = LocalPromptBackend(self.local_stream, self.local_model)
-        assembly = select_then_splice(
-            fragments, contract, local, self._tau_sem(), plan=plan,
-            embedder=self._embedder())
-        seams = [{"left": s.left_task, "right": s.right_task,
-                  "similarity": round(float(s.similarity), 4),
-                  "path": "bridge" if s.bridged else "splice"}
-                 for s in assembly.seams]
-        return assembly.text, seams
-
-    def _coherence(self, text: str, seams: list[dict[str, Any]]) -> dict[str, Any]:
-        from swarmbly_v0.metrics import entity_grid
-        grid = entity_grid(text)
-        return {"entity_grid": round(float(grid.score), 4),
-                "seam_free_sentence_fraction": None,
-                "n_seams": len(seams),
-                "errors": {}}
-
-    # -- helpers ----------------------------------------------------------------------
-    def _embedder(self):
-        cfg = self.config()
-        kind = cfg["model"].get("embedder", "hash")
-        if kind == "server":
+    def _clamp(self, max_tokens: int) -> int:
+        """Never ask more than the smallest worker policy allows (SPEC §12)."""
+        limits = []
+        for peer in self.nodes.available_workers():
             try:
-                from swarmbly_v0 import ServerEmbedder
-                return ServerEmbedder(url=cfg["model"].get("backend_url")
-                                      or "http://127.0.0.1:11434/v1")
+                limit = int((peer.advertisement.get("policy") or {})
+                            .get("max_tokens_per_task") or 0)
+            except (TypeError, ValueError):
+                limit = 0
+            if limit:
+                limits.append(limit)
+        return min([max_tokens] + limits)
+
+    def _embedder(self):
+        cfg = self.config()["model"]
+        if cfg.get("embedder") == "server":
+            try:
+                from swarmbly_v0.backends import OpenAICompatBackend, ServerEmbedder
+                url = (cfg.get("backend_url") or "http://127.0.0.1:11434").rstrip("/")
+                if not url.endswith("/v1"):
+                    url += "/v1"
+                emb = ServerEmbedder(backend=OpenAICompatBackend(
+                    base_url=url, api_key=cfg.get("api_key") or "not-needed",
+                    embed_model=cfg.get("embed_model") or "nomic-embed-text"))
+                return emb, "server:" + (cfg.get("embed_model") or "nomic-embed-text")
             except Exception:
                 pass
         from swarmbly_v0 import HashEmbedder
-        return HashEmbedder()
+        return HashEmbedder(), "hash (lexical, not semantic)"
 
     def _tau_sem(self) -> float:
         return float(self.config()["swarm"].get("tau_sem", 0.5))
 
-    def _tau_source(self) -> str:
-        return ("placeholder:0.5 (calibration pending — same footing as "
-                "SwarmblyAI documented defaults)")
+    def _tau_source(self, embedder_name: str) -> str:
+        return (f"placeholder:{self._tau_sem()} — uncalibrated for {embedder_name}; "
+                "SPEC §14 requires calibration per embedder")
 
-    def _gamma_dict(self, contract) -> dict[str, Any]:
-        """Map the internal Contract to the SPEC §5 Γ JSON."""
-        return {
-            "v": "0.2",
-            "objective": contract.objective,
-            "audience": contract.audience,
-            "register": contract.register,
-            "format": contract.output_format,
-            "target_len": contract.target_length_tokens,
-            "lexicon": {"prefer": [], "forbid": list(contract.forbidden_terms)},
-            "entities": [{"name": e, "canonical": e, "role": ""}
-                         for e in contract.canonical_entities],
-            "style_seed": "",
-            "budget": {"max_out_tokens": 600},
-        }
+
+def _order(task_id: str) -> int:
+    digits = "".join(ch for ch in task_id if ch.isdigit())
+    return int(digits) if digits else 0
 
 
 def _topological_levels(plan) -> list[set[str]]:
-    """Levels of the DAG (same-level tasks run in parallel)."""
-    remaining = {t.task_id: set(t.depends_on) for t in plan.tasks}
+    return _topological_levels_from({t.task_id: tuple(t.depends_on) for t in plan.tasks})
+
+
+def _topological_levels_from(deps: dict[str, tuple[str, ...]]) -> list[set[str]]:
+    remaining = {tid: set(d) for tid, d in deps.items()}
     levels: list[set[str]] = []
     while remaining:
-        level = {tid for tid, deps in remaining.items() if not deps}
+        level = {tid for tid, d in remaining.items() if not d}
         if not level:
             raise ValueError("plan has a cycle")
         levels.append(level)
-        remaining = {tid: deps - level for tid, deps in remaining.items()
-                     if tid not in level}
+        remaining = {tid: d - level for tid, d in remaining.items() if tid not in level}
     return levels
-
-
-def _worker_family(worker) -> str:
-    """The model family a worker advertises (its only/primary family)."""
-    models = worker.advertisement.get("models", []) or []
-    for model in models:
-        family = model.get("family")
-        if family:
-            return str(family)
-    return "unknown"
-
-
-def _column_medoid(column) -> str:
-    """Pick the column's most central unit (highest mean pairwise cosine)."""
-    vectors = getattr(column, "vectors", {}) or {}
-    if not vectors:
-        units = getattr(column, "units", {}) or {}
-        texts = [u.text for u in units.values()]
-        return texts[0] if texts else ""
-    ids = list(vectors.keys())
-    matrix = np.vstack([vectors[i] for i in ids])
-    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
-    norms[norms == 0] = 1.0
-    sims = (matrix / norms) @ (matrix / norms).T
-    best = int(np.argmax(sims.sum(axis=1)))
-    units = getattr(column, "units", {}) or {}
-    for rep_id, unit in units.items():
-        if rep_id == ids[best]:
-            return unit.text
-    return list(units.values())[0].text if units else ""
