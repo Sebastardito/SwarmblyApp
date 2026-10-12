@@ -51,8 +51,8 @@ Requirements: Python ≥ 3.10 (tested on 3.11), and for real inference an
 inference backend — **Ollama** is the default.
 
 ```bash
-python3.11 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+bash scripts/dev_setup.sh           # one-command setup (venv + deps + checks)
+source .venv/bin/activate
 
 # start Ollama (separate project) with at least one model, e.g.:
 #   ollama serve
@@ -64,6 +64,12 @@ swarmbly-app init                  # print data directory and node identity
 ```
 
 The admin interface listens on `127.0.0.1:8765` by default.
+
+> **macOS gotcha:** if `swarmbly-app` fails with
+> `ModuleNotFoundError: No module named 'swarmbly_app'`, the `.venv` tree has
+> the macOS `UF_HIDDEN` flag and Python 3.11 skips its hidden `.pth` files.
+> Fix: `chflags -R nohidden .venv && pip install -e . --no-deps`
+> (see `docs/INSTALL.md` → Troubleshooting).
 
 ## Repository map
 

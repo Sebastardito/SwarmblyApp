@@ -10,6 +10,14 @@
 
 ## Install (development)
 
+One command (recommended):
+
+```bash
+bash scripts/dev_setup.sh
+```
+
+Or manually:
+
 ```bash
 git clone https://github.com/Sebastardito/SwarmblyApp.git
 cd SwarmblyApp
@@ -51,6 +59,16 @@ Override with `--data-dir` or the `SWARMBLY_DATA_DIR` environment variable.
 
 ## Troubleshooting
 
+- **`ModuleNotFoundError: No module named 'swarmbly_app'`** — macOS: some
+  tools (Finder, sync agents, housekeeping scripts) set the `UF_HIDDEN` flag
+  on the `.venv` tree. Python 3.11's `site` silently skips hidden `.pth`
+  files, so editable installs never load (even though the import seems to
+  work when you run Python *inside* the repo directory — the working
+  directory shadows the problem). Fix:
+  ```bash
+  chflags -R nohidden .venv && pip install -e . --no-deps
+  ```
+  (`scripts/dev_setup.sh` already clears the flag automatically.)
 - **"No inference backend detected"** — start Ollama (`ollama serve`) or set
   an OpenAI-compatible URL in Settings → Models.
 - **Port already in use** — `swarmbly-app --port 8766`.
