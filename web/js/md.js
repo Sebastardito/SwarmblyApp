@@ -14,6 +14,7 @@ const Markdown = (() => {
   }
 
   function inline(text) {
+    text = escapeHtml(text);  // escape first: no raw HTML can survive
     // order matters: code first (no markdown inside), then bold/italic, links last
     text = text.replace(/`([^`\n]+)`/g, (_, code) =>
       `<code>${code}</code>`);
