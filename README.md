@@ -27,10 +27,23 @@ reporting of what is measured, estimated, or not available.*
 | Bilingual UI (English default, Español switchable) | ✅ |
 | User data control: sources, wiki, outputs, identity in a per-OS data directory | ✅ |
 | LCE level C0 active; C1 (local sources, conservative policy) prepared | ✅ |
-| mDNS LAN discovery, node handshake, distributed micro-task execution | 🚧 Phase 2 |
-| Swarm Monitor with the full distributed pipeline | 🚧 Phase 2 |
+| mDNS LAN discovery, Ed25519 handshake, TLS 1.3 transport (SPEC v0.2 wire) | ✅ Phase 2 |
+| Distributed micro-task execution over LAN workers (real, not simulated) | ✅ Phase 2 |
+| Swarm Monitor: honest pipeline stages, health, contribution, processing reports | ✅ Phase 2 |
 | Rendezvous / internet swarms | ⏸ Phase 3 (experimental) |
 | LCE C2–C4 | ⏸ Phases 4–5 (experimental) |
+
+### Two-node demo (real distributed inference)
+
+```bash
+# with Ollama serving two models:
+python scripts/two_nodes_demo.py --worker-model llama3.2:3b --client-model gemma2:2b
+```
+
+Two nodes on one machine — or two machines on the same LAN — discover each
+other (mDNS), authenticate (Ed25519 over TLS 1.3), fragment a request, serve
+the micro-tasks with the worker's base model, assemble the answer with the
+client's local model, and print the full pipeline with SPEC §19 metadata.
 
 ## Quick start
 

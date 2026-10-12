@@ -71,6 +71,18 @@
         </div>
         <div class="notice" data-i18n="monitor.phase2Notice"></div>
         <div class="panel-header" style="border-top:1px solid var(--border)">
+          <h2>Swarm Health</h2>
+        </div>
+        <div class="metrics" id="monitor-health"></div>
+        <div class="panel-header" style="border-top:1px solid var(--border)">
+          <h2>Nodes (authenticated)</h2>
+        </div>
+        <div style="padding:4px 18px"><ul class="model-list" id="monitor-nodes"></ul></div>
+        <div class="panel-header" style="border-top:1px solid var(--border)">
+          <h2>My contribution</h2>
+        </div>
+        <div style="padding:8px 18px" id="monitor-contribution"></div>
+        <div class="panel-header" style="border-top:1px solid var(--border)">
           <h2 data-i18n="monitor.activity">Activity</h2>
         </div>
         <div class="pipeline" id="pipeline"><p data-i18n="monitor.noEvents" style="color:var(--text-dim)"></p></div>
@@ -147,15 +159,33 @@
           </div>
           <div class="settings-section">
             <h3 data-i18n="settings.swarm">Swarm</h3>
+            <div class="field"><label data-i18n="settings.mode">Execution mode</label>
+              <select id="set-swarm-mode">
+                <option value="local">Local</option>
+                <option value="lan">Swarm LAN</option>
+                <option value="auto">Automatic</option>
+              </select></div>
+            <div class="field"><label>LAN discovery (mDNS)</label>
+              <input type="checkbox" id="set-lan-enabled"></div>
+            <div class="field"><label>Worker (serve micro-tasks)</label>
+              <input type="checkbox" id="set-worker-enabled"></div>
+            <div class="field"><label>Worker only when idle</label>
+              <input type="checkbox" id="set-worker-idle"></div>
+            <div class="field"><label>Max concurrent tasks</label>
+              <input type="number" id="set-worker-concurrent" min="1" max="8" style="width:90px"></div>
+            <div class="field"><label>Redundancy k (min–max)</label>
+              <span style="display:flex;gap:8px">
+                <input type="number" id="set-k-min" min="1" max="4" style="width:70px">
+                <input type="number" id="set-k-max" min="1" max="4" style="width:70px">
+              </span></div>
+            <div class="field"><label>ρ target</label>
+              <input type="number" id="set-rho" min="1" max="4" step="0.1" style="width:90px"></div>
             <p class="hint" style="color:var(--text-dim)" data-i18n="settings.swarmPhase2"></p>
-            <div class="check-row"><span data-i18n="settings.mode">Mode</span><span class="val">local</span></div>
-            <div class="check-row"><span>LAN</span><span class="val unknown">off</span></div>
-            <div class="check-row"><span>Internet</span><span class="val unknown">off</span></div>
-            <div class="check-row"><span>Worker</span><span class="val unknown">off</span></div>
           </div>
           <div class="settings-section">
             <h3 data-i18n="settings.privacy">Privacy &amp; security</h3>
-            <div class="check-row"><span data-i18n="settings.tier">Privacy tier</span><span class="val" id="set-tier">LOCAL</span></div>
+            <div class="field"><label data-i18n="settings.tier">Privacy tier</label>
+              <select id="set-tier"><option value="LOCAL">LOCAL</option><option value="GLOBAL">GLOBAL</option><option value="TRUSTED">TRUSTED (mTLS — Phase 2.1)</option></select></div>
             <p class="hint" style="color:var(--text-dim)" data-i18n="settings.tierNote"></p>
           </div>
           <div class="settings-section">

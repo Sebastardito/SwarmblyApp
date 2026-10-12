@@ -257,10 +257,12 @@ class Orchestrator:
 
             tracker.start("DISPATCHING")
             tracker.start("MODEL EXECUTION")
+            tracker.start("RESULT RECEPTION")
             texts, consensus_block = self._dispatch_and_resolve(
                 backend, packing, plan, contract, k, tracker)
             tracker.complete("DISPATCHING")
             tracker.complete("MODEL EXECUTION")
+            tracker.complete("RESULT RECEPTION")
 
             # VERIFICATION: Layer-1 commitment has no normative construction.
             tracker.unavailable(

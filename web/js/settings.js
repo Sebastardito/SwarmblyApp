@@ -27,7 +27,17 @@ const Settings = (() => {
     el("set-temperature").value = m.temperature ?? 0.2;
 
     const p = cfg.privacy || {};
-    el("set-tier").textContent = p.tier || "LOCAL";
+    el("set-tier").value = p.tier || "LOCAL";
+
+    const s = cfg.swarm || {};
+    el("set-swarm-mode").value = s.mode || "local";
+    el("set-lan-enabled").checked = !!s.lan_enabled;
+    el("set-worker-enabled").checked = !!s.worker_enabled;
+    el("set-worker-idle").checked = !!s.worker_only_idle;
+    el("set-worker-concurrent").value = s.worker_max_concurrent ?? 1;
+    el("set-k-min").value = s.k_min ?? 1;
+    el("set-k-max").value = s.k_max ?? 2;
+    el("set-rho").value = s.rho_target ?? 1.5;
 
     const l = cfg.lce || {};
     el("set-lce-enabled").checked = !!l.enabled;
@@ -82,6 +92,17 @@ const Settings = (() => {
         max_tokens: parseInt(el("set-max-tokens").value, 10) || 1024,
         temperature: parseFloat(el("set-temperature").value) || 0.2,
       },
+      swarm: {
+        mode: el("set-swarm-mode").value,
+        lan_enabled: el("set-lan-enabled").checked,
+        worker_enabled: el("set-worker-enabled").checked,
+        worker_only_idle: el("set-worker-idle").checked,
+        worker_max_concurrent: parseInt(el("set-worker-concurrent").value, 10) || 1,
+        k_min: parseInt(el("set-k-min").value, 10) || 1,
+        k_max: parseInt(el("set-k-max").value, 10) || 2,
+        rho_target: parseFloat(el("set-rho").value) || 1.5,
+      },
+      privacy: { tier: el("set-tier").value },
       results: {
         export_format: el("set-export-format").value,
         report_detail: el("set-report-detail").value,
@@ -92,6 +113,7 @@ const Settings = (() => {
     await App.refreshConfig();
     await I18n.load(el("set-language").value);
     I18n.applyAll(document);
+    Chat.refreshModels();
     const note = el("settings-saved");
     note.textContent = I18n.t("settings.saved");
     note.style.display = "block";

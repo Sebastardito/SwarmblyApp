@@ -4,16 +4,33 @@
 
 ## 1. Positioning
 
-Swarmbly App is a **thin integrator**. It does not copy the implementations of
-SwarmblyAI or SwarmblyLCE; it depends on them as pip packages pinned to exact
-commits and adds only what those repositories do not contain:
+Swarmbly App is a **thin integrator** — and, by decision, **only one way to
+participate in Swarmbly**. Swarmbly (the protocol) must never depend on this
+application to exist:
+
+```
+Swarmbly Ecosystem
+├── SwarmblyAI      → Distributed inference protocol (evolves independently)
+├── SwarmblyLCE     → Local cognitive extension (evolves independently)
+└── SwarmblyApp     → UX: frontend, local backend, hardware/model managers,
+                      SwarmblyAI adapter, LCE adapter, P2P network,
+                      rendezvous service (Phase 3), observability, config
+```
+
+- Contributing to SwarmblyAI or SwarmblyLCE never requires installing this app.
+- Swarmbly App does not copy the implementations of SwarmblyAI or SwarmblyLCE;
+  it depends on them as pip packages pinned to exact commits and adds only
+  what those repositories do not contain.
+- The wire transport implemented here is an **app-layer adapter**; if the
+  protocol repository later publishes a normative transport, this app will
+  consume it instead of maintaining its own.
 
 | Component | Where it comes from |
 |---|---|
 | Protocol engine (privacy tiers, router, DAG planning, Γ/ρ packing, micro consensus, macro assembly, metrics) | `swarmbly_v0` — SwarmblyAI, reused as-is |
 | LCE (wiki, claims, policy, projection, WorkerGuard, capsules) | `swarmbly_lce` — SwarmblyLCE, reused as-is |
 | Inference backends (Ollama / OpenAI-compatible streaming) | **new** in Swarmbly App (adapters) |
-| P2P transport (mDNS, TLS 1.3, Ed25519 handshake, SPEC v0.2 wire messages) | **new** — SwarmblyAI explicitly has *no networking* (Phase 2) |
+| P2P transport (mDNS, TLS 1.3, Ed25519 handshake, SPEC v0.2 wire messages) | **new** in Swarmbly App — SwarmblyAI has *no networking* code |
 | Local API, WebSocket events, UI, SQLite, hardware detection | **new** in Swarmbly App |
 
 ## 2. Process & access boundaries

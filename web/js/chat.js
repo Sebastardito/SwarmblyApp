@@ -21,13 +21,11 @@ const Chat = (() => {
       const opt = document.createElement("option");
       opt.value = m;
       opt.textContent = I18n.t(`chat.${m}`, m);
+      if (m === "internet") opt.disabled = true; // Phase 3 (rendezvous)
       modeSel.appendChild(opt);
     });
     modeSel.value = App.state.config?.swarm?.mode || "local";
-    if (App.state.config && App.state.config.swarm && App.state.config.swarm.mode !== "local") {
-      // LAN/Internet modes are Phase 2: honest fallback to local
-      modeSel.value = "local";
-    }
+    modeSel.addEventListener("change", refreshMetaInfo);
     refreshConversations();
     refreshModels();
     refreshMetaInfo();
@@ -134,7 +132,9 @@ const Chat = (() => {
 
   function currentMode() {
     const value = el("chat-mode").value;
-    return value === "local" ? "local" : "local"; // Phase 2 unlocks lan/internet/auto
+    // "auto" and "lan" route through the swarm engine (Phase 2); internet is
+    // disabled in the selector (Phase 3) and refused honestly by the backend.
+    return value;
   }
 
   async function send() {

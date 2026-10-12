@@ -1,10 +1,12 @@
-/* Swarm Monitor: honest live observability.
-   Phase 1: system facts + live local request events (no invented swarm data).
-   Phase 2: mDNS discovery, node graph, distributed pipeline stages. */
+/* Swarm Monitor: live observability, honest by construction.
+   Renders real events only: request stages (pending/running/completed/
+   skipped/not_available/failed), node discovery/connection, swarm health and
+   contribution from the API. Phase 2 adds the distributed pipeline. */
 "use strict";
 
 const Monitor = (() => {
-  const MAX_STAGES = 40;
+  const MAX_STAGES = 60;
+  let currentRequest = null;
 
   function el(id) { return document.getElementById(id); }
 
@@ -12,11 +14,11 @@ const Monitor = (() => {
     renderSystem();
     const pipeline = el("pipeline");
     pipeline.innerHTML = "";
-    App.onEvent((event) => noteEvent(event));
-    // Periodic light refresh of uptime (event-driven where possible)
+    App.onEvent(noteEvent);
     setInterval(() => {
-      if (App.state.activePanel === "monitor") refreshUptime();
-    }, 5000);
+      if (App.state.activePanel === "monitor") refreshLive();
+    }, 4000);
+    refreshLive();
   }
 
   function renderSystem() {
@@ -52,9 +54,71 @@ const Monitor = (() => {
     }
   }
 
-  function refreshUptime() {
-    const up = App.state.health?.uptime_s ?? 0;
-    el("metric-uptime").textContent = fmtUptime(up);
+  async function refreshLive() {
+    try {
+      const monitor = await Api.get("/api/monitor");
+      el("metric-nodes").textContent = monitor.swarm.nodes_discovered;
+      el("metric-connected").textContent = monitor.swarm.nodes_connected;
+      el("metric-workers").textContent = monitor.swarm.workers_available;
+      const up = App.state.health?.uptime_s ?? 0;
+      el("metric-uptime").textContent = fmtUptime(up);
+      renderHealth(monitor.health);
+      renderContribution(monitor.contribution);
+      renderNodes(await Api.get("/api/swarm/nodes"));
+    } catch (_) {}
+  }
+
+  function renderHealth(health) {
+    const box = el("monitor-health");
+    if (!box) return;
+    box.innerHTML = "";
+    for (const [name, metric] of Object.entries(health || {})) {
+      const div = document.createElement("div");
+      div.className = "metric";
+      div.innerHTML = `<div class="value">${String(metric.value)}</div>
+        <div class="label">${name}</div>
+        <div style="font-size:0.65rem;color:var(--text-dim)">${metric.source || ""}</div>`;
+      box.appendChild(div);
+    }
+  }
+
+  function renderContribution(cont) {
+    const box = el("monitor-contribution");
+    if (!box) return;
+    const rows = [
+      ["Tasks served", cont.tasks_served],
+      ["Processing time", `${(cont.processing_time_ms / 1000).toFixed(1)} s`],
+      ["Tokens generated", cont.tokens_generated],
+      ["Bytes in/out", `${cont.bytes_transferred.in} / ${cont.bytes_transferred.out}`],
+      ["Requests made", cont.tasks_requested],
+    ];
+    box.innerHTML = "";
+    for (const [label, value] of rows) {
+      const div = document.createElement("div");
+      div.className = "check-row";
+      div.innerHTML = `<span>${label}</span><span class="val">${value}</span>`;
+      box.appendChild(div);
+    }
+  }
+
+  function renderNodes(data) {
+    const box = el("monitor-nodes");
+    if (!box) return;
+    const peers = data.peers || [];
+    box.innerHTML = "";
+    if (!peers.length) {
+      const li = document.createElement("li");
+      li.textContent = "No authenticated peers yet. Enable LAN in Settings or add a peer manually.";
+      box.appendChild(li);
+    }
+    for (const p of peers) {
+      const li = document.createElement("li");
+      const models = (p.models || []).map((m) => m.family || m.version).join(", ");
+      li.innerHTML = `<code>${p.short_id || p.node_id.slice(0, 12)}</code> @ ${p.address}:${p.port}
+        <span class="tag">${p.verified ? "verified" : "unverified"}</span>
+        ${models ? `<span class="tag">${models}</span>` : ""}`;
+      box.appendChild(li);
+    }
   }
 
   function fmtUptime(seconds) {
@@ -64,30 +128,61 @@ const Monitor = (() => {
   }
 
   function noteEvent(event) {
-    const pipeline = el("pipeline");
-    if (!pipeline) return;
     const { type, ts, payload } = event;
-    const row = document.createElement("div");
-    row.className = "stage";
-    const t = new Date(ts * 1000).toLocaleTimeString();
-    let text = type;
-    let cls = "running";
     if (type === "request.started") {
-      text = `REQUEST RECEIVED — mode=${payload.mode}, model=${payload.model || "auto"}`;
-      cls = "running";
-    } else if (type === "chat.delta") {
-      text = "GENERATING — stream in progress";
-    } else if (type === "chat.done") {
-      const status = payload.status;
-      text = `FINAL RESPONSE — ${status}` +
-        (payload.meta && payload.meta.total_ms != null ? ` · ${(payload.meta.total_ms / 1000).toFixed(1)} s` : "");
-      cls = status === "done" ? "done" : "failed";
+      currentRequest = payload.request_id;
+      const pipeline = el("pipeline");
+      pipeline.innerHTML = "";
+      addStage(pipeline, "REQUEST RECEIVED", "running", "", ts);
+    } else if (type === "request.stage") {
+      const pipeline = el("pipeline");
+      if (!pipeline) return;
+      const status = payload.status || "pending";
+      const extra = Object.entries(payload)
+        .filter(([k]) => !["stage", "status", "elapsed_ms"].includes(k))
+        .map(([k, v]) => `${k}=${String(v).slice(0, 60)}`).join(" ");
+      addStage(pipeline, payload.stage, status, extra, ts);
+    } else if (type === "node.discovered") {
+      const pipeline = el("pipeline");
+      addStage(pipeline, "NODE DISCOVERED", "completed",
+               `${payload.address}:${payload.port} (${payload.source})`, ts);
+    } else if (type === "node.connected") {
+      const pipeline = el("pipeline");
+      addStage(pipeline, "NODE CONNECTED", "completed",
+               `${payload.short_id} @ ${payload.address}`, ts);
+    } else if (type === "node.handshake_failed") {
+      const pipeline = el("pipeline");
+      addStage(pipeline, "HANDSHAKE FAILED", "failed",
+               `${payload.address || ""} ${payload.reason || ""}`, ts);
+    } else if (type === "chat.done" && payload.status === "done") {
+      const pipeline = el("pipeline");
+      const meta = payload.meta || {};
+      if (meta.swarm) {
+        const m = meta.swarm;
+        addStage(pipeline, "FINAL RESPONSE", "completed",
+                 `ρ=${m.rho_achieved} · seams=${(m.seams || []).length} · ` +
+                 `consensus=${m.consensus ? "k=" + m.consensus.k : "null (k=1)"}`, ts);
+      } else if (meta.total_ms != null) {
+        addStage(pipeline, "FINAL RESPONSE (local)", "completed",
+                 `${(meta.total_ms / 1000).toFixed(1)} s · ${meta.completion_tokens || 0} tok`, ts);
+      }
     }
-    row.innerHTML = `<span class="t">${t}</span><span>${text}</span>`;
-    row.className = `stage ${cls}`;
-    pipeline.appendChild(row);
-    while (pipeline.children.length > MAX_STAGES) pipeline.removeChild(pipeline.firstChild);
-    pipeline.scrollTop = pipeline.scrollHeight;
+  }
+
+  function addStage(container, name, status, extra, ts) {
+    if (container.children.length >= MAX_STAGES) {
+      container.removeChild(container.firstChild);
+    }
+    if (container.firstChild && container.firstChild.textContent.includes("No events")) {
+      container.innerHTML = "";
+    }
+    const row = document.createElement("div");
+    row.className = `stage ${status}`;
+    const t = new Date(ts * 1000).toLocaleTimeString();
+    row.innerHTML = `<span class="t">${t}</span><span>${name}</span>` +
+      (extra ? `<span class="t" style="margin-left:auto">${extra}</span>` : "");
+    container.appendChild(row);
+    container.scrollTop = container.scrollHeight;
   }
 
   return { init, noteEvent };
