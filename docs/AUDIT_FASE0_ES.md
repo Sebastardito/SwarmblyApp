@@ -356,4 +356,4 @@ Decisiones aplicadas: las de la sección 9.
 | H29 | corregido en 0.2.0 (configuración recomendada explicada, asistente de primer arranque) | `tests/test_advisor.py` |
 
 Suite tras la Fase 1.5: **113 pruebas** en ~10 s (antes 76 en ~45 s), sin
-advertencias de corrutinas pendientes. Tras la Fase 2.5 (0.2.0): **138 pruebas**.
+advertencias de corrutinas pendientes. Tras la Fase 2.5 (0.2.0): **140 pruebas**.

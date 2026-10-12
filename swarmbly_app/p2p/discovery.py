@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import re
 import socket
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -87,6 +89,22 @@ def local_ipv4_addresses() -> list[str]:
     return out
 
 
+def mdns_host_label(hostname: str, node_id: str) -> str:
+    """A valid DNS label for this node's mDNS host record.
+
+    DNS labels are limited to 63 bytes (RFC 1035) and should use letters,
+    digits and hyphens. Computer names are often longer (CI runners, some
+    managed Macs) or contain spaces, apostrophes and accents ("Sebastián's
+    MacBook Pro"), and zeroconf refuses to announce with such a label. The
+    computer name is only cosmetic here: identity is the node key.
+    """
+    raw = unicodedata.normalize("NFKD", (hostname or "").split(".")[0])
+    host = re.sub(r"[^a-z0-9-]+", "-", raw.encode("ascii", "ignore").decode().lower())
+    host = re.sub(r"-{2,}", "-", host).strip("-")[:48].rstrip("-") or "swarmbly"
+    suffix = re.sub(r"[^a-z0-9]", "", node_id.lower())[:6] or "node"
+    return f"{host}-{suffix}"
+
+
 class DiscoveryService:
     """Announces this node and maintains the discovery cache.
 
@@ -141,12 +159,11 @@ class DiscoveryService:
         addresses = self._addresses or local_ipv4_addresses() or ["127.0.0.1"]
         props = {"v": self.version, "node": self.node_id, "proto": "swarmbly"}
         instance = f"swarmbly-{self.node_id[:12]}.{SERVICE_TYPE}"
-        host = socket.gethostname().split(".")[0] or "swarmbly"
         self._info = AsyncServiceInfo(
             SERVICE_TYPE, instance,
             addresses=[socket.inet_aton(a) for a in addresses],
             port=self.port, properties=props,
-            server=f"{host}-{self.node_id[:6].lower()}.local.")
+            server=mdns_host_label(socket.gethostname(), self.node_id) + ".local.")
         try:
             # The asyncio API returns a task that completes once probing and
             # the announcement are done; awaiting it makes 'announcing' true.

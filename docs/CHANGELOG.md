@@ -28,6 +28,13 @@
   `--setup-only`, `--headless`, `--yes`, `--port` and more.
 - `scripts/dev_setup.sh` now uses the launcher.
 
+**Fixes found by the first macOS CI run**
+- mDNS announcements failed on computers whose name does not fit a DNS label
+  (longer than 63 bytes, or with spaces, apostrophes or accents, e.g.
+  "Sebastián's MacBook Pro"): zeroconf refused the host record and the node
+  was never discovered. The host label is now sanitised and capped; identity
+  is unaffected (it is the node key). Regression tests added.
+
 **Documentation and repository**
 - README rewritten with screenshots; new user guide (`docs/USER_GUIDE.md`),
   `CONTRIBUTING.md`, `SECURITY.md`, issue and pull-request templates, and a

@@ -106,6 +106,33 @@ class TestDiscoveryWithoutIPs:
         assert state.nodes.status()["discovery"]["enabled"] is False
 
 
+    def test_long_or_accented_computer_name_still_announces(self, nodes, monkeypatch):
+        """Regression: macOS CI runners (and some managed Macs) have names
+        longer than a DNS label allows; zeroconf then refused to announce."""
+        import socket as _socket
+        monkeypatch.setattr(_socket, "gethostname", lambda: (
+            "Sebastián's MacBook Pro-1760258312345-runner-with-a-very-long-name.local"))
+        worker, _ = nodes("LW", worker=True, lan=True)
+        client, _ = nodes("LC", lan=True)
+        assert worker.nodes.status()["discovery"]["announcing"] is True, \
+            worker.nodes.status()["discovery"]
+        assert wait_for(lambda: client.nodes.available_workers(), timeout=20)
+
+
+class TestMdnsHostLabel:
+    def test_label_is_valid_dns(self):
+        from swarmbly_app.p2p.discovery import mdns_host_label
+        cases = ["Sebastián's MacBook Pro.local", "x" * 200, "", "...",
+                 "Mac-1760258312345-runner-very-long-hostname-from-ci-abcdefghij.local",
+                 "日本語のマック", "host_with_underscores"]
+        for name in cases:
+            label = mdns_host_label(name, "Ab_c-D9xyz")
+            assert 1 <= len(label.encode()) <= 63, (name, label)
+            assert all(c.isascii() and (c.isalnum() or c == "-") for c in label), label
+            assert not label.startswith("-") and not label.endswith("-")
+        assert mdns_host_label("Sebastián's MacBook Pro", "Ab_c-D9").startswith("sebastian-s-macbook-pro-")
+
+
 class TestDistributed:
     def test_end_to_end(self, nodes):
         worker, fake_w = nodes("W", worker=True)
