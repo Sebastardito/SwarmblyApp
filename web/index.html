@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Swarmbly App</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="layout with-activity" id="layout">
+    <aside class="sidebar">
+      <div class="brand">
+        <h1 data-i18n="app.name">Swarmbly</h1>
+        <div class="tagline" data-i18n="app.tagline"></div>
+      </div>
+      <button class="nav-btn active" data-panel="chat"><span class="glyph">◈</span><span data-i18n="nav.chat">Chat</span></button>
+      <button class="nav-btn" data-panel="monitor"><span class="glyph">◉</span><span data-i18n="nav.monitor">Monitor</span></button>
+      <button class="nav-btn" data-panel="lce"><span class="glyph">≋</span><span data-i18n="nav.lce">Memory</span></button>
+      <button class="nav-btn" data-panel="settings"><span class="glyph">⚙</span><span data-i18n="nav.settings">Settings</span></button>
+      <div class="status-bar">
+        <div><span class="status-dot off" id="status-dot"></span><span class="txt" id="status-mode">Local</span></div>
+        <div style="margin-top:4px"><span class="txt" id="status-node">Node —</span></div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <!-- Chat -->
+      <section class="panel active" id="panel-chat">
+        <div class="panel-header">
+          <h2>Chat</h2>
+          <button class="btn small" id="chat-new" data-i18n="chat.new">New conversation</button>
+          <button class="btn small" id="chat-export" data-i18n="chat.export">Export</button>
+          <button class="btn small danger" id="chat-delete" style="display:none" data-i18n="chat.delete">Delete</button>
+          <span style="margin-left:auto; font-family:var(--mono); font-size:0.72rem; color:var(--text-dim)" id="chat-meta-info"></span>
+        </div>
+        <div class="chat-controls">
+          <label data-i18n="chat.mode">Mode</label>
+          <select id="chat-mode"></select>
+          <label data-i18n="chat.model">Model</label>
+          <select id="chat-model"></select>
+        </div>
+        <div class="chat-body">
+          <div class="history-strip" id="chat-history"></div>
+          <div style="display:flex; flex-direction:column; flex:1; min-width:0; min-height:0">
+            <div class="messages" id="chat-messages">
+              <div class="empty-state">
+                <div class="glyph">≋</div>
+                <p data-i18n="chat.emptyTitle"></p>
+                <p data-i18n="chat.emptyHint"></p>
+              </div>
+            </div>
+            <div class="composer">
+              <textarea id="chat-input" rows="1" data-i18n-ph="chat.placeholder"></textarea>
+              <button class="btn primary" id="chat-send" data-i18n="chat.send">Send</button>
+              <button class="btn danger" id="chat-stop" disabled data-i18n="chat.stop">Stop</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Monitor -->
+      <section class="panel" id="panel-monitor">
+        <div class="panel-header">
+          <h2 data-i18n="monitor.title">Swarm Monitor</h2>
+        </div>
+        <div class="metrics">
+          <div class="metric"><div class="value" id="metric-uptime">0m</div><div class="label" data-i18n="monitor.uptime">Uptime</div></div>
+          <div class="metric"><div class="value" id="metric-nodes">0</div><div class="label" data-i18n="monitor.nodesDiscovered">Nodes discovered</div></div>
+          <div class="metric"><div class="value" id="metric-connected">0</div><div class="label" data-i18n="monitor.nodesConnected">Nodes connected</div></div>
+          <div class="metric"><div class="value" id="metric-workers">0</div><div class="label" data-i18n="monitor.workersAvailable">Workers available</div></div>
+        </div>
+        <div class="notice" data-i18n="monitor.phase2Notice"></div>
+        <div class="panel-header" style="border-top:1px solid var(--border)">
+          <h2 data-i18n="monitor.activity">Activity</h2>
+        </div>
+        <div class="pipeline" id="pipeline"><p data-i18n="monitor.noEvents" style="color:var(--text-dim)"></p></div>
+        <div class="panel-header" style="border-top:1px solid var(--border)">
+          <h2 data-i18n="monitor.system">System</h2>
+        </div>
+        <div style="padding:8px 18px 18px" id="monitor-system"></div>
+      </section>
+
+      <!-- LCE -->
+      <section class="panel" id="panel-lce">
+        <div class="panel-header">
+          <h2 data-i18n="lce.title">Memory (LCE)</h2>
+        </div>
+        <div class="settings-body">
+          <div class="settings-section">
+            <h3 data-i18n="lce.status">Status</h3>
+            <div class="check-row"><span data-i18n="lce.status">Status</span><span class="val" id="lce-state">—</span></div>
+            <div class="check-row"><span data-i18n="lce.level">Level</span><span class="val" id="lce-note">—</span></div>
+            <div class="check-row"><span>swarmbly_lce</span><span class="val" id="lce-package">—</span></div>
+            <div style="margin-top:12px">
+              <button class="btn primary" id="lce-activate" data-i18n="lce.activate">Activate</button>
+              <button class="btn danger" id="lce-deactivate" style="display:none" data-i18n="lce.deactivate">Deactivate</button>
+            </div>
+          </div>
+          <div class="settings-section">
+            <h3 data-i18n="lce.sources">Source documents</h3>
+            <ul class="model-list" id="lce-sources"></ul>
+            <p class="hint" data-i18n="lce.c1note" style="color:var(--text-dim); font-size:0.78rem"></p>
+          </div>
+          <div class="settings-section">
+            <h3>C0 · C1</h3>
+            <p class="hint" style="color:var(--text-dim); font-size:0.8rem" data-i18n="lce.c0note"></p>
+            <p class="hint" style="color:var(--text-dim); font-size:0.8rem" data-i18n="lce.workers"></p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Settings -->
+      <section class="panel" id="panel-settings">
+        <div class="panel-header">
+          <h2 data-i18n="settings.title">Settings</h2>
+        </div>
+        <div class="settings-body">
+          <div class="settings-section">
+            <h3 data-i18n="settings.general">General</h3>
+            <div class="field"><label data-i18n="settings.language">Language</label>
+              <select id="set-language"><option value="en">English</option><option value="es">Español</option></select></div>
+            <div class="field"><label data-i18n="settings.theme">Theme</label>
+              <select id="set-theme"><option value="dark">Dark</option><option value="light">Light</option></select></div>
+            <div class="field"><label data-i18n="settings.reduceMotion">Reduce motion</label>
+              <input type="checkbox" id="set-reduce-motion"></div>
+            <div class="field"><label data-i18n="settings.dataDir">Data directory</label>
+              <span id="set-data-dir" style="font-family:var(--mono);font-size:0.78rem;color:var(--accent-2)">—</span>
+              <span class="hint" id="set-data-dir-hint"></span></div>
+          </div>
+          <div class="settings-section">
+            <h3 data-i18n="settings.models">Models</h3>
+            <div class="field"><label data-i18n="settings.backend">Backend</label>
+              <select id="set-backend"><option value="auto">Auto (Ollama first)</option><option value="ollama">Ollama</option><option value="openai_compat">OpenAI-compatible</option></select></div>
+            <div class="field"><label data-i18n="settings.backendUrl">Backend URL</label>
+              <input type="text" id="set-backend-url" placeholder="http://127.0.0.1:11434"></div>
+            <div class="field"><label data-i18n="settings.apiKey">API key</label>
+              <input type="password" id="set-api-key" placeholder="optional"></div>
+            <div class="field"><label data-i18n="settings.modelName">Default model</label>
+              <input type="text" id="set-model-name" placeholder="llama3.2:3b"></div>
+            <div class="field"><label>max_tokens</label><input type="number" id="set-max-tokens" min="64" max="8192"></div>
+            <div class="field"><label>temperature</label><input type="number" id="set-temperature" min="0" max="2" step="0.1"></div>
+            <h3 style="margin-top:14px" data-i18n="settings.detected">Detected models</h3>
+            <ul class="model-list" id="settings-detected"></ul>
+            <h3 data-i18n="settings.recommendations">Recommendations</h3>
+            <p class="hint" style="color:var(--text-dim)" data-i18n="settings.recoHint"></p>
+            <ul class="model-list" id="settings-reco"></ul>
+          </div>
+          <div class="settings-section">
+            <h3 data-i18n="settings.swarm">Swarm</h3>
+            <p class="hint" style="color:var(--text-dim)" data-i18n="settings.swarmPhase2"></p>
+            <div class="check-row"><span data-i18n="settings.mode">Mode</span><span class="val">local</span></div>
+            <div class="check-row"><span>LAN</span><span class="val unknown">off</span></div>
+            <div class="check-row"><span>Internet</span><span class="val unknown">off</span></div>
+            <div class="check-row"><span>Worker</span><span class="val unknown">off</span></div>
+          </div>
+          <div class="settings-section">
+            <h3 data-i18n="settings.privacy">Privacy &amp; security</h3>
+            <div class="check-row"><span data-i18n="settings.tier">Privacy tier</span><span class="val" id="set-tier">LOCAL</span></div>
+            <p class="hint" style="color:var(--text-dim)" data-i18n="settings.tierNote"></p>
+          </div>
+          <div class="settings-section">
+            <h3 data-i18n="settings.lce">LCE</h3>
+            <div class="field"><label data-i18n="settings.lceEnabled">Enable LCE</label>
+              <input type="checkbox" id="set-lce-enabled" disabled title="Manage in the Memory panel"></div>
+            <div class="check-row"><span data-i18n="settings.lceLevel">Level</span><span class="val" id="set-lce-level">C0</span></div>
+            <div class="check-row"><span data-i18n="settings.learning">Learning</span><span class="val">off</span></div>
+          </div>
+          <div class="settings-section">
+            <h3 data-i18n="settings.results">Results</h3>
+            <div class="field"><label data-i18n="settings.exportFormat">Export format</label>
+              <select id="set-export-format"><option value="markdown">Markdown</option><option value="json">JSON</option><option value="html">HTML</option></select></div>
+            <div class="field"><label data-i18n="settings.reportDetail">Report detail</label>
+              <select id="set-report-detail"><option value="minimal">Minimal</option><option value="standard">Standard</option><option value="full">Full</option></select></div>
+          </div>
+          <div class="settings-section">
+            <h3 data-i18n="settings.profile">Profile</h3>
+            <div class="field"><label></label>
+              <select id="set-profile"><option value="automatic" data-i18n="settings.profileAuto">Automatic</option><option value="custom" data-i18n="settings.profileCustom">Custom</option><option value="advanced" data-i18n="settings.profileAdvanced">Advanced</option></select></div>
+          </div>
+          <div style="display:flex; gap:10px; align-items:center">
+            <button class="btn primary" id="settings-save" data-i18n="settings.save">Save settings</button>
+            <button class="btn" id="settings-reset" data-i18n="settings.reset">Reset</button>
+            <span id="settings-saved" style="display:none; color:var(--accent); font-family:var(--mono); font-size:0.8rem"></span>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/js/i18n.js"></script>
+  <script src="/js/api.js"></script>
+  <script src="/js/app.js"></script>
+  <script src="/js/chat.js"></script>
+  <script src="/js/monitor.js"></script>
+  <script src="/js/lce.js"></script>
+  <script src="/js/settings.js"></script>
+  <script src="/js/wizard.js"></script>
+</body>
+</html>
