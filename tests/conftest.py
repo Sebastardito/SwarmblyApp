@@ -50,7 +50,7 @@ class FakeBackend:
 def app_state(tmp_path: Path) -> AppState:
     state = AppState(str(tmp_path / "data"))
     yield state
-    state.close()
+    state.stop()
 
 
 @pytest.fixture()

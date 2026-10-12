@@ -43,6 +43,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{key:14} {value}")
         return 0
 
+    state.start_p2p()  # independent P2P listener; discovery/worker per config
+
     api_cfg = state.config.get("api")
     host = args.host or api_cfg.get("host", "127.0.0.1")
     port = args.port or api_cfg.get("port", 8765)

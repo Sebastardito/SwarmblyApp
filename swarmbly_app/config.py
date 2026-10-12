@@ -42,7 +42,7 @@ DEFAULTS: dict[str, Any] = {
         "mode": "local",              # local | lan | internet | auto
         "lan_enabled": False,
         "internet_enabled": False,
-        "discovery_enabled": True,
+        "discovery_enabled": False,   # mDNS announce/browse only when LAN is on
         "worker_enabled": False,
         "worker_allow_lan": True,
         "worker_allow_internet": False,
@@ -54,8 +54,11 @@ DEFAULTS: dict[str, Any] = {
         "k_max": 2,                   # redundancy ceiling (explicit)
         "n_fragments_max": 4,
         "rho_target": 1.5,
+        "tau_sem": 0.5,               # placeholder seam threshold (flagged in reports)
         "timeout_ms": 60000,
         "max_retries": 1,
+        "p2p_host": "0.0.0.0",        # P2P listener (independent of the admin API)
+        "p2p_port": 9765,
         "rendezvous": [],             # rendezvous endpoints (Phase 3)
     },
     "privacy": {

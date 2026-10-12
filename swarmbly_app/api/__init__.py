@@ -183,6 +183,87 @@ def create_app(state: AppState) -> FastAPI:
     def lce_sources() -> list[dict]:
         return state.lce.list_sources()
 
+    # ---- swarm (Phase 2) --------------------------------------------------------------
+    @app.get("/api/swarm")
+    def swarm_status() -> dict:
+        cfg = state.config.all()["swarm"]
+        return {
+            **state.nodes.status(),
+            "config": {k: cfg.get(k) for k in
+                       ("mode", "lan_enabled", "internet_enabled",
+                        "worker_enabled", "worker_allow_lan",
+                        "worker_allow_internet", "worker_max_concurrent",
+                        "worker_only_idle", "k_min", "k_max", "rho_target",
+                        "n_fragments_max", "discovery_enabled")},
+            "worker": state.worker.status() if state.worker else None,
+        }
+
+    @app.get("/api/swarm/nodes")
+    def swarm_nodes() -> dict:
+        return {"peers": state.nodes.status()["peers"],
+                "discovered": state.nodes.status()["discovered"]}
+
+    @app.post("/api/swarm/connect")
+    def swarm_connect(body: dict) -> dict:
+        host = str(body.get("host", "")).strip()
+        try:
+            port = int(body.get("port", 9765))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="port must be an integer")
+        if not host:
+            raise HTTPException(status_code=400, detail="host is required")
+        state.nodes.connect_manual(host, port)
+        return {"connecting": f"{host}:{port}"}
+
+    @app.post("/api/swarm/rescan")
+    def swarm_rescan() -> dict:
+        if state.nodes.discovery is not None:
+            state.nodes.discovery.rescan()
+        return {"rescanned": True}
+
+    @app.post("/api/swarm/worker")
+    def swarm_worker(body: dict) -> dict:
+        enabled = bool(body.get("enabled", False))
+        state.config.update({"swarm": {"worker_enabled": enabled,
+                                       "lan_enabled": enabled}})
+        return state.worker.status() if state.worker else {"policy": {}}
+
+    @app.get("/api/requests/{request_id}")
+    def request_detail(request_id: str) -> dict:
+        req = state.db.get_request(request_id)
+        if req is None:
+            raise HTTPException(status_code=404, detail="request not found")
+        return req
+
+    @app.get("/api/requests/{request_id}/report")
+    def request_report(request_id: str, format: str = "markdown") -> Any:
+        req = state.db.get_request(request_id)
+        if req is None:
+            raise HTTPException(status_code=404, detail="request not found")
+        from ..reports import render_report
+        content = render_report(req, fmt=format)
+        media = {"json": "application/json", "markdown": "text/markdown",
+                 "html": "text/html"}[format]
+        return Response(content=content, media_type=media)
+
+    @app.get("/api/monitor")
+    def monitor_summary() -> dict:
+        from ..monitor import swarm_health, contribution
+        swarm = state.nodes.status()
+        stats = state.db.get_stats(days=30)
+        return {
+            "health": swarm_health(swarm),
+            "contribution": contribution(stats),
+            "swarm": {
+                "nodes_discovered": len(swarm["discovered"]),
+                "nodes_connected": swarm["connected_count"],
+                "workers_available": len(state.nodes.available_workers()),
+                "uptime_s": int(__import__("time").time() - state.started_at),
+            },
+            "tasks": {"completed": sum(s["tasks_requested"] for s in stats),
+                      "served": sum(s["tasks_served"] for s in stats)},
+        }
+
     # ---- websocket -----------------------------------------------------------------
     @app.websocket("/ws")
     async def websocket_endpoint(ws: WebSocket) -> None:

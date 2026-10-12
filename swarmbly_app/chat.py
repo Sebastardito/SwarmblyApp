@@ -37,11 +37,13 @@ class ActiveRequest:
 
 class ChatService:
     def __init__(self, db: Database, bus: EventBus,
-                 registry: BackendRegistry, config_getter: Callable[[], dict[str, Any]]):
+                 registry: BackendRegistry, config_getter: Callable[[], dict[str, Any]],
+                 orchestrator_getter: Callable[[], Any] | None = None):
         self.db = db
         self.bus = bus
         self.registry = registry
         self.config = config_getter
+        self.orchestrator = orchestrator_getter  # distributed engine (Phase 2)
         self._active: dict[str, ActiveRequest] = {}
         self._lock = threading.Lock()
 
@@ -120,6 +122,29 @@ class ChatService:
             context = context[-MAX_CONTEXT_MESSAGES:]
             if not context:
                 return self._fail(request, "no user message in context")
+            user_text = context[-1]["content"]
+
+            # Distributed modes route through the swarm engine (Phase 2).
+            if mode in ("lan", "internet", "auto") and self.orchestrator is not None:
+                if mode == "internet":
+                    return self._fail(
+                        request, "Internet swarms are Phase 3 (rendezvous not implemented)")
+                try:
+                    outcome = self.orchestrator().run(user_text, mode=mode)
+                except Exception as exc:
+                    return self._fail(request, f"swarm execution failed: {exc}")
+                if outcome.get("routed") == "distributed":
+                    self._finish_distributed(request, outcome["text"],
+                                             outcome["metadata"],
+                                             outcome["stages"])
+                    return
+                if outcome.get("routed") == "error":
+                    return self._fail(request, outcome.get("reason", "swarm error"))
+                # routed == "local": privacy tier or the router refused to fragment.
+                self.bus.publish("chat.notice", request_id=request.request_id,
+                                 conversation_id=conv_id,
+                                 message_id=request.message_id,
+                                 note=outcome.get("reason", ""))
 
             backend = self.registry.resolve(self.config())
             model = model or (backend.list_models() or [""])[0]
@@ -143,6 +168,27 @@ class ChatService:
                          note="interrupted by user")
         except (BackendError, IncompleteSettings, KeyError) as exc:
             self._fail(request, str(exc))
+
+    def _finish_distributed(self, request: ActiveRequest, text: str,
+                            metadata: dict[str, Any],
+                            stages: list[dict[str, Any]]) -> None:
+        """Complete a distributed request: assembled text + SPEC §19 metadata."""
+        meta: dict[str, Any] = {"status": "done", "note": "",
+                                "mode": request.mode, "model": request.model,
+                                "text": text, "swarm": metadata}
+        try:
+            self.db.update_message(request.message_id, content=text,
+                                   meta=meta, stages=stages)
+            self.db.finish_request(request.request_id, "done", meta)
+            self.db.touch_conversation(request.conversation_id)
+        except Exception:  # database may be closing during shutdown
+            pass
+        with self._lock:
+            self._active.pop(request.request_id, None)
+        self.bus.publish("chat.done", request_id=request.request_id,
+                         conversation_id=request.conversation_id,
+                         message_id=request.message_id, status="done",
+                         content=text, meta=meta)
 
     def _finish(self, request: ActiveRequest, result: GenerationResult | None,
                 status: str = "done", note: str = "") -> None:
