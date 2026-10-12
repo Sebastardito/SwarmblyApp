@@ -17,8 +17,11 @@ def main(argv: list[str] | None = None) -> int:
         prog="swarmbly-app",
         description="Swarmbly App — decentralized AI client and network dashboard")
     parser.add_argument("command", nargs="?", default="serve",
-                        choices=["serve", "headless", "status", "init"],
-                        help="serve (default, opens the UI) | headless (no UI) | status | init")
+                        choices=["serve", "headless", "status", "init", "config"],
+                        help="serve (default, opens the UI) | headless (no UI) | "
+                             "status | init | config get/set")
+    parser.add_argument("config_args", nargs="*",
+                        help="config set <key> <value> | config get [<key>]")
     parser.add_argument("--data-dir", default=None,
                         help="override the per-OS data directory")
     parser.add_argument("--port", type=int, default=None,
@@ -28,6 +31,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     from .state import AppState
+
+    if args.command == "config":
+        state = AppState(args.data_dir)
+        return _config_command(state, args.config_args)
 
     if args.command == "init":
         state = AppState(args.data_dir)
@@ -70,6 +77,44 @@ def main(argv: list[str] | None = None) -> int:
         pass
     finally:
         state.close()
+    return 0
+
+
+def _coerce(value: str):
+    if value.lower() in ("true", "false"):
+        return value.lower() == "true"
+    if value.lower() in ("null", "none"):
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    return value
+
+
+def _config_command(state, args: list[str]) -> int:
+    if not args or args[0] not in ("get", "set"):
+        print("usage: swarmbly-app config get [key]")
+        print("       swarmbly-app config set <key> <value>")
+        return 2
+    op = args[0]
+    if op == "get":
+        if len(args) > 1:
+            print(state.config.get(args[1]))
+        else:
+            import json
+            print(json.dumps(state.config.all(), indent=2, ensure_ascii=False))
+        return 0
+    if len(args) < 3:
+        print("usage: swarmbly-app config set <key> <value>", file=sys.stderr)
+        return 2
+    key, value = args[1], _coerce(args[2])
+    state.config.update({key: value})
+    print(f"{key} = {value!r}")
     return 0
 
 

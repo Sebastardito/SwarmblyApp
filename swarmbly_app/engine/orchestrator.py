@@ -346,12 +346,19 @@ class Orchestrator:
 
         The upstream pipeline walks the DAG level by level so that a packet
         carries only summaries of predecessors that actually produced output.
+        Workers are spread round-robin across the available (connected) nodes
+        so that fragments land on different machines/families; with k>1 each
+        task is sent to k *distinct* workers.
         """
         mapping: dict[str, list[str]] = {}
         consensus_block: dict[str, Any] = {}
         levels = _topological_levels(plan)
         summaries: dict[str, str] = {}
         families_used: set[str] = set()
+        workers = sorted(self.nodes.available_workers(), key=lambda p: p.node_id)
+        if not workers:
+            raise NoWorkers("no connected workers available")
+        task_index = 0
         for level in levels:
             tasks = [t for t in plan.tasks if t.task_id in level]
             for task in tasks:
@@ -361,16 +368,23 @@ class Orchestrator:
                                     only_tasks=[task.task_id])
                 packet = pkg.packets[0]
                 replicas: list[str] = []
+                replica_errors: list[str] = []
                 for attempt in range(k):
-                    replica_backend = backend.for_replica(
-                        "any", _nth_worker(self.nodes, attempt))
+                    worker = workers[(task_index * k + attempt) % len(workers)]
+                    family = _worker_family(worker)
+                    families_used.add(family)
+                    replica_backend = backend.for_replica(family, worker.node_id)
                     try:
                         text = replica_backend.generate(packet.text)
-                    except NoWorkers:
-                        if attempt == 0:
-                            raise
-                        continue  # fewer workers than k: fewer replicas, reported
+                    except (NoWorkers, RuntimeError) as exc:
+                        replica_errors.append(f"{worker.node_id[:8]}:{exc}")
+                        continue  # redundancy tolerates a failed replica
                     replicas.append(text)
+                if not replicas:
+                    # Every replica failed: honest failure, never an empty fragment.
+                    raise RuntimeError(
+                        f"all {k} replicas failed for {task.task_id}: "
+                        + "; ".join(replica_errors[:3]))
                 if k > 1 and len(replicas) > 1:
                     chosen, units, mean_agreement = self._micro_consensus(
                         replicas)
@@ -381,20 +395,30 @@ class Orchestrator:
                 else:
                     mapping[task.task_id] = replicas[:1]
                 summaries[task.task_id] = (mapping[task.task_id][0])[:400]
+                task_index += 1
         if k > 1:
             consensus_block.setdefault("k", k)
-            consensus_block.setdefault("families", sorted(families_used))
+            consensus_block["families"] = sorted(families_used)
             consensus_block.setdefault("mean_agreement", 0.0)
             consensus_block["alpha_high"] = ALPHA_HIGH_PLACEHOLDER
             consensus_block["alpha_low"] = ALPHA_LOW_PLACEHOLDER
             consensus_block["thresholds_source"] = "placeholder"
+        else:
+            consensus_block["families"] = sorted(families_used)
         return mapping, consensus_block
 
     def _micro_consensus(self, replicas: list[str]):
+        import dataclasses
         from swarmbly_v0.consensus import (align_multiple, agreement_score,
                                            segment_units)
         embedder = self._embedder()
-        units_per_replica = [segment_units(text) for text in replicas]
+        units_per_replica: list[list[Any]] = []
+        for i, text in enumerate(replicas):
+            units = segment_units(text)
+            # Each replica's units must carry a distinct replica_id so the
+            # aligner can key its per-replica vectors (SPEC §14b).
+            units_per_replica.append(
+                [dataclasses.replace(u, replica_id=f"r{i}") for u in units])
         columns = align_multiple(units_per_replica, embedder)
         out_parts: list[str] = []
         unit_reports: list[dict[str, Any]] = []
@@ -483,9 +507,14 @@ def _topological_levels(plan) -> list[set[str]]:
     return levels
 
 
-def _nth_worker(nodes: NodeManager, index: int) -> str:
-    workers = nodes.available_workers()
-    return workers[index % len(workers)].node_id
+def _worker_family(worker) -> str:
+    """The model family a worker advertises (its only/primary family)."""
+    models = worker.advertisement.get("models", []) or []
+    for model in models:
+        family = model.get("family")
+        if family:
+            return str(family)
+    return "unknown"
 
 
 def _column_medoid(column) -> str:

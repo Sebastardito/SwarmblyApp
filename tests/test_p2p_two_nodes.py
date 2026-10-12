@@ -123,3 +123,21 @@ class TestTwoNodeDistributed:
         assert final["meta"]["status"] == "failed"
         assert "no connected workers" in final["meta"].get("error", "")
         state.stop()
+
+
+class TestMicroConsensus:
+    def test_replica_ids_and_consensus(self, app_state):
+        """Regression: micro-consensus must assign distinct replica ids
+        (previously raised KeyError('') inside swarmbly_v0.consensus)."""
+        from swarmbly_app.engine.orchestrator import Orchestrator
+        from conftest import FakeBackend
+        fake = FakeBackend("alpha beta gamma delta epsilon.")
+        orch = Orchestrator(app_state.nodes, app_state.bus, fake,
+                            app_state.config.all, local_model="fake-model:1b")
+        chosen, units, mean_agreement = orch._micro_consensus(
+            ["alpha beta gamma delta epsilon.",
+             "alpha beta gamma delta epsilon."])
+        assert chosen.strip()
+        assert len(units) >= 1
+        assert isinstance(mean_agreement, float)
+        assert units[0]["label"] in ("HIGH", "MEDIUM", "LOW")
