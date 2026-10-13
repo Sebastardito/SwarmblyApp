@@ -2,6 +2,9 @@
 
 ## 0.2.0 — Phase 2.5: guided setup and new interface (2026-10-12)
 
+Software DOI: [10.5281/zenodo.23322639](https://doi.org/10.5281/zenodo.23322639)
+(all versions: [10.5281/zenodo.23322638](https://doi.org/10.5281/zenodo.23322638)).
+
 **Setup that explains itself**
 - Recommended configuration from measured hardware: a memory budget
   (unified memory, VRAM or RAM, with its derivation), chat model, local

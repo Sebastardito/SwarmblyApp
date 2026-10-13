@@ -4,6 +4,7 @@
 [![License: AGPL v3+](https://img.shields.io/badge/license-AGPL--3.0--or--later-2b6f4a)](LICENSE)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3cc8dc)
 ![Status: alpha](https://img.shields.io/badge/status-alpha-e9b949)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23322639.svg)](https://doi.org/10.5281/zenodo.23322639)
 
 **A desktop client and network dashboard for
 [SwarmblyAI](https://github.com/Sebastardito/SwarmblyAI) — decentralized
@@ -211,7 +212,15 @@ Contributions are welcome — read [CONTRIBUTING.md](CONTRIBUTING.md). Report
 vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
 
 Licensed under **AGPL-3.0-or-later** ([LICENSE](LICENSE), [NOTICE](NOTICE)).
-If you use Swarmbly App in research, see [CITATION.cff](CITATION.cff).
+If you use Swarmbly App in research, please cite it:
+
+> Espinoza-Ulloa, S. A. (2026). *Swarmbly App: desktop client and network
+> dashboard for decentralized problem-fragmenting inference* (Version 0.2.0)
+> [Software]. Zenodo. https://doi.org/10.5281/zenodo.23322639
+
+To cite every version at once, use the concept DOI
+[10.5281/zenodo.23322638](https://doi.org/10.5281/zenodo.23322638). Details in
+[CITATION.cff](CITATION.cff).
 
 Copyright © 2026 Sebastián A. Espinoza-Ulloa.
 
@@ -295,5 +304,10 @@ Para la prueba con dos computadoras reales: [P2P testing](docs/P2P_TESTING.md).
 Swarmbly App es **una** de las formas de participar en Swarmbly; el protocolo
 no depende de ella. Licencia **AGPL-3.0-or-later**. Véanse [NOTICE](NOTICE) y
 [CITATION.cff](CITATION.cff).
+
+**Cómo citar:** Espinoza-Ulloa, S. A. (2026). *Swarmbly App: desktop client
+and network dashboard for decentralized problem-fragmenting inference*
+(Version 0.2.0) [Software]. Zenodo. https://doi.org/10.5281/zenodo.23322639 —
+para citar todas las versiones: 10.5281/zenodo.23322638.
 
 Copyright © 2026 Sebastián A. Espinoza-Ulloa.
