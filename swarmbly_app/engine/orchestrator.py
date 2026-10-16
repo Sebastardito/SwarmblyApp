@@ -919,25 +919,47 @@ def _parse_items(text: str, items: dict[int, str]) -> dict[int, str]:
     """A replica's answer per item: first occurrence of each wanted label.
 
     Values that only repeat the item's own text are not answers (a replica
-    that re-lists its input); "Item: value" and "Item – value" keep the value.
+    that re-lists its input); "Item: value", "Item – value" and "Item = value"
+    keep the value. Items without a number label are found by a line that
+    starts with the item's own text ("* 100 m = 0,1 km"), as small models
+    often answer with bullets.
     """
     found: dict[int, str] = {}
-    matches = list(_LABEL_ANYWHERE.finditer(text or ""))
+    text = text or ""
+    matches = list(_LABEL_ANYWHERE.finditer(text))
     for i, m in enumerate(matches):
         n = int(m.group(1))
         if n not in items or n in found:
             continue
         end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-        value = text[m.end():end].split("\n")[0].split("```")[0].strip(_STRIP).rstrip(".;,").strip(_STRIP)
-        item = items[n].strip(_STRIP).rstrip(".;,")
-        if value.lower().startswith(item.lower()):
-            value = value[len(item):].lstrip(" :-–—=→*_`\"'").strip(_STRIP)
-        elif re.search(r"\s[:–—-]\s|:\s", value):
-            value = re.split(r"\s[:–—-]\s|:\s", value)[-1].strip(_STRIP)
-        value = value.rstrip(".;,").strip()
-        if value and value.lower() != item.lower():
+        value = _item_value(text[m.end():end].split("\n")[0], items[n])
+        if value:
             found[n] = value
+    missing = [n for n in items if n not in found]
+    if missing:
+        for line in text.splitlines():
+            bare = re.sub(r"^\s*[-*•]\s*", "", line).strip(_STRIP)
+            for n in missing:
+                item = items[n].strip(_STRIP).rstrip(".;,")
+                if n not in found and item and bare.casefold().startswith(item.casefold()):
+                    value = _item_value(bare, items[n])
+                    if value:
+                        found[n] = value
     return found
+
+
+_SEPARATOR = re.compile(r"\s[:–—=→-]\s|:\s")
+
+
+def _item_value(raw: str, item_text: str) -> str:
+    value = raw.split("```")[0].strip(_STRIP).rstrip(".;,").strip(_STRIP)
+    item = item_text.strip(_STRIP).rstrip(".;,")
+    if value.casefold().startswith(item.casefold()):
+        value = value[len(item):].lstrip(" :-–—=→*_`\"'").strip(_STRIP)
+    elif _SEPARATOR.search(value):
+        value = _SEPARATOR.split(value)[-1].strip(_STRIP)
+    value = value.rstrip(".;,").strip()
+    return value if value and value.casefold() != item.casefold() else ""
 
 
 def _vote_items(replicas, items: dict[int, str], ranking: list[int]):

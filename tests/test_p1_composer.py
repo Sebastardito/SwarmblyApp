@@ -161,3 +161,33 @@ def test_end_to_end_composition_on_two_nodes(tmp_path):
     finally:
         worker.stop()
         client.stop()
+
+
+class TestLiveFixes:
+    """Fixes from the first live P3.2 run (2026-10-16)."""
+
+    def test_requested_table_is_added_when_the_outline_omits_it(self):
+        data = dict(OUTLINE, sections=[s for s in OUTLINE["sections"] if s["kind"] != "table"])
+        o = _outline(json.dumps(data, ensure_ascii=False))
+        kinds = [s.kind for s in o.sections]
+        assert kinds.count("table") == 1 and kinds[-1] == "prose"
+        assert o.adjustments and "tablas" in " ".join(o.sections[-2].must_include)
+
+    def test_unfinished_tail_and_rules_are_cut(self):
+        sec = composer.Section("Turismo", "Impacto", 150)
+        raw = ("El turismo crece cada año. Las cuotas ayudan a controlarlo. "
+               "Los retos siguen.\n\n---\nEstos puntos")
+        assert composer.clean_section(raw, sec, "") == \
+            "El turismo crece cada año. Las cuotas ayudan a controlarlo. Los retos siguen."
+
+    def test_transition_does_not_ask_to_repeat_the_heading(self):
+        o = _outline(json.dumps(OUTLINE, ensure_ascii=False))
+        brief = composer.section_instruction(o, 2, "es")
+        assert "sin repetir ese título" in brief
+
+    def test_repeated_headings_are_dropped(self):
+        data = dict(OUTLINE, sections=OUTLINE["sections"][:2] + [OUTLINE["sections"][1]]
+                    + OUTLINE["sections"][2:])
+        o = _outline(json.dumps(data, ensure_ascii=False))
+        headings = [s.heading for s in o.sections]
+        assert len(headings) == len(set(headings)) == 5

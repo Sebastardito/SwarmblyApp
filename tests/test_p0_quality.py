@@ -330,3 +330,9 @@ class TestItemVote:
                             policy="items", lang="es", items=self.ITEMS)
         assert out["text"] in {r.text for r in reps}
         assert "chosen_family" in out["consensus"]["selection"]
+
+    def test_unlabelled_bullets_are_matched_by_item_text(self):
+        from swarmbly_app.engine.orchestrator import _parse_items
+        items = {7: "100 m", 8: "7000 m"}
+        assert _parse_items("* 100 m = 0,1 km\n* 7000 m = 7 km.", items) == \
+            {7: "0,1 km", 8: "7 km"}

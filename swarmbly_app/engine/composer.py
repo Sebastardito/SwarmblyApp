@@ -70,10 +70,12 @@ class Outline:
     sections: list[Section]
     source: str                         # local_model | fallback
     errors: list[str] = field(default_factory=list)
+    adjustments: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {"title": self.title, "topic": self.topic, "style": self.style,
                 "source": self.source, "errors": list(self.errors),
+                "adjustments": list(self.adjustments),
                 "sections": [s.to_dict() for s in self.sections]}
 
 
@@ -167,6 +169,14 @@ def parse_outline(raw: str, *, target_words: int, max_sections: int) -> Outline:
                                 words=words, key_points=_strings(item.get("key_points"), 5),
                                 must_include=_strings(item.get("must_include"), 4),
                                 kind=kind))
+    seen: set[str] = set()
+    unique = []
+    for sec in sections:                  # a repeated heading is a repeated section
+        key = sec.heading.casefold()
+        if key not in seen:
+            seen.add(key)
+            unique.append(sec)
+    sections = unique
     if len(sections) < MIN_SECTIONS:
         raise ValueError(f"the outline has {len(sections)} usable sections "
                          f"(minimum {MIN_SECTIONS})")
@@ -267,7 +277,28 @@ def make_outline(prompt: str, contract, lang: str, target_words: int, backend,
         return fallback_outline(prompt, contract, lang, target_words, str(exc)[:160])
     if not outline.topic:
         outline.topic = topic_from(getattr(contract, "objective", "") or "")
+    _ensure_table(outline, prompt, lang, target_words, max_sections)
     return outline
+
+
+def _ensure_table(outline: Outline, prompt: str, lang: str, target_words: int,
+                  max_sections: int) -> None:
+    """A requested table is a requirement, not a suggestion: add the section
+    the local model left out (live test 2026-10-16: the outline of a request
+    for "tablas de resumen" had none)."""
+    if not _TABLE_CUE.search(prompt or "") or any(s.kind == "table" for s in outline.sections):
+        return
+    s = _FALLBACK.get(lang, _FALLBACK["en"])
+    sentences = re.split(r"(?<=[.!?])\s+", " ".join((prompt or "").split()))
+    req = [x[:200] for x in sentences if _TABLE_CUE.search(x)][:1]
+    table = Section(s[4], s[5], TABLE_SECTION_WORDS, must_include=req, kind="table")
+    if len(outline.sections) >= max_sections:
+        middle = [i for i, sec in enumerate(outline.sections[1:-1], 1) if sec.kind != "table"]
+        if middle:
+            outline.sections.pop(middle[-1])
+    outline.sections.insert(len(outline.sections) - 1, table)
+    _rescale(outline.sections, target_words)
+    outline.adjustments.append("table section added: requested but missing from the outline")
 
 
 # -- section briefs ----------------------------------------------------------------
@@ -279,10 +310,12 @@ _BRIEF = {
         "points": "Puntos clave: {x}.", "must": "Debe incluir: {x}.",
         "style": "Estilo: {x}.", "words": "Extensión: unas {w} palabras.",
         "first": "Es la apertura: empieza el texto.",
-        "last": ("Es el cierre: empieza con una transición desde «{prev}» y termina el "
-                 "texto con una conclusión."),
-        "middle": ("Empieza con una frase de transición desde la sección anterior "
-                   "(«{prev}»). No escribas introducción ni conclusión del texto completo."),
+        "last": ("Es el cierre: conecta con lo anterior (que trató sobre «{prev}») con una "
+                 "frase de transición natural, sin repetir ese título, y termina el texto "
+                 "con una conclusión."),
+        "middle": ("Conecta con la sección anterior (que trató sobre «{prev}») con una frase "
+                   "de transición natural, sin repetir ese título. No escribas introducción "
+                   "ni conclusión del texto completo."),
         "table": ("Presenta esta sección como una tabla en Markdown con encabezados de "
                   "columna, precedida por una frase breve."),
         "only": "Escribe solo el contenido de esta sección, sin el encabezado ni el título.",
@@ -294,11 +327,12 @@ _BRIEF = {
         "points": "Key points: {x}.", "must": "Must include: {x}.",
         "style": "Style: {x}.", "words": "Length: about {w} words.",
         "first": "This is the opening: it starts the text.",
-        "last": ("This is the closing: begin with a transition from “{prev}” and end the "
+        "last": ("This is the closing: connect to what came before (it covered “{prev}”) "
+                 "with a natural transition, without repeating that heading, and end the "
                  "text with a conclusion."),
-        "middle": ("Begin with a transition sentence from the previous section "
-                   "(“{prev}”). Do not write an introduction or a conclusion of the "
-                   "whole text."),
+        "middle": ("Connect to the previous section (it covered “{prev}”) with a natural "
+                   "transition sentence, without repeating that heading. Do not write an "
+                   "introduction or a conclusion of the whole text."),
         "table": ("Present this section as a Markdown table with column headers, "
                   "preceded by one short sentence."),
         "only": "Write only the content of this section, without its heading or the title.",
@@ -345,16 +379,24 @@ def section_budget(section: Section, tokens_per_word: float, headroom: float = 1
 
 # -- assembly ----------------------------------------------------------------------
 def clean_section(text: str, section: Section, title: str) -> str:
-    """Drop what a worker adds around its section: fences, headings, the title."""
+    """Drop what a worker adds around its section: fences, headings, the title,
+    horizontal rules, and a trailing unfinished sentence (a section cut at its
+    token budget ended in "Estos puntos" in a live test)."""
     body = (text or "").strip()
     body = re.sub(r"^```[a-zA-Z]*\s*\n?|\n?```\s*$", "", body).strip()
-    lines = body.splitlines()
+    lines = [ln for ln in body.splitlines() if not re.match(r"^\s*([-*_]\s*){3,}$", ln)]
     names = {section.heading.casefold().strip(" .:*#"), (title or "").casefold().strip(" .:*#")}
     while lines and (not lines[0].strip()
                      or (section.kind != "table" and _HEADING_LINE.match(lines[0]))
                      or lines[0].strip().casefold().strip(" .:*#") in names):
         lines.pop(0)
-    return "\n".join(lines).strip()
+    body = "\n".join(lines).strip()
+    last = body.splitlines()[-1].strip() if body else ""
+    if last and not last.startswith("|") and not re.search(r"[.!?:»”\")]\s*$", last):
+        cut = max(body.rfind(". "), body.rfind(".\n"), body.rfind("! "), body.rfind("? "))
+        if cut > len(body) // 2:
+            body = body[:cut + 1].rstrip()
+    return body
 
 
 def assemble(outline: Outline, texts: list[str]) -> str:

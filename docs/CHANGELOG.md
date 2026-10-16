@@ -25,7 +25,12 @@ words) is no longer sent whole to one model or to whole-request replicas: the
 - Settings: `swarm.composer_enabled` (on), `swarm.composer_min_words` (400),
   `swarm.composer_max_sections` (6). Applies only when a local model and at
   least one worker (remote or local pool) are available.
-- 186 tests (12 new in `tests/test_p1_composer.py`, including a two-node
+- Fixes from the first live comparison (P3.2, 2026-10-16): a requested table
+  is added when the outline omits it; repeated section headings are dropped;
+  transitions no longer repeat the previous heading; a section cut at its
+  budget loses its unfinished last sentence and stray `---` rules. Batch
+  voting also matches unnumbered bullets by the item's own text.
+- 191 tests (17 new in `tests/test_p1_composer.py`, including a two-node
   end-to-end run over real TLS).
 
 ## 0.2.1 — Distributed answers that follow the request (unreleased)
