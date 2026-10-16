@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.2.1 — Distributed answers that follow the request (unreleased)
+
+Fixes from the diagnosis of 2026-10-15: a Spanish essay request came back as
+mixed English/Spanish, partial answers that echoed the contract.
+
+- **Admission**: numbered lines are a batch only when they are data items
+  with a stated operation. The criteria, instructions, steps or rules of one
+  task, and single compositions (essay, speech, text of N words), are no
+  longer split; they run as one task. Each packet used to carry ~95 % of such
+  a request, so every worker wrote the whole essay.
+- **The user's closing instructions travel with every fragment**
+  (`answer_sheet=False`); the English `[NN] value` directive is gone. Batches
+  get a short directive in the request's language.
+- **Language**: the request's language is detected on-device and carried as
+  the Γ extension `lang`. Workers render the contract and task headings in
+  that language; a "respond in <language>" line inside the task covers
+  workers on older versions. English packets are unchanged.
+- **Conversation context**: a follow-up in a distributed mode is rewritten by
+  the local model into a self-contained request; the history never leaves the
+  device. Without a local rewrite it is answered locally with the
+  conversation.
+- **Consensus for compositions**: one whole replica is selected (request
+  language, then complete, then document medoid); per-unit alignment is kept
+  as the divergence report. Batches keep per-unit consensus.
+- **Length**: requested lengths in words are read in es/en/pt/fr; output
+  budgets follow them (whole-request replicas and the local answer included).
+  Workers report `finish_reason`; truncated tasks are listed and noted.
+- **Contract**: neutral audience when none is stated; capitalised verbs at
+  line or bullet starts are no longer canonical entities; English default
+  forbidden phrases are not sent with non-English requests.
+- **Monitor**: largest share of the request carried by one packet
+  (`max_packet_prompt_fraction`).
+- 171 tests (31 new in `tests/test_p0_quality.py`).
+
 ## 0.2.0 — Phase 2.5: guided setup and new interface (2026-10-12)
 
 Software DOI: [10.5281/zenodo.23322639](https://doi.org/10.5281/zenodo.23322639)

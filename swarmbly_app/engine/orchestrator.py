@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import functools
 import threading
 import time
 import uuid
@@ -29,8 +30,10 @@ from ..p2p.messages import new_session_id
 from ..p2p.node import NodeManager
 from . import admission as admission_mod
 from .directory import Directory
+from .contract import build_contract
+from .followup import standalone
 from .packets import (PacketPlan, build_message, contains_identifier, gamma_for,
-                      measure_rho, minimal_objective)
+                      localise_instruction, measure_rho, minimal_objective)
 from .scheduler import LatencyStats, Scheduler, TaskFailed, run_levels
 
 PIPELINE_STAGES = [
@@ -51,6 +54,9 @@ PIPELINE_STAGES = [
 ]
 DISTRIBUTED_ONLY = PIPELINE_STAGES[3:13]
 TIER_ORDER = {"GLOBAL": 0, "TRUSTED": 1, "LOCAL": 2}
+# Output budget: tokens asked per task relative to the requested length.
+LENGTH_HEADROOM = 1.5
+MAX_BUDGET_TOKENS = 8192
 
 
 class Cancelled(RuntimeError):
@@ -166,8 +172,14 @@ class Orchestrator:
 
     # -- public entry -----------------------------------------------------------
     def run(self, text: str, *, mode: str = "lan", request_id: str | None = None,
-            cancel: threading.Event | None = None) -> dict[str, Any]:
-        """Execute one request. Returns ``routed`` = distributed | local | error."""
+            cancel: threading.Event | None = None,
+            history: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        """Execute one request. Returns ``routed`` = distributed | local | error.
+
+        ``history`` is the conversation before ``text`` (role/content dicts).
+        It never leaves the device: a follow-up is rewritten locally into a
+        self-contained request (``followup.py``), and only that is planned.
+        """
         request_id = request_id or uuid.uuid4().hex[:16]
         cfg = self.config()
         swarm_cfg, privacy_cfg = cfg["swarm"], cfg["privacy"]
@@ -182,7 +194,17 @@ class Orchestrator:
                     "stages": tracker.list()}
 
         tracker.start("REQUEST RECEIVED")
-        tracker.complete("REQUEST RECEIVED", mode=mode)
+        rewritten, rewrite_source = standalone(
+            text, history, LocalPromptBackend(self.local_stream, self.local_model))
+        if rewritten is None:
+            tracker.complete("REQUEST RECEIVED", mode=mode, standalone=rewrite_source)
+            tracker.skip_rest(["PRIVACY CLASSIFICATION", "ROUTING / DECOMPOSABILITY"],
+                              "follow-up answered with the conversation")
+            return local("this message refers to earlier turns and no local model could "
+                         "rewrite it as a self-contained request; answered locally with "
+                         "the conversation", standalone=rewrite_source)
+        text = rewritten
+        tracker.complete("REQUEST RECEIVED", mode=mode, standalone=rewrite_source)
 
         # 1. Privacy: tier (SPEC §15c) and lane (SPEC §15), both on-device.
         tracker.start("PRIVACY CLASSIFICATION")
@@ -190,7 +212,7 @@ class Orchestrator:
         lane = self._lane(text)
         routing_meta = {"tier": decision["tier"], "swarm_id": None,
                         "classifier": decision["source"], "mtls": False,
-                        "lane": lane}
+                        "lane": lane, "standalone": rewrite_source}
         tracker.complete("PRIVACY CLASSIFICATION", tier=decision["tier"],
                          lane=lane, source=decision["source"],
                          rationale=decision["rationale"],
@@ -287,20 +309,27 @@ class Orchestrator:
         workers = directory.available_workers()
 
         tracker.start("TASK PLANNING")
+        path = "whole" if whole else adm.path
+        request = build_contract(text if whole else adm.prompt)
+        contract, lang = request.contract, request.lang
         if whole:
-            contract = planner.global_contract(text, backend=None)
             plan = Plan(prompt=text, tasks=[Task(task_id="t0", instruction=text)])
         else:
-            contract = planner.global_contract(adm.prompt, backend=None)
+            # answer_sheet=False: the user's own closing instructions (format,
+            # presenter, tables…) travel with every fragment. The upstream
+            # answer-sheet mode replaced them with an English "[NN] value"
+            # directive (diagnosis 2026-10-15, finding 2).
             plan = planner.plan(adm.prompt, backend=None, n_tasks=adm.n_tasks,
-                                contract=contract, force_sequential=False)
+                                contract=contract, force_sequential=False,
+                                answer_sheet=False)
             if plan.sequential or len(plan.tasks) < 2:
                 raise RuntimeError("the plan is a chain or a single task (SPEC §7)")
         levels = _topological_levels(plan)
         consumed = {t.task_id: (t.depends_on if planner.consumes_predecessor(t.instruction)
                                 else ()) for t in plan.tasks}
         tracker.complete("TASK PLANNING", n_tasks=len(plan.tasks),
-                         n_levels=len(levels),
+                         n_levels=len(levels), language=lang,
+                         target_words=request.target_words,
                          path="whole request (replicas)" if whole else adm.path,
                          dispatch_waves=len(_topological_levels_from(consumed)),
                          edges_statement=sum(1 for t in plan.tasks
@@ -312,8 +341,7 @@ class Orchestrator:
         for level_no, level in enumerate(levels):
             for index, task_id in enumerate(sorted(level, key=_order)):
                 positions[task_id] = (level_no, index)
-        max_tokens = int(cfg["model"].get("max_tokens_per_fragment",
-                                          min(400, int(cfg["model"].get("max_tokens", 1024)))))
+        max_tokens = self._budget(cfg["model"], request, len(plan.tasks), whole)
         objective = minimal_objective(adm, contract)
         plans: dict[str, PacketPlan] = {}
         gammas: dict[str, dict[str, Any]] = {}
@@ -321,10 +349,11 @@ class Orchestrator:
             level_no, index = positions[task.task_id]
             plans[task.task_id] = PacketPlan(
                 task_id=task.task_id, wire_task_id="", level=level_no, index=index,
-                instruction=task.instruction, consumes=bool(consumed[task.task_id]),
+                instruction=localise_instruction(task.instruction, lang, path),
+                consumes=bool(consumed[task.task_id]),
                 depends_on=tuple(task.depends_on), lane=lane)
             gammas[task.task_id] = gamma_for(contract, objective, task.instruction,
-                                             max_tokens)
+                                             self._clamp(max_tokens, workers), lang)
         timeout_s = float(swarm_cfg.get("timeout_ms", 60000)) / 1000.0
         temperature = float(cfg["model"].get("temperature", 0.2))
 
@@ -332,7 +361,7 @@ class Orchestrator:
             def build(attempt: int, family: str | None) -> dict[str, Any]:
                 return build_message(
                     plans[task_id], gammas[task_id], session_id, attempt, carries,
-                    positions, max_tokens=self._clamp(max_tokens),
+                    positions, max_tokens=self._clamp(max_tokens, workers),
                     deadline_ms=int(timeout_s * 1000), tier=decision["tier"],
                     temperature=temperature, model_family=family)
             return build
@@ -349,6 +378,8 @@ class Orchestrator:
         tracker.complete("PACKET GENERATION", n_packets=len(preview),
                          rho_achieved=rho["rho_achieved"], rho_floor=rho["rho_floor"],
                          gamma_chars_max=rho["gamma_chars_max"],
+                         max_packet_prompt_fraction=rho["max_packet_prompt_fraction"],
+                         max_tokens_per_task=self._clamp(max_tokens, workers),
                          privacy_check=("passed: no session id, no complete request"
                                         if directory.remote_allowed else
                                         "local pool only: nothing leaves the device"))
@@ -380,7 +411,10 @@ class Orchestrator:
             replicas = await scheduler.run_task(task_id, build, max_tokens)
             loop = asyncio.get_running_loop()
             outcome = await loop.run_in_executor(
-                None, self._resolve, task_id, replicas, contract, embedder)
+                None, functools.partial(
+                    self._resolve, task_id, replicas, contract, embedder,
+                    policy="units" if path == "enumerated" else "whole",
+                    lang=lang, budget=self._clamp(max_tokens, workers)))
             resolved[task_id] = outcome
             carries[task_id] = planner.summarize_fragment(outcome["text"], typed=True)
             return outcome
@@ -432,6 +466,10 @@ class Orchestrator:
         if multi:
             tracker.start("CONSENSUS / ALIGNMENT")
             tracker.complete("CONSENSUS / ALIGNMENT", tasks=len(multi),
+                             policy=("per-unit alignment (independent items)"
+                                     if path == "enumerated" else
+                                     "whole-replica selection; per-unit alignment "
+                                     "reported as divergence only"),
                              mean_agreement=round(sum(r["consensus"]["mean_agreement"]
                                                       for r in multi.values()) / len(multi), 4),
                              thresholds="placeholder α (uncalibrated)",
@@ -451,6 +489,8 @@ class Orchestrator:
                          bridges=sum(1 for s in seams if s["path"] == "bridge"),
                          bridge_failures=bridge_backend.failures,
                          embedder=embedder_name)
+
+        truncated = sorted(tid for tid, r in resolved.items() if r.get("truncated"))
 
         tracker.start("COHERENCE REPORT")
         coherence = self._coherence(texts, seams, embedder_name)
@@ -476,6 +516,7 @@ class Orchestrator:
                 "mean_agreement": round(sum(r["consensus"]["mean_agreement"]
                                             for r in multi.values()) / len(multi), 4),
                 "per_task": {tid: r["consensus"] for tid, r in multi.items()},
+                "policy": ("units" if path == "enumerated" else "whole_replica"),
                 "alpha_high": multi[next(iter(multi))]["consensus"]["alpha_high"],
                 "alpha_low": multi[next(iter(multi))]["consensus"]["alpha_low"],
                 "thresholds_source": "swarmbly_v0 provisional defaults (uncalibrated)",
@@ -485,6 +526,12 @@ class Orchestrator:
             **{k: rho[k] for k in ("rho_achieved", "rho_target", "rho_floor",
                                    "rho_reachable", "rho_policy")},
             "n_tasks": len(plan.tasks), "n_levels": len(levels),
+            "language": lang,
+            "length": {"target_words": request.target_words,
+                       "explicit": request.length_explicit,
+                       "max_tokens_per_task": self._clamp(max_tokens, workers)},
+            "truncated_tasks": truncated,
+            "max_packet_prompt_fraction": rho["max_packet_prompt_fraction"],
             "tau_sem": self._tau_sem(), "tau_source": self._tau_source(embedder_name),
             "seams": seams,
             "coherence": coherence,
@@ -525,13 +572,24 @@ class Orchestrator:
                 "stages": tracker.list()}
 
     # -- pieces ---------------------------------------------------------------------
-    def _resolve(self, task_id, replicas, contract, embedder) -> dict[str, Any]:
-        """One text per task: the only replica, or upstream consensus (§14b)."""
+    def _resolve(self, task_id, replicas, contract, embedder, *, policy: str = "units",
+                 lang: str | None = None, budget: int | None = None) -> dict[str, Any]:
+        """One text per task: the only replica, or a consensus over replicas (§14b).
+
+        ``policy="units"`` (independent items of a batch) returns upstream's
+        per-unit consensus text. ``policy="whole"`` (a composition, a whole
+        request) selects ONE complete replica: upstream per-unit consensus
+        picks a medoid per unit, which on two different essays produced a
+        patchwork of both, in two languages (diagnosis 2026-10-15, finding 5).
+        The per-unit alignment is still computed and reported as divergence.
+        """
         meta = [{"node": r.node_id[:12], "family": r.family, "model": r.model,
-                 "elapsed_ms": r.elapsed_ms, "telemetry": r.telemetry}
+                 "elapsed_ms": r.elapsed_ms, "telemetry": r.telemetry,
+                 "truncated": _is_truncated(r, budget)}
                 for r in replicas]
         if len(replicas) < 2:
-            return {"text": replicas[0].text, "consensus": None, "replica_meta": meta}
+            return {"text": replicas[0].text, "consensus": None, "replica_meta": meta,
+                    "truncated": meta[0]["truncated"]}
         from swarmbly_v0.consensus import Replica as UpReplica, consensus
         result = consensus([UpReplica(replica_id=f"r{i}", text=r.text, family=r.family,
                                       model=r.model) for i, r in enumerate(replicas)],
@@ -547,8 +605,14 @@ class Orchestrator:
                  "text": r.text[:200]} for r in result.low_confidence_regions],
             "alpha_high": result.alpha_high, "alpha_low": result.alpha_low,
         }
-        return {"text": result.text or replicas[0].text, "consensus": block,
-                "replica_meta": meta}
+        if policy != "whole":
+            return {"text": result.text or replicas[0].text, "consensus": block,
+                    "replica_meta": meta,
+                    "truncated": all(m["truncated"] for m in meta)}
+        chosen, selection = _select_whole(replicas, meta, embedder, lang)
+        block["selection"] = selection
+        return {"text": replicas[chosen].text, "consensus": block, "replica_meta": meta,
+                "truncated": meta[chosen]["truncated"]}
 
     def _assemble(self, plan, contract, resolved, bridge_backend, embedder, path):
         """Select-then-splice (SPEC §14). For an enumerated batch the items
@@ -634,10 +698,15 @@ class Orchestrator:
             raise RuntimeError("P2P loop not running")
         return loop
 
-    def _clamp(self, max_tokens: int) -> int:
-        """Never ask more than the smallest worker policy allows (SPEC §12)."""
+    def _clamp(self, max_tokens: int, workers: list[Any] | None = None) -> int:
+        """Never ask more than the smallest worker policy allows (SPEC §12).
+
+        ``workers`` are the peers this request may use (the local pool has no
+        per-task limit); by default, every connected remote worker.
+        """
         limits = []
-        for peer in self.nodes.available_workers():
+        peers = workers if workers is not None else self.nodes.available_workers()
+        for peer in peers:
             try:
                 limit = int((peer.advertisement.get("policy") or {})
                             .get("max_tokens_per_task") or 0)
@@ -646,6 +715,25 @@ class Orchestrator:
             if limit:
                 limits.append(limit)
         return min([max_tokens] + limits)
+
+    @staticmethod
+    def _budget(model_cfg: dict[str, Any], request, n_tasks: int, whole: bool) -> int:
+        """Output tokens to ask of each task, from the length the user asked for.
+
+        A fixed 400 tokens per fragment truncated a requested 800-word essay
+        (diagnosis 2026-10-15, finding 3b). Whole-request replicas get the
+        model's full ``max_tokens``; fragments get the configured fragment
+        budget. Either way, an explicit length raises the budget to
+        ``1.5 × target / n_tasks`` (headroom for the language's token rate).
+        """
+        full = int(model_cfg.get("max_tokens", 1024))
+        base = full if whole else int(model_cfg.get("max_tokens_per_fragment",
+                                                    min(400, full)))
+        if request.length_explicit:
+            needed = int(LENGTH_HEADROOM * request.contract.target_length_tokens
+                         / max(1, 1 if whole else n_tasks)) + 1
+            base = max(base, needed)
+        return max(16, min(base, MAX_BUDGET_TOKENS))
 
     def _embedder(self):
         cfg = self.config()["model"]
@@ -670,6 +758,48 @@ class Orchestrator:
     def _tau_source(self, embedder_name: str) -> str:
         return (f"placeholder:{self._tau_sem()} — uncalibrated for {embedder_name}; "
                 "SPEC §14 requires calibration per embedder")
+
+
+def _is_truncated(replica, budget: int | None) -> bool:
+    """The generation stopped at its token budget rather than finishing.
+
+    ``finish_reason == "length"`` when the worker reports it (app ≥ 0.2.1);
+    otherwise output tokens at ≥ 98 % of the budget.
+    """
+    telemetry = getattr(replica, "telemetry", None) or {}
+    reason = str(telemetry.get("finish_reason") or "")
+    if reason:
+        return reason == "length"
+    tokens = telemetry.get("tokens_out")
+    try:
+        return bool(budget) and tokens is not None and int(tokens) >= 0.98 * int(budget)
+    except (TypeError, ValueError):
+        return False
+
+
+def _select_whole(replicas, meta, embedder, lang: str | None):
+    """Pick one complete replica: request language, then not truncated, then
+    the document medoid (highest mean cosine to the other replicas)."""
+    import numpy as np
+
+    from ..lang import detect_language
+    vectors = np.asarray(embedder.embed([r.text for r in replicas]), dtype=float)
+    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+    unit = vectors / np.where(norms == 0, 1.0, norms)
+    sims = unit @ unit.T
+    k = len(replicas)
+    centrality = [(float(sims[i].sum() - sims[i, i]) / (k - 1)) for i in range(k)]
+    langs = [detect_language(r.text) for r in replicas]
+    keys = [((langs[i] == lang) if lang else True, not meta[i]["truncated"],
+             centrality[i], -int(replicas[i].elapsed_ms or 0)) for i in range(k)]
+    chosen = max(range(k), key=lambda i: keys[i])
+    return chosen, {
+        "policy": "whole replica: language match, then complete, then document medoid",
+        "chosen": chosen, "chosen_family": replicas[chosen].family,
+        "candidates": [{"family": replicas[i].family, "language": langs[i],
+                        "truncated": meta[i]["truncated"],
+                        "centrality": round(centrality[i], 4)} for i in range(k)],
+    }
 
 
 def _order(task_id: str) -> int:

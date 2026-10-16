@@ -244,8 +244,12 @@ class WorkerService:
                                 "max_tokens": max_tokens},
             "seed": None,
         }
+        finish_reason = (getattr(backend.last, "finish_reason", "") or ""
+                         if backend.last is not None else "")
         telemetry = {"gen_ms": gen_ms, "queue_ms": queue_ms,
-                     "tokens_out": tokens_out, "energy_j": None}
+                     "tokens_out": tokens_out, "energy_j": None,
+                     # "length" = the generation hit max_tokens (truncated).
+                     "finish_reason": finish_reason}
         reply = result(attempt_id, text, profile, telemetry, b"", commitment=None)
         reply["sig"] = _b64(self.identity.sign(
             canonical_bytes({k: v for k, v in reply.items() if k != "sig"})))
@@ -296,34 +300,41 @@ def render_packet_prompt(message: dict[str, Any]) -> str:
     worker's prompt only ever contains what the packet carries. No
     ``session_id`` ever appears here (the wire packet has none).
     """
+    from ..lang import strings, value
+
     parts: list[str] = []
     contract = message.get("contract") or {}
+    # Γ extension ``lang``: scaffolding in the request's language (English
+    # when absent, byte-identical to v0.2.0).
+    lang = contract.get("lang") if isinstance(contract.get("lang"), str) else None
+    s = strings(lang)
     if contract:
-        lines = ["[GLOBAL CONTRACT]"]
+        lines = [s["contract"]]
         for key in ("objective", "audience", "register", "format", "target_len"):
             if contract.get(key) not in (None, "", 0):
-                lines.append(f"{key}: {contract[key]}")
+                lines.append(f"{s[key]}: {value(lang, contract[key])}")
         lexicon = contract.get("lexicon") or {}
         if lexicon.get("prefer"):
-            lines.append("prefer: " + ", ".join(map(str, lexicon["prefer"])))
+            lines.append(f"{s['prefer']}: " + ", ".join(map(str, lexicon["prefer"])))
         if lexicon.get("forbid"):
-            lines.append("avoid: " + ", ".join(map(str, lexicon["forbid"])))
+            lines.append(f"{s['avoid']}: " + ", ".join(map(str, lexicon["forbid"])))
         if contract.get("entities"):
-            lines.append("use these exact names: " + ", ".join(
+            lines.append(f"{s['entities']}: " + ", ".join(
                 str(e.get("canonical") or e.get("name")) for e in contract["entities"]
                 if isinstance(e, dict)))
         if contract.get("style_seed"):
-            lines.append(f"style: {contract['style_seed']}")
+            lines.append(f"{s['style']}: {contract['style_seed']}")
         parts.append("\n".join(lines))
     for pred in message.get("predecessors") or []:
         if isinstance(pred, dict) and pred.get("summary"):
-            parts.append(f"[CONTEXT {str(pred.get('task_id', ''))[:8]}] {pred['summary']}")
+            parts.append(f"[{s['context']} {str(pred.get('task_id', ''))[:8]}] "
+                         f"{pred['summary']}")
     task = message.get("task") or {}
     instruction = str(task.get("instruction") or "")
     expects = task.get("expects") or {}
     if expects.get("format"):
-        instruction += f"\nRespond in {expects['format']} format."
-    parts.append(f"[TASK]\n{instruction}")
+        instruction += "\n" + s["respond_format"].format(fmt=value(lang, expects["format"]))
+    parts.append(f"{s['task']}\n{instruction}")
     return "\n\n".join(parts)
 
 

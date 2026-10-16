@@ -22,13 +22,16 @@ following whitepaper v2 §9.7, ρ is *derived and reported*, not configured.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
+from ..lang import DEFAULT_LANG, strings
 from ..p2p.messages import WIRE_VERSION, attempt_id_for, packet as wire_packet, task_id_for
 from ..p2p.worker import render_packet_prompt
 
 OBJECTIVE_MAX_CHARS = 240
+_WORDS = re.compile(r"\w+", re.U)
 _FIRST_SENTENCE = re.compile(r"^(.+?[.!?:])(\s|$)", re.S)
 
 
@@ -44,12 +47,46 @@ def minimal_objective(admission, contract) -> str:
     return text[:OBJECTIVE_MAX_CHARS]
 
 
+# Upstream ``planner.plan`` closes the last task of a fan-in with this English
+# directive. It is meant for sections of one composition; an enumerated batch
+# or a reference map has independent units, and the sentence only adds English
+# scaffolding to a packet that may be in another language.
+UPSTREAM_INTEGRATION_SUFFIX = " Close the answer; do not repeat earlier parts."
+
+
+def localise_instruction(instruction: str, lang: str, path: str) -> str:
+    """The task text a worker receives, with directives in the request's language.
+
+    - independent units (``enumerated`` / ``reference``) lose the upstream
+      integration suffix;
+    - an enumerated batch gets the localised batch directive (it replaces the
+      upstream ``[NN]`` answer-sheet directive, which is never used: the
+      user's own format instructions travel instead);
+    - a non-English request gets "respond in <language>" *inside the task*,
+      so workers running an older renderer still see it.
+    """
+    text = instruction
+    if path in ("enumerated", "reference") and text.endswith(UPSTREAM_INTEGRATION_SUFFIX):
+        text = text[: -len(UPSTREAM_INTEGRATION_SUFFIX)]
+    s = strings(lang)
+    if path == "enumerated":
+        text = f"{text.rstrip()}\n\n{s['batch']}"
+    if lang != DEFAULT_LANG and s["respond_lang"]:
+        text = f"{text.rstrip()}\n{s['respond_lang']}"
+    return text
+
+
 def gamma_for(contract, objective: str, fragment_text: str,
-              max_out_tokens: int) -> dict[str, Any]:
-    """Γ for one fragment (SPEC §5 fields; required ones always present)."""
+              max_out_tokens: int, lang: str = DEFAULT_LANG) -> dict[str, Any]:
+    """Γ for one fragment (SPEC §5 fields; required ones always present).
+
+    ``lang`` is an app extension (SWIP draft): the request's language, so the
+    worker renders its scaffolding in that language. Omitted for English
+    (the default), so English Γ is unchanged from v0.2.0.
+    """
     lowered = fragment_text.lower()
     entities = [e for e in contract.canonical_entities if e.lower() in lowered]
-    return {
+    gamma = {
         "v": WIRE_VERSION,
         "objective": objective,
         "audience": contract.audience,
@@ -61,6 +98,9 @@ def gamma_for(contract, objective: str, fragment_text: str,
         "style_seed": "",
         "budget": {"max_out_tokens": int(max_out_tokens)},
     }
+    if lang and lang != DEFAULT_LANG:
+        gamma["lang"] = lang
+    return gamma
 
 
 def _spec_format(fmt: str) -> str:
@@ -117,6 +157,17 @@ def measure_rho(messages: list[dict[str, Any]], prompt: str) -> dict[str, Any]:
     packet_tokens = [count_tokens(render_packet_prompt(m)) for m in messages]
     total = sum(packet_tokens)
     gamma_bytes = [len(str(m.get("contract", ""))) for m in messages]
+    # How much of the request one packet carries: the share of the request's
+    # words (as a multiset) found in that packet's task text. A packet near
+    # 1.0 is the whole request in all but name — what the privacy self-check
+    # (exact match only) did not see in the diagnosis of 2026-10-15
+    # (finding 8). Reported, not enforced.
+    request_words = Counter(_WORDS.findall(prompt.lower()))
+    n_words = max(1, sum(request_words.values()))
+    task_fraction = [
+        sum((Counter(_WORDS.findall(str((m.get("task") or {}).get("instruction") or "")
+                                    .lower())) & request_words).values()) / n_words
+        for m in messages]
     return {
         "rho_achieved": round(total / p_tokens, 4),
         # Packets carry mandatory content only (task + Γ_min + consumed carry),
@@ -129,6 +180,9 @@ def measure_rho(messages: list[dict[str, Any]], prompt: str) -> dict[str, Any]:
         "prompt_tokens": p_tokens,
         "packet_tokens": packet_tokens,
         "gamma_chars_max": max(gamma_bytes) if gamma_bytes else 0,
+        "max_packet_prompt_fraction": round(max(task_fraction), 4) if task_fraction else 0.0,
+        "max_packet_prompt_fraction_note": "largest share of the request's words "
+                                           "carried by one packet's task text",
     }
 
 

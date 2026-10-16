@@ -141,9 +141,11 @@ class ChatService:
                     return self._fail(
                         request, "Internet swarms are Phase 3 (rendezvous not implemented)")
                 try:
+                    # The conversation stays on this device: the orchestrator
+                    # rewrites a follow-up locally into a standalone request.
                     outcome = self.orchestrator().run(
                         user_text, mode=mode, request_id=request.request_id,
-                        cancel=request.stop_event)
+                        cancel=request.stop_event, history=context[:-1])
                 except Exception as exc:
                     return self._fail(request, f"swarm execution failed: {exc}")
                 routed = outcome.get("routed")
@@ -178,9 +180,11 @@ class ChatService:
                                  conversation_id=conv_id,
                                  message_id=request.message_id, delta=delta)
 
+            from .engine.contract import answer_budget
             result = backend.stream_chat(
                 context, model=model,
-                max_tokens=int(self.config()["model"].get("max_tokens", 1024)),
+                max_tokens=answer_budget(
+                    user_text, int(self.config()["model"].get("max_tokens", 1024))),
                 temperature=float(self.config()["model"].get("temperature", 0.2)),
                 on_delta=on_delta,
                 interrupt=request.stop_event.is_set)
@@ -202,7 +206,10 @@ class ChatService:
                             metadata: dict[str, Any],
                             stages: list[dict[str, Any]]) -> None:
         """Complete a distributed request: assembled text + SPEC §19 metadata."""
-        meta: dict[str, Any] = {"status": "done", "note": "",
+        truncated = metadata.get("truncated_tasks") or []
+        note = (f"output reached its token budget in {len(truncated)} task(s); the "
+                "answer may be incomplete" if truncated else "")
+        meta: dict[str, Any] = {"status": "done", "note": note,
                                 "mode": request.mode, "model": request.model,
                                 "request_id": request.request_id,
                                 "executed": "distributed", "swarm": metadata}
