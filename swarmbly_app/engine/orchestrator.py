@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import functools
+import re
 import threading
 import time
 import uuid
@@ -203,8 +204,11 @@ class Orchestrator:
             return local("this message refers to earlier turns and no local model could "
                          "rewrite it as a self-contained request; answered locally with "
                          "the conversation", standalone=rewrite_source)
+        rewritten_view = ({"standalone_request": rewritten[:300]}
+                          if rewrite_source == "local_rewrite" else {})
         text = rewritten
-        tracker.complete("REQUEST RECEIVED", mode=mode, standalone=rewrite_source)
+        tracker.complete("REQUEST RECEIVED", mode=mode, standalone=rewrite_source,
+                         **rewritten_view)
 
         # 1. Privacy: tier (SPEC §15c) and lane (SPEC §15), both on-device.
         tracker.start("PRIVACY CLASSIFICATION")
@@ -413,12 +417,14 @@ class Orchestrator:
             outcome = await loop.run_in_executor(
                 None, functools.partial(
                     self._resolve, task_id, replicas, contract, embedder,
-                    policy="units" if path == "enumerated" else "whole",
-                    lang=lang, budget=self._clamp(max_tokens, workers)))
+                    policy="items" if path == "enumerated" else "whole",
+                    lang=lang, budget=self._clamp(max_tokens, workers),
+                    items=_item_texts(plan_by_id[task_id].instruction)))
             resolved[task_id] = outcome
             carries[task_id] = planner.summarize_fragment(outcome["text"], typed=True)
             return outcome
 
+        plan_by_id = {t.task_id: t for t in plan.tasks}
         order = [t.task_id for t in sorted(plan.tasks, key=lambda t: positions[t.task_id])]
         for name in ("DISPATCHING", "MODEL EXECUTION", "RESULT RECEPTION"):
             tracker.start(name)
@@ -466,7 +472,8 @@ class Orchestrator:
         if multi:
             tracker.start("CONSENSUS / ALIGNMENT")
             tracker.complete("CONSENSUS / ALIGNMENT", tasks=len(multi),
-                             policy=("per-unit alignment (independent items)"
+                             policy=("item vote (majority per numbered item); "
+                                     "per-unit alignment reported as divergence"
                                      if path == "enumerated" else
                                      "whole-replica selection; per-unit alignment "
                                      "reported as divergence only"),
@@ -516,7 +523,7 @@ class Orchestrator:
                 "mean_agreement": round(sum(r["consensus"]["mean_agreement"]
                                             for r in multi.values()) / len(multi), 4),
                 "per_task": {tid: r["consensus"] for tid, r in multi.items()},
-                "policy": ("units" if path == "enumerated" else "whole_replica"),
+                "policy": ("item_vote" if path == "enumerated" else "whole_replica"),
                 "alpha_high": multi[next(iter(multi))]["consensus"]["alpha_high"],
                 "alpha_low": multi[next(iter(multi))]["consensus"]["alpha_low"],
                 "thresholds_source": "swarmbly_v0 provisional defaults (uncalibrated)",
@@ -573,7 +580,8 @@ class Orchestrator:
 
     # -- pieces ---------------------------------------------------------------------
     def _resolve(self, task_id, replicas, contract, embedder, *, policy: str = "units",
-                 lang: str | None = None, budget: int | None = None) -> dict[str, Any]:
+                 lang: str | None = None, budget: int | None = None,
+                 items: dict[int, str] | None = None) -> dict[str, Any]:
         """One text per task: the only replica, or a consensus over replicas (§14b).
 
         ``policy="units"`` (independent items of a batch) returns upstream's
@@ -582,6 +590,13 @@ class Orchestrator:
         picks a medoid per unit, which on two different essays produced a
         patchwork of both, in two languages (diagnosis 2026-10-15, finding 5).
         The per-unit alignment is still computed and reported as divergence.
+
+        ``policy="items"`` (an enumerated batch) votes per numbered item: each
+        replica's answer to item *n* is parsed, the majority value wins, ties
+        go to the best-ranked replica (as in ``"whole"``). Per-unit alignment
+        on short answer sheets appended a second replica's re-listed items to
+        the first (live smoke test 2026-10-16). When fewer than half the items
+        can be parsed, the policy falls back to ``"whole"``.
         """
         meta = [{"node": r.node_id[:12], "family": r.family, "model": r.model,
                  "elapsed_ms": r.elapsed_ms, "telemetry": r.telemetry,
@@ -605,11 +620,18 @@ class Orchestrator:
                  "text": r.text[:200]} for r in result.low_confidence_regions],
             "alpha_high": result.alpha_high, "alpha_low": result.alpha_low,
         }
-        if policy != "whole":
+        if policy == "units":
             return {"text": result.text or replicas[0].text, "consensus": block,
                     "replica_meta": meta,
                     "truncated": all(m["truncated"] for m in meta)}
         chosen, selection = _select_whole(replicas, meta, embedder, lang)
+        if policy == "items" and items:
+            vote = _vote_items(replicas, items, selection["ranking"])
+            if vote is not None:
+                text, report = vote
+                block["selection"] = report
+                return {"text": text, "consensus": block, "replica_meta": meta,
+                        "truncated": False}
         block["selection"] = selection
         return {"text": replicas[chosen].text, "consensus": block, "replica_meta": meta,
                 "truncated": meta[chosen]["truncated"]}
@@ -793,12 +815,81 @@ def _select_whole(replicas, meta, embedder, lang: str | None):
     keys = [((langs[i] == lang) if lang else True, not meta[i]["truncated"],
              centrality[i], -int(replicas[i].elapsed_ms or 0)) for i in range(k)]
     chosen = max(range(k), key=lambda i: keys[i])
+    ranking = sorted(range(k), key=lambda i: keys[i], reverse=True)
     return chosen, {
+        "ranking": ranking,
         "policy": "whole replica: language match, then complete, then document medoid",
         "chosen": chosen, "chosen_family": replicas[chosen].family,
         "candidates": [{"family": replicas[i].family, "language": langs[i],
                         "truncated": meta[i]["truncated"],
                         "centrality": round(centrality[i], 4)} for i in range(k)],
+    }
+
+
+_ITEM_LINE = re.compile(r"^\s*[\[(]?(\d{1,3})[\]).:]\s+(.+?)\s*$", re.M)
+_LABEL_ANYWHERE = re.compile(r"(?:^|(?<=\s))[\[(]?(\d{1,3})[\]).:]\s+")
+_STRIP = " \t*_`#>\"'“”«»"
+
+
+def _item_texts(instruction: str) -> dict[int, str]:
+    """``{number: item text}`` for the numbered items of one fragment."""
+    return {int(m.group(1)): m.group(2) for m in _ITEM_LINE.finditer(instruction or "")}
+
+
+def _parse_items(text: str, items: dict[int, str]) -> dict[int, str]:
+    """A replica's answer per item: first occurrence of each wanted label.
+
+    Values that only repeat the item's own text are not answers (a replica
+    that re-lists its input); "Item: value" and "Item – value" keep the value.
+    """
+    found: dict[int, str] = {}
+    matches = list(_LABEL_ANYWHERE.finditer(text or ""))
+    for i, m in enumerate(matches):
+        n = int(m.group(1))
+        if n not in items or n in found:
+            continue
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        value = text[m.end():end].split("\n")[0].split("```")[0].strip(_STRIP).rstrip(".;,").strip(_STRIP)
+        item = items[n].strip(_STRIP).rstrip(".;,")
+        if value.lower().startswith(item.lower()):
+            value = value[len(item):].lstrip(" :-–—=→*_`\"'").strip(_STRIP)
+        elif re.search(r"\s[:–—-]\s|:\s", value):
+            value = re.split(r"\s[:–—-]\s|:\s", value)[-1].strip(_STRIP)
+        value = value.rstrip(".;,").strip()
+        if value and value.lower() != item.lower():
+            found[n] = value
+    return found
+
+
+def _vote_items(replicas, items: dict[int, str], ranking: list[int]):
+    """Majority vote per numbered item; ``None`` when replicas are unparseable."""
+    parsed = [_parse_items(r.text, items) for r in replicas]
+    if sum(len(p) for p in parsed) < 0.5 * len(items) * len(replicas):
+        return None
+    rank = {idx: pos for pos, idx in enumerate(ranking)}
+    lines, report, missing = [], [], []
+    for n in sorted(items):
+        votes: dict[str, list[int]] = {}
+        for idx, answers in enumerate(parsed):
+            if n in answers:
+                key = re.sub(r"[^\w]+", " ", answers[n].casefold()).strip()
+                votes.setdefault(key, []).append(idx)
+        if not votes:
+            missing.append(n)
+            continue
+        best = max(votes.values(), key=lambda idxs: (len(idxs), -min(rank[i] for i in idxs)))
+        winner = min(best, key=lambda i: rank[i])
+        value = parsed[winner][n]
+        lines.append(f"{n}. {value}")
+        report.append({"item": n, "value": value,
+                       "agreement": round(len(best) / len(replicas), 4),
+                       "distinct_answers": len(votes)})
+    return "\n".join(lines), {
+        "policy": "item vote: majority per numbered item, ties to the best-ranked "
+                  "replica (language, complete, document medoid)",
+        "items": report, "missing_items": missing,
+        "mean_item_agreement": (round(sum(r["agreement"] for r in report) / len(report), 4)
+                                if report else None),
     }
 
 

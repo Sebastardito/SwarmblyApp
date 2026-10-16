@@ -289,3 +289,44 @@ class TestWholeReplica:
         from swarmbly_app.engine.contract import answer_budget
         assert answer_budget(ESSAY_ES, 1024) >= 1900       # 800 words × 1.6 × 1.5
         assert answer_budget("Hola, ¿qué tal?", 1024) == 1024
+
+
+# -- item vote for enumerated batches (live smoke test 2026-10-16) ------------------
+class TestItemVote:
+    ITEMS = {5: "Pinzón de Darwin", 6: "Tiburón martillo", 7: "Pingüino de Galápagos",
+             8: "Rana arborícola"}
+
+    def test_parse_items_ignores_echoes_and_keeps_values(self):
+        from swarmbly_app.engine.orchestrator import _parse_items
+        text = ("5. Ave 6. Pez 7. Ave 8. Anfibio ```markdown 5. pez "
+                "6. Pingüino de Galápagos 7. Ave")
+        assert _parse_items(text, self.ITEMS) == {5: "Ave", 6: "Pez", 7: "Ave",
+                                                   8: "Anfibio"}
+        assert _parse_items("5. **Pinzón de Darwin**: ave\n6. Tiburón martillo – pez",
+                            self.ITEMS) == {5: "ave", 6: "pez"}
+
+    def test_majority_wins_and_output_is_one_line_per_item(self, app_state):
+        from swarmbly_v0 import HashEmbedder
+        from swarmbly_app.engine.orchestrator import Orchestrator
+        from swarmbly_app.engine.scheduler import Replica
+        orch = Orchestrator(app_state.nodes, app_state.bus, None, app_state.config.all)
+        reps = [Replica("5. Ave\n6. Pez\n7. Ave\n8. Anfibio", "n1", "gemma2", "g", 5),
+                Replica("5. Ave 6. Pez 7. Mamífero 8. Anfibio", "n2", "llama", "l", 6),
+                Replica("5. ave\n6. Reptil\n7. Ave\n8. Anfibio", "n3", "qwen2", "q", 7)]
+        out = orch._resolve("t1", reps, build_contract(BATCH_ES).contract, HashEmbedder(),
+                            policy="items", lang="es", items=self.ITEMS)
+        assert out["text"].splitlines() == ["5. Ave", "6. Pez", "7. Ave", "8. Anfibio"]
+        sel = out["consensus"]["selection"]
+        assert sel["missing_items"] == [] and sel["items"][0]["agreement"] == 1.0
+
+    def test_unparseable_replicas_fall_back_to_whole(self, app_state):
+        from swarmbly_v0 import HashEmbedder
+        from swarmbly_app.engine.orchestrator import Orchestrator
+        from swarmbly_app.engine.scheduler import Replica
+        orch = Orchestrator(app_state.nodes, app_state.bus, None, app_state.config.all)
+        reps = [Replica("Todas son aves.", "n1", "gemma2", "g", 5),
+                Replica("Son animales de Galápagos.", "n2", "llama", "l", 6)]
+        out = orch._resolve("t1", reps, build_contract(BATCH_ES).contract, HashEmbedder(),
+                            policy="items", lang="es", items=self.ITEMS)
+        assert out["text"] in {r.text for r in reps}
+        assert "chosen_family" in out["consensus"]["selection"]

@@ -23,7 +23,9 @@ mixed English/Spanish, partial answers that echoed the contract.
   conversation.
 - **Consensus for compositions**: one whole replica is selected (request
   language, then complete, then document medoid); per-unit alignment is kept
-  as the divergence report. Batches keep per-unit consensus.
+  as the divergence report. Batches vote per numbered item (majority, ties
+  to the best-ranked replica); per-unit alignment had appended a second
+  replica's re-listed items to the answer in a live smoke test.
 - **Length**: requested lengths in words are read in es/en/pt/fr; output
   budgets follow them (whole-request replicas and the local answer included).
   Workers report `finish_reason`; truncated tasks are listed and noted.
@@ -32,7 +34,7 @@ mixed English/Spanish, partial answers that echoed the contract.
   forbidden phrases are not sent with non-English requests.
 - **Monitor**: largest share of the request carried by one packet
   (`max_packet_prompt_fraction`).
-- 171 tests (31 new in `tests/test_p0_quality.py`).
+- 174 tests (34 new in `tests/test_p0_quality.py`).
 
 ## 0.2.0 — Phase 2.5: guided setup and new interface (2026-10-12)
 
