@@ -76,6 +76,7 @@ DEFAULTS: dict[str, Any] = {
         "composer_enabled": True,
         "composer_min_words": 400,
         "composer_max_sections": 6,
+        "composer_length_factor": 0.8,  # provisional: small models overshoot (P3.2)
     },
     "privacy": {
         "tier": "LOCAL",              # GLOBAL | TRUSTED | LOCAL
@@ -227,6 +228,7 @@ _RANGES = {
     "swarm.discovery_ttl_s": (30, 86400),
     "swarm.composer_min_words": (50, 20000),
     "swarm.composer_max_sections": (3, 12),
+    "swarm.composer_length_factor": (0.3, 1.5),
     "log_retention_days": (1, 3650),
 }
 # Never changeable from the browser: binding the admin API elsewhere is a

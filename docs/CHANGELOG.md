@@ -30,7 +30,14 @@ words) is no longer sent whole to one model or to whole-request replicas: the
   transitions no longer repeat the previous heading; a section cut at its
   budget loses its unfinished last sentence and stray `---` rules. Batch
   voting also matches unnumbered bullets by the item's own text.
-- 191 tests (17 new in `tests/test_p1_composer.py`, including a two-node
+- Second live round (P3.2b): a malformed outline is retried at temperature 0
+  and an outline cut mid-section is repaired; a section's mandatory
+  requirement comes first in its brief; replica selection prefers the replica
+  that meets the section's requirements (e.g. the presenter's name); a table
+  requirement is checked against the table itself; words asked of each
+  section are scaled by `swarm.composer_length_factor` (0.8, provisional:
+  sections overshot by +16 to +44 % in six runs).
+- 197 tests (23 new in `tests/test_p1_composer.py`, including a two-node
   end-to-end run over real TLS).
 
 ## 0.2.1 — Distributed answers that follow the request (unreleased)

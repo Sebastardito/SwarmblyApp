@@ -191,3 +191,58 @@ class TestLiveFixes:
         o = _outline(json.dumps(data, ensure_ascii=False))
         headings = [s.heading for s in o.sections]
         assert len(headings) == len(set(headings)) == 5
+
+
+class TestSecondLiveRound:
+    """Fixes from P3.2b (2026-10-16)."""
+
+    def test_outline_cut_mid_section_is_repaired(self):
+        raw = json.dumps(OUTLINE, ensure_ascii=False)
+        cut = raw[: raw.index('{"heading": "Cierre"') + 20]   # cut inside the last section
+        o = _outline(cut)
+        assert o.source == "local_model" and len(o.sections) >= 3
+
+    def test_retry_at_temperature_zero(self):
+        class Flaky:
+            def __init__(self):
+                self.calls = []
+
+            def generate(self, prompt, **kw):
+                self.calls.append(kw["temperature"])
+                return "not json" if len(self.calls) == 1 else json.dumps(OUTLINE)
+        backend = Flaky()
+        rc = build_contract(ESSAY_ES)
+        o = composer.make_outline(ESSAY_ES, rc.contract, "es", 800, backend, 6)
+        assert backend.calls == [0.2, 0.0]
+        assert o.source == "local_model" and o.errors       # recovered, error kept
+
+    def test_requirement_comes_first_and_is_mandatory(self):
+        o = _outline(json.dumps(OUTLINE, ensure_ascii=False))
+        lines = composer.section_instruction(o, 0, "es").splitlines()
+        assert lines[3].startswith("REQUISITO OBLIGATORIO")
+
+    def test_selection_prefers_the_replica_that_meets_the_requirement(self, app_state):
+        from swarmbly_v0 import HashEmbedder
+        from swarmbly_app.engine.orchestrator import Orchestrator
+        from swarmbly_app.engine.scheduler import Replica
+        orch = Orchestrator(app_state.nodes, app_state.bus, None, app_state.config.all)
+        a = Replica("Buenos días, como biólogo hablaré de las islas y su fauna.", "n1",
+                    "llama", "m", 5)
+        b = Replica("Buenos días, soy Andrea y hablaré de las islas y su fauna.", "n2",
+                    "qwen2", "m", 9)
+        out = orch._resolve("t0", [a, b], build_contract(ESSAY_ES).contract, HashEmbedder(),
+                            policy="whole", lang="es", required=["andrea"])
+        assert out["text"] == b.text
+
+    def test_table_requirement_is_met_by_a_table(self):
+        o = _outline(json.dumps(OUTLINE, ensure_ascii=False))
+        table = "| Isla | Dato |\n|---|---|\n| Isabela | grande |"
+        rep = composer.requirement_report(o, "Soy Andrea.\n\n" + table)
+        assert rep["found"] == rep["total"] == 2
+
+    def test_length_factor_scales_the_words_asked(self):
+        o = _outline(json.dumps(OUTLINE, ensure_ascii=False))
+        w = o.sections[1].words
+        brief = composer.section_instruction(o, 1, "es", 0.8)
+        assert f"unas {round(w * 0.8)} palabras" in brief
+        assert o.sections[1].words == w                    # the target is unchanged

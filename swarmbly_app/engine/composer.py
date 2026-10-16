@@ -39,7 +39,7 @@ from typing import Any
 MIN_SECTIONS = 3
 MIN_SECTION_WORDS = 60
 TABLE_SECTION_WORDS = 120
-OUTLINE_MAX_TOKENS = 900
+OUTLINE_MAX_TOKENS = 1400
 
 LANGUAGE_NAMES = {"en": "English", "es": "Spanish", "pt": "Portuguese", "fr": "French"}
 _TABLE_CUE = re.compile(r"\b(tablas?|tables?|tabelas?|tableaux?|tabla de resumen)\b", re.I)
@@ -115,7 +115,17 @@ def _json_block(raw: str) -> Any:
     try:
         return json.loads(body)
     except json.JSONDecodeError:
+        pass
+    try:
         return json.loads(re.sub(r",\s*([}\]])", r"\1", body))   # trailing commas
+    except json.JSONDecodeError:
+        pass
+    # Cut at the last complete section object and close the structure: a
+    # 3B model's outline was cut mid-section in a live test (2026-10-16).
+    cut = body.rfind("},")
+    if cut > 0:
+        return json.loads(re.sub(r",\s*([}\]])", r"\1", body[:cut + 1] + "]}"))
+    raise ValueError("unreadable outline JSON")
 
 
 def _strings(value: Any, limit: int, max_chars: int = 160) -> list[str]:
@@ -264,17 +274,27 @@ def fallback_outline(prompt: str, contract, lang: str, target_words: int,
 def make_outline(prompt: str, contract, lang: str, target_words: int, backend,
                  max_sections: int) -> Outline:
     """Outline from the local model, or the deterministic fallback."""
-    raw = ""
-    if backend is not None:
+    errors: list[str] = []
+    outline = None
+    # Two attempts: the second at temperature 0 (a malformed outline is
+    # usually a sampling accident, not a misunderstanding of the request).
+    for temperature in ((0.2, 0.0) if backend is not None else ()):
         raw = backend.generate(outline_prompt(prompt, lang, target_words, max_sections),
-                               max_tokens=OUTLINE_MAX_TOKENS, temperature=0.2) or ""
-    if not raw.strip():
+                               max_tokens=OUTLINE_MAX_TOKENS,
+                               temperature=temperature) or ""
+        if not raw.strip():
+            errors.append("no local model output for the outline")
+            continue
+        try:
+            outline = parse_outline(raw, target_words=target_words,
+                                    max_sections=max_sections)
+            break
+        except (ValueError, json.JSONDecodeError) as exc:
+            errors.append(str(exc)[:160])
+    if outline is None:
         return fallback_outline(prompt, contract, lang, target_words,
-                                "no local model output for the outline")
-    try:
-        outline = parse_outline(raw, target_words=target_words, max_sections=max_sections)
-    except (ValueError, json.JSONDecodeError) as exc:
-        return fallback_outline(prompt, contract, lang, target_words, str(exc)[:160])
+                                "; ".join(errors) or "no local model for the outline")
+    outline.errors = errors                       # recovered on the retry
     if not outline.topic:
         outline.topic = topic_from(getattr(contract, "objective", "") or "")
     _ensure_table(outline, prompt, lang, target_words, max_sections)
@@ -307,7 +327,7 @@ _BRIEF = {
         "head": "Escribe la sección {i} de {n} de un texto{title} sobre {topic}.",
         "title": " titulado «{t}»",
         "section": "Sección: {h}.", "purpose": "Propósito: {p}.",
-        "points": "Puntos clave: {x}.", "must": "Debe incluir: {x}.",
+        "points": "Puntos clave: {x}.", "must": "REQUISITO OBLIGATORIO de esta sección: {x}.",
         "style": "Estilo: {x}.", "words": "Extensión: unas {w} palabras.",
         "first": "Es la apertura: empieza el texto.",
         "last": ("Es el cierre: conecta con lo anterior (que trató sobre «{prev}») con una "
@@ -324,7 +344,7 @@ _BRIEF = {
         "head": "Write section {i} of {n} of a text{title} about {topic}.",
         "title": " titled “{t}”",
         "section": "Section: {h}.", "purpose": "Purpose: {p}.",
-        "points": "Key points: {x}.", "must": "Must include: {x}.",
+        "points": "Key points: {x}.", "must": "MANDATORY for this section: {x}.",
         "style": "Style: {x}.", "words": "Length: about {w} words.",
         "first": "This is the opening: it starts the text.",
         "last": ("This is the closing: connect to what came before (it covered “{prev}”) "
@@ -344,8 +364,14 @@ def _bare(text: str) -> str:
     return (text or "").strip().rstrip(" .;")
 
 
-def section_instruction(outline: Outline, index: int, lang: str) -> str:
-    """The task text of one section: its brief and position, never the request."""
+def section_instruction(outline: Outline, index: int, lang: str,
+                        length_factor: float = 1.0) -> str:
+    """The task text of one section: its brief and position, never the request.
+
+    ``length_factor`` scales the words asked of the worker (not the section's
+    target): small models overshoot short word targets, by +16 to +44 % in
+    the six P3.2 runs of 2026-10-16. Provisional; recalibrate with more runs.
+    """
     b = _BRIEF.get(lang, _BRIEF["en"])
     sec = outline.sections[index]
     n = len(outline.sections)
@@ -354,13 +380,13 @@ def section_instruction(outline: Outline, index: int, lang: str) -> str:
                               title=b["title"].format(t=outline.title) if outline.title else "",
                               topic=outline.topic or "—"),
              b["section"].format(h=_bare(sec.heading)), b["purpose"].format(p=_bare(sec.purpose))]
+    if sec.must_include:     # first after the heading: small models drop late constraints
+        lines.append(b["must"].format(x="; ".join(_bare(m) for m in sec.must_include)))
     if sec.key_points:
         lines.append(b["points"].format(x="; ".join(_bare(k) for k in sec.key_points)))
-    if sec.must_include:
-        lines.append(b["must"].format(x="; ".join(_bare(m) for m in sec.must_include)))
     if outline.style and sec.kind != "table":
         lines.append(b["style"].format(x="; ".join(_bare(x) for x in outline.style.split("; "))))
-    lines.append(b["words"].format(w=sec.words))
+    lines.append(b["words"].format(w=max(30, round(sec.words * length_factor))))
     if sec.kind == "table":
         lines.append(b["table"])
     elif index == 0:
@@ -405,24 +431,39 @@ def assemble(outline: Outline, texts: list[str]) -> str:
     return head + "\n\n".join(parts)
 
 
-def _significant(term: str) -> list[str]:
-    words = re.findall(r"\w{4,}", term.casefold())
-    proper = [w for w in re.findall(r"\b[A-ZÁÉÍÓÚÑ][\wáéíóúñ]{2,}", term)]
-    return [w.casefold() for w in proper] or words[:3]
+_STOP = frozenset("debe deben texto escrito como para con sobre incluye incluir include "
+                  "should must with that this esta este the and".split())
+
+
+def requirement_keys(term: str) -> list[str]:
+    """Words a text must contain to satisfy a requirement: its proper nouns
+    (not the capitalised first word of a sentence), else its content words."""
+    proper = [m.group(0) for m in re.finditer(r"\b[A-ZÁÉÍÓÚÑ][\wáéíóúñ]{2,}", term)
+              if not re.search(r"(^|[.!?:]\s*)$", term[:m.start()].rstrip(" ¡¿\"'“«"))]
+    if proper:
+        return [w.casefold() for w in proper]
+    words = [w for w in re.findall(r"\w{5,}", term.casefold()) if w not in _STOP]
+    return words[:3]
+
+
+_significant = requirement_keys
 
 
 def requirement_report(outline: Outline, final_text: str) -> dict[str, Any]:
     """Lexical check of each ``must_include`` and of requested tables."""
     lowered = (final_text or "").casefold()
     checks = []
+    table_lines = len(re.findall(r"^\s*\|.*\|\s*$", final_text or "", re.M))
     for sec in outline.sections:
         for req in sec.must_include:
-            keys = _significant(req)
-            found = bool(keys) and all(k in lowered for k in keys)
+            keys = requirement_keys(req)
+            if sec.kind == "table":                # a table requirement is met by a table
+                found, keys = table_lines >= 3, ["markdown table (≥ 3 rows)"]
+            else:
+                found = bool(keys) and all(k in lowered for k in keys)
             checks.append({"section": sec.heading, "requirement": req, "found": found,
                            "matched_on": keys})
     tables_requested = any(s.kind == "table" for s in outline.sections)
-    table_lines = len(re.findall(r"^\s*\|.*\|\s*$", final_text or "", re.M))
     return {"checks": checks,
             "found": sum(1 for c in checks if c["found"]), "total": len(checks),
             "tables_requested": tables_requested, "table_rows": table_lines,

@@ -331,7 +331,10 @@ class Orchestrator:
                 LocalPromptBackend(self.local_stream, self.local_model),
                 int(swarm_cfg.get("composer_max_sections", 6)))
             plan = Plan(prompt=text, tasks=[
-                Task(task_id=f"t{i}", instruction=composer.section_instruction(outline, i, lang),
+                Task(task_id=f"t{i}",
+                     instruction=composer.section_instruction(
+                         outline, i, lang,
+                         float(swarm_cfg.get("composer_length_factor", 0.8))),
                      kind="section") for i in range(len(outline.sections))])
         elif whole:
             plan = Plan(prompt=text, tasks=[Task(task_id="t0", instruction=text)])
@@ -453,12 +456,17 @@ class Orchestrator:
                     policy="items" if path == "enumerated" else "whole",
                     lang=lang, budget=self._clamp(budgets[task_id], workers),
                     items=(_item_texts(plan_by_id[task_id].instruction)
-                           if path == "enumerated" else None)))
+                           if path == "enumerated" else None),
+                    required=required_by_task.get(task_id)))
             resolved[task_id] = outcome
             carries[task_id] = planner.summarize_fragment(outcome["text"], typed=True)
             return outcome
 
         plan_by_id = {t.task_id: t for t in plan.tasks}
+        required_by_task = ({f"t{i}": [k for req in sec.must_include
+                                       for k in composer.requirement_keys(req)]
+                             for i, sec in enumerate(outline.sections) if sec.kind != "table"}
+                            if outline is not None else {})
         order = [t.task_id for t in sorted(plan.tasks, key=lambda t: positions[t.task_id])]
         for name in ("DISPATCHING", "MODEL EXECUTION", "RESULT RECEPTION"):
             tracker.start(name)
@@ -623,7 +631,8 @@ class Orchestrator:
     # -- pieces ---------------------------------------------------------------------
     def _resolve(self, task_id, replicas, contract, embedder, *, policy: str = "units",
                  lang: str | None = None, budget: int | None = None,
-                 items: dict[int, str] | None = None) -> dict[str, Any]:
+                 items: dict[int, str] | None = None,
+                 required: list[str] | None = None) -> dict[str, Any]:
         """One text per task: the only replica, or a consensus over replicas (§14b).
 
         ``policy="units"`` (independent items of a batch) returns upstream's
@@ -666,7 +675,7 @@ class Orchestrator:
             return {"text": result.text or replicas[0].text, "consensus": block,
                     "replica_meta": meta,
                     "truncated": all(m["truncated"] for m in meta)}
-        chosen, selection = _select_whole(replicas, meta, embedder, lang)
+        chosen, selection = _select_whole(replicas, meta, embedder, lang, required)
         if policy == "items" and items:
             vote = _vote_items(replicas, items, selection["ranking"])
             if vote is not None:
@@ -878,9 +887,11 @@ def _is_truncated(replica, budget: int | None) -> bool:
         return False
 
 
-def _select_whole(replicas, meta, embedder, lang: str | None):
-    """Pick one complete replica: request language, then not truncated, then
-    the document medoid (highest mean cosine to the other replicas)."""
+def _select_whole(replicas, meta, embedder, lang: str | None,
+                  required: list[str] | None = None):
+    """Pick one complete replica: request language, then the most section
+    requirements met (composition: e.g. the presenter's name), then not
+    truncated, then the document medoid (highest mean cosine to the others)."""
     import numpy as np
 
     from ..lang import detect_language
@@ -891,16 +902,20 @@ def _select_whole(replicas, meta, embedder, lang: str | None):
     k = len(replicas)
     centrality = [(float(sims[i].sum() - sims[i, i]) / (k - 1)) for i in range(k)]
     langs = [detect_language(r.text) for r in replicas]
-    keys = [((langs[i] == lang) if lang else True, not meta[i]["truncated"],
+    lowered = [r.text.casefold() for r in replicas]
+    met = [sum(1 for key in (required or []) if key in lowered[i]) for i in range(k)]
+    keys = [((langs[i] == lang) if lang else True, met[i], not meta[i]["truncated"],
              centrality[i], -int(replicas[i].elapsed_ms or 0)) for i in range(k)]
     chosen = max(range(k), key=lambda i: keys[i])
     ranking = sorted(range(k), key=lambda i: keys[i], reverse=True)
     return chosen, {
         "ranking": ranking,
-        "policy": "whole replica: language match, then complete, then document medoid",
+        "policy": ("whole replica: language match, then requirements met, then "
+                   "complete, then document medoid"),
         "chosen": chosen, "chosen_family": replicas[chosen].family,
         "candidates": [{"family": replicas[i].family, "language": langs[i],
                         "truncated": meta[i]["truncated"],
+                        "requirements_met": met[i],
                         "centrality": round(centrality[i], 4)} for i in range(k)],
     }
 
