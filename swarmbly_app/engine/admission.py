@@ -74,6 +74,11 @@ _COMPOSITION = re.compile(
 _WORD_TARGET = re.compile(r"\b\d{2,5}\s*(?:words|palabras|palavras|mots)\b", re.I)
 
 
+def is_composition(prompt: str) -> bool:
+    """A single composition: "write an essay/speech/text", or a length in words."""
+    return bool(_COMPOSITION.search(prompt or "") or _WORD_TARGET.search(prompt or ""))
+
+
 def batch_shape(prompt: str, preamble: str) -> tuple[bool, str]:
     """Whether numbered lines form a batch of independent items.
 

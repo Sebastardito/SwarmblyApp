@@ -30,8 +30,9 @@ from ..inference.base import StreamBackend
 from ..p2p.messages import new_session_id
 from ..p2p.node import NodeManager
 from . import admission as admission_mod
+from . import composer
 from .directory import Directory
-from .contract import build_contract
+from .contract import _TOKENS_PER_WORD, build_contract, requested_words
 from .followup import standalone
 from .packets import (PacketPlan, build_message, contains_identifier, gamma_for,
                       localise_instruction, measure_rho, minimal_objective)
@@ -253,7 +254,10 @@ class Orchestrator:
                                   n_workers=directory.capacity())
         k_min = max(1, int(swarm_cfg.get("k_min", 1)))
         whole = False
-        if not (routing.decomposable and adm.admitted) and pool is not None and k_min >= 2:
+        compose = self._composer_applies(text, adm, swarm_cfg, workers)
+        if compose:
+            pass  # P1: the local model plans sections; workers write them
+        elif not (routing.decomposable and adm.admitted) and pool is not None and k_min >= 2:
             # Not fragmentable, but several local families can each answer the
             # whole request and be aligned (SPEC §14b: replicas of one task;
             # nothing is split). Local pool only: the full request never travels.
@@ -265,14 +269,17 @@ class Orchestrator:
                          threshold=round(float(routing.threshold), 4),
                          threshold_source="swarmbly_v0 default (uncalibrated)",
                          admission=adm.to_dict(),
-                         path=("whole-request replicas on local models" if whole
+                         path=("composition: sections planned by the local model"
+                               if compose else
+                               "whole-request replicas on local models" if whole
                                else "fragments"),
                          remote_allowed=not egress_block,
                          local_pool=len(pool.models) if pool else 0)
         router_meta = {"decomposable": bool(routing.decomposable),
                        "score": round(float(routing.score), 4),
-                       "admission": adm.to_dict(), "whole_request_replicas": whole}
-        if not whole:
+                       "admission": adm.to_dict(), "whole_request_replicas": whole,
+                       "composition": compose}
+        if not whole and not compose:
             if not routing.decomposable:
                 return local("the router judged the request not decomposable",
                              routing=routing_meta, router=router_meta)
@@ -286,7 +293,7 @@ class Orchestrator:
         try:
             return self._distributed(text, adm, decision, lane, routing_meta,
                                      router_meta, directory, tracker, request_id,
-                                     started, cancel, mode, whole)
+                                     started, cancel, mode, whole, compose)
         except Cancelled:
             tracker.fail("FINAL RESPONSE", "interrupted by the user")
             return {"routed": "error", "reason": "interrupted by the user",
@@ -305,7 +312,8 @@ class Orchestrator:
 
     # -- the distributed path --------------------------------------------------------
     def _distributed(self, text, adm, decision, lane, routing_meta, router_meta,
-                     directory, tracker, request_id, started, cancel, mode, whole=False):
+                     directory, tracker, request_id, started, cancel, mode, whole=False,
+                     compose=False):
         from swarmbly_v0 import planner
         from swarmbly_v0.schema import Plan, Task
         cfg = self.config()
@@ -313,10 +321,19 @@ class Orchestrator:
         workers = directory.available_workers()
 
         tracker.start("TASK PLANNING")
-        path = "whole" if whole else adm.path
-        request = build_contract(text if whole else adm.prompt)
+        path = "composition" if compose else "whole" if whole else adm.path
+        request = build_contract(text if (whole or compose) else adm.prompt)
         contract, lang = request.contract, request.lang
-        if whole:
+        outline = None
+        if compose:
+            outline = composer.make_outline(
+                text, contract, lang, int(request.target_words or 0),
+                LocalPromptBackend(self.local_stream, self.local_model),
+                int(swarm_cfg.get("composer_max_sections", 6)))
+            plan = Plan(prompt=text, tasks=[
+                Task(task_id=f"t{i}", instruction=composer.section_instruction(outline, i, lang),
+                     kind="section") for i in range(len(outline.sections))])
+        elif whole:
             plan = Plan(prompt=text, tasks=[Task(task_id="t0", instruction=text)])
         else:
             # answer_sheet=False: the user's own closing instructions (format,
@@ -334,7 +351,12 @@ class Orchestrator:
         tracker.complete("TASK PLANNING", n_tasks=len(plan.tasks),
                          n_levels=len(levels), language=lang,
                          target_words=request.target_words,
-                         path="whole request (replicas)" if whole else adm.path,
+                         **({"outline_source": outline.source,
+                             "outline_errors": outline.errors,
+                             "sections": [s.heading for s in outline.sections]}
+                            if outline else {}),
+                         path=("composition (sections)" if compose else
+                               "whole request (replicas)" if whole else adm.path),
                          dispatch_waves=len(_topological_levels_from(consumed)),
                          edges_statement=sum(1 for t in plan.tasks
                                              if t.depends_on and not consumed[t.task_id]))
@@ -346,7 +368,17 @@ class Orchestrator:
             for index, task_id in enumerate(sorted(level, key=_order)):
                 positions[task_id] = (level_no, index)
         max_tokens = self._budget(cfg["model"], request, len(plan.tasks), whole)
+        budgets = {t.task_id: max_tokens for t in plan.tasks}
+        if outline is not None:
+            rate = _TOKENS_PER_WORD.get(lang, 1.3)
+            budgets = {f"t{i}": composer.section_budget(sec, rate)
+                       for i, sec in enumerate(outline.sections)}
+            max_tokens = max(budgets.values())
         objective = minimal_objective(adm, contract)
+        if outline is not None:
+            # The request's first sentence states the length of the WHOLE text
+            # ("800 words"); a section must not read it as its own target.
+            objective = (outline.title or outline.topic or objective)[:240]
         plans: dict[str, PacketPlan] = {}
         gammas: dict[str, dict[str, Any]] = {}
         for task in plan.tasks:
@@ -357,7 +389,8 @@ class Orchestrator:
                 consumes=bool(consumed[task.task_id]),
                 depends_on=tuple(task.depends_on), lane=lane)
             gammas[task.task_id] = gamma_for(contract, objective, task.instruction,
-                                             self._clamp(max_tokens, workers), lang)
+                                             self._clamp(budgets[task.task_id], workers),
+                                             lang)
         timeout_s = float(swarm_cfg.get("timeout_ms", 60000)) / 1000.0
         temperature = float(cfg["model"].get("temperature", 0.2))
 
@@ -365,7 +398,7 @@ class Orchestrator:
             def build(attempt: int, family: str | None) -> dict[str, Any]:
                 return build_message(
                     plans[task_id], gammas[task_id], session_id, attempt, carries,
-                    positions, max_tokens=self._clamp(max_tokens, workers),
+                    positions, max_tokens=self._clamp(budgets[task_id], workers),
                     deadline_ms=int(timeout_s * 1000), tier=decision["tier"],
                     temperature=temperature, model_family=family)
             return build
@@ -412,14 +445,15 @@ class Orchestrator:
 
         async def run_one(task_id: str):
             build = make_builder(task_id, carries)
-            replicas = await scheduler.run_task(task_id, build, max_tokens)
+            replicas = await scheduler.run_task(task_id, build, budgets[task_id])
             loop = asyncio.get_running_loop()
             outcome = await loop.run_in_executor(
                 None, functools.partial(
                     self._resolve, task_id, replicas, contract, embedder,
                     policy="items" if path == "enumerated" else "whole",
-                    lang=lang, budget=self._clamp(max_tokens, workers),
-                    items=_item_texts(plan_by_id[task_id].instruction)))
+                    lang=lang, budget=self._clamp(budgets[task_id], workers),
+                    items=(_item_texts(plan_by_id[task_id].instruction)
+                           if path == "enumerated" else None)))
             resolved[task_id] = outcome
             carries[task_id] = planner.summarize_fragment(outcome["text"], typed=True)
             return outcome
@@ -490,8 +524,12 @@ class Orchestrator:
 
         tracker.start("ASSEMBLY")
         bridge_backend = LocalPromptBackend(self.local_stream, self.local_model)
-        texts, seams, seam_policy = self._assemble(plan, contract, resolved,
-                                                   bridge_backend, embedder, adm.path)
+        if outline is not None:
+            texts, seams, seam_policy = self._assemble_composition(
+                plan, outline, resolved, embedder)
+        else:
+            texts, seams, seam_policy = self._assemble(plan, contract, resolved,
+                                                       bridge_backend, embedder, adm.path)
         tracker.complete("ASSEMBLY", n_seams=len(seams), seam_policy=seam_policy,
                          bridges=sum(1 for s in seams if s["path"] == "bridge"),
                          bridge_failures=bridge_backend.failures,
@@ -538,6 +576,10 @@ class Orchestrator:
                        "explicit": request.length_explicit,
                        "max_tokens_per_task": self._clamp(max_tokens, workers)},
             "truncated_tasks": truncated,
+            "composition": ({"outline": outline.to_dict(),
+                             "requirements": composer.requirement_report(outline, texts),
+                             "target_words": request.target_words}
+                            if outline is not None else None),
             "max_packet_prompt_fraction": rho["max_packet_prompt_fraction"],
             "tau_sem": self._tau_sem(), "tau_source": self._tau_source(embedder_name),
             "seams": seams,
@@ -657,6 +699,43 @@ class Orchestrator:
                   "path": "bridge" if s.bridged else "splice"}
                  for s in assembly.seams]
         return assembly.text, seams, policy
+
+    @staticmethod
+    def _assemble_composition(plan, outline, resolved, embedder):
+        """Sections in outline order under the title; seams measured, never bridged."""
+        import numpy as np
+        texts = [composer.clean_section(resolved[t.task_id]["text"], outline.sections[i],
+                                        outline.title)
+                 for i, t in enumerate(plan.tasks) if t.task_id in resolved]
+        seams = []
+        if len(texts) >= 2:
+            tails = [" ".join(t.split()[-60:]) for t in texts]
+            heads = [" ".join(t.split()[:60]) for t in texts]
+            vecs = np.asarray(embedder.embed(tails[:-1] + heads[1:]), dtype=float)
+            norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+            unit = vecs / np.where(norms == 0, 1.0, norms)
+            k = len(texts) - 1
+            for i in range(k):
+                seams.append({"left": plan.tasks[i].task_id, "right": plan.tasks[i + 1].task_id,
+                              "similarity": round(float(unit[i] @ unit[k + i]), 4),
+                              "path": "splice"})
+        return (composer.assemble(outline, texts), seams,
+                "composition: ordered sections; transitions written by the workers "
+                "(no bridges)")
+
+    def _composer_applies(self, text: str, adm, swarm_cfg: dict[str, Any],
+                          workers: list[Any]) -> bool:
+        """P1 applies to a single composition of a stated length, when a local
+        model can plan it and at least one worker (local pool or remote) can
+        write sections."""
+        if not swarm_cfg.get("composer_enabled", True) or adm.admitted:
+            return False
+        if self.local_stream is None or not self.local_model or not workers:
+            return False
+        if not admission_mod.is_composition(text):
+            return False
+        words = requested_words(text)
+        return words is not None and words >= int(swarm_cfg.get("composer_min_words", 400))
 
     @staticmethod
     def _coherence(text: str, seams: list[dict[str, Any]], embedder_name: str) -> dict[str, Any]:

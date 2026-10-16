@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.3.0 — Composition planner (unreleased)
+
+A single composition of a stated length (an essay, a speech, a report of N
+words) is no longer sent whole to one model or to whole-request replicas: the
+**local model plans it** and the swarm writes it section by section.
+
+- **Outline on this device**: the local model reads the whole request and
+  returns a JSON outline (title, topic, style line, 3–6 sections with purpose,
+  word budget, key points, the explicit requirements that belong to each,
+  prose or table). The code validates it (sections, word budgets rescaled to
+  the requested length, tables never open or close the text); an unusable
+  outline falls back to a deterministic one, and the monitor says which.
+- **Decontextualised sections**: each packet carries Γ, the title, the topic
+  and one section's brief and position — never the request, its instruction
+  list or rubric. Γ's objective is the title, not the request's first
+  sentence (which states the length of the whole text).
+- **Transitions by the workers**: every section after the first opens with a
+  transition from the previous heading; no bridges (the upstream bridge
+  prompt is English). Seam similarity is still measured.
+- **Requirement check**: each requirement of the outline is checked against
+  the final text (lexical presence, not a quality judgement) and reported
+  with the outline in the response metadata.
+- Settings: `swarm.composer_enabled` (on), `swarm.composer_min_words` (400),
+  `swarm.composer_max_sections` (6). Applies only when a local model and at
+  least one worker (remote or local pool) are available.
+- 186 tests (12 new in `tests/test_p1_composer.py`, including a two-node
+  end-to-end run over real TLS).
+
 ## 0.2.1 — Distributed answers that follow the request (unreleased)
 
 Fixes from the diagnosis of 2026-10-15: a Spanish essay request came back as

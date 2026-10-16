@@ -71,6 +71,11 @@ DEFAULTS: dict[str, Any] = {
         "p2p_host": "0.0.0.0",        # P2P listener (independent of the admin API)
         "p2p_port": 9765,
         "rendezvous": [],             # rendezvous endpoints (Phase 3)
+        # P1 composition planner: a single composition of at least
+        # composer_min_words is planned into sections by the local model.
+        "composer_enabled": True,
+        "composer_min_words": 400,
+        "composer_max_sections": 6,
     },
     "privacy": {
         "tier": "LOCAL",              # GLOBAL | TRUSTED | LOCAL
@@ -220,6 +225,8 @@ _RANGES = {
     "swarm.p2p_port": (1024, 65535),
     "swarm.tau_sem": (0.0, 1.0),
     "swarm.discovery_ttl_s": (30, 86400),
+    "swarm.composer_min_words": (50, 20000),
+    "swarm.composer_max_sections": (3, 12),
     "log_retention_days": (1, 3650),
 }
 # Never changeable from the browser: binding the admin API elsewhere is a
