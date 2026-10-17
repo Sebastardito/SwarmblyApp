@@ -384,7 +384,9 @@ def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
     def swarm_rescan() -> dict:
         """Active mDNS search: a real query; entries refresh only on answers."""
         try:
-            return {"rescanned": True, **state.nodes.rescan()}
+            result = state.nodes.rescan()
+            state.console.scan_finished(result)
+            return {"rescanned": True, **result}
         except Exception as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 

@@ -46,7 +46,7 @@ PYTHON_DEPS: list[tuple[str, str, str, str, bool]] = [
 ]
 PINS = {
     "swarmbly-v0": "51eb44e8e471757f8abe2f90e60023633719fd0b",
-    "swarmbly-lce": "fd8d97d71a1fc50b3b82f59a3203d2804644c307",
+    "swarmbly-lce": "b659ac4d77b42d186609799f925520837db94bb3",
 }
 OLLAMA_URL = "http://127.0.0.1:11434"
 

@@ -71,8 +71,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Swarmbly App {__import__('swarmbly_app').__version__} "
           f"— http://{host}:{port}/ (node {state.identity.short_id(12)})")
     try:
+        from .console import uvicorn_log_config
         uvicorn.run(app, host=host, port=port, log_level="info",
-                    access_log=False)
+                    access_log=False, log_config=uvicorn_log_config())
     except KeyboardInterrupt:
         pass
     finally:

@@ -31,7 +31,7 @@ classifiers = [
 ]
 dependencies = [
   "swarmbly-v0 @ git+https://github.com/Sebastardito/SwarmblyAI.git@51eb44e8e471757f8abe2f90e60023633719fd0b",
-  "swarmbly-lce @ git+https://github.com/Sebastardito/SwarmblyLCE.git@fd8d97d71a1fc50b3b82f59a3203d2804644c307",
+  "swarmbly-lce @ git+https://github.com/Sebastardito/SwarmblyLCE.git@b659ac4d77b42d186609799f925520837db94bb3",
   "fastapi>=0.110",
   "uvicorn[standard]>=0.29",
   "httpx>=0.27",

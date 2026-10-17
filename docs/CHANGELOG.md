@@ -40,6 +40,21 @@ words) is no longer sent whole to one model or to whole-request replicas: the
 - 197 tests (23 new in `tests/test_p1_composer.py`, including a two-node
   end-to-end run over real TLS).
 
+**Windows install and a quieter terminal** (17 October 2026)
+- SwarmblyLCE pin moved to `b659ac4`: the previous pin tracked 18 cache
+  files whose names contained `:` (Ollama model tags), which Windows forbids,
+  so `git clone` — and with it `pip install` — failed on Windows.
+- The terminal no longer prints every WebSocket attempt. A browser tab left
+  open from an earlier launch holds a stale session token; its reconnections
+  were logged twice each, with the token in clear text. They are now dropped
+  (one note a minute at most), tokens are redacted from any log line, and
+  the web client reloads itself once to pick up the new token, with
+  exponential back-off while the server is down.
+- Network outcomes on the terminal: node found (once), connected and
+  authenticated, left; authentication failures once per address; a single
+  "no nodes found" line after an empty search, and a summary after
+  “Search again”.
+
 ## 0.2.1 — Distributed answers that follow the request (unreleased)
 
 Fixes from the diagnosis of 2026-10-15: a Spanish essay request came back as

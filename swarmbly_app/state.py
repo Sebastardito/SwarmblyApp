@@ -83,6 +83,8 @@ class AppState:
                                  self.bus, lambda: _build_advertisement(self),
                                  dirs=self.dirs)
         self.worker: WorkerService | None = None
+        from .console import ConsoleReporter
+        self.console = ConsoleReporter(self.bus, lambda: self.nodes.peers)
         self.orchestrator = None  # built lazily with a live local backend
         self.latency = None       # p95 history shared across orchestrator rebuilds
         self.chat = ChatService(self.db, self.bus, self.backends,
@@ -164,6 +166,7 @@ class AppState:
         if self._stopped:
             return
         self._stopped = True
+        self.console.stop()
         self.nodes.stop()
         self.db.close()
 

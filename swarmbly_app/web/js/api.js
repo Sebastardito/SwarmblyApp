@@ -42,8 +42,39 @@ const Api = (() => {
     ws.onmessage = (msg) => {
       try { onEvent(JSON.parse(msg.data)); } catch (_) {}
     };
-    ws.onclose = () => setTimeout(() => subscribe(onEvent), 2000);
+    ws.onopen = () => { retryDelay = 2000; };
+    ws.onclose = () => setTimeout(() => reconnect(onEvent), retryDelay);
     return ws;
+  }
+
+  /* The session token changes at every launch: a tab opened before a restart
+     holds a stale one and every reconnection is refused. Instead of retrying
+     forever (it flooded the terminal), check the token once the server
+     answers; if it is stale, reload the page to get the new one (at most once
+     per 30 s, so a misconfigured server cannot cause a reload loop). While
+     the server is down, retry with exponential back-off up to 30 s. */
+  let retryDelay = 2000;
+  async function reconnect(onEvent) {
+    let status = 0;
+    try {
+      status = (await fetch("/api/config", { headers: { "X-Swarmbly-Token": TOKEN } })).status;
+    } catch (_) { status = 0; }
+    if (status === 401 || status === 403) {
+      let last = 0;
+      try { last = Number(sessionStorage.getItem("swarmbly-reload") || 0); } catch (_) {}
+      if (Date.now() - last > 30000) {
+        try { sessionStorage.setItem("swarmbly-reload", String(Date.now())); } catch (_) {}
+        location.reload();
+        return;
+      }
+      return;   // stale token and a recent reload: stop; the user can reload by hand
+    }
+    if (status === 0) {
+      retryDelay = Math.min(retryDelay * 2, 30000);
+      setTimeout(() => reconnect(onEvent), retryDelay);
+      return;
+    }
+    subscribe(onEvent);
   }
 
   /* Authenticated download (export/report links cannot carry the header). */
