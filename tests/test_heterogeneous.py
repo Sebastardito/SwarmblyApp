@@ -132,3 +132,15 @@ def test_items_are_normalised_one_per_line():
     raw = "```markdown\n5. Ave 6. Pez\n- 7. Ave\n*   #8: anfibio\n```"
     out = _normalise_items(raw, items)
     assert out.splitlines()[:2] == ["5. Ave", "6. Pez"]
+
+
+def test_rejected_attempt_keeps_a_preview(monkeypatch):
+    import swarmbly_app.engine.scheduler as sched
+    monkeypatch.setattr(sched, "verify_result", lambda *a: "")
+    nodes = _Nodes([LAPTOP, SERVER], {"server": "1. dog", "laptop": "1. perro"})
+    s = _scheduler(nodes, k_min=1, k_max=2)
+    s._load["server"] = 5
+    asyncio.run(s.run_task("t0", lambda n, f, m=None: {"attempt_id": f"a{n}"}, 100,
+                           validate=lambda text: "dog" in text))
+    rejected = [a.to_dict() for a in s.attempts if a.status == "rejected"]
+    assert rejected and rejected[0]["note"] == "1. perro"

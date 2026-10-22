@@ -78,8 +78,15 @@ class Attempt:
     bytes_out: int = 0
     bytes_in: int = 0
     model: str = ""
+    note: str = ""                    # e.g. the start of a rejected replica
 
     def to_dict(self) -> dict[str, Any]:
+        out = self._base()
+        if self.note:
+            out["note"] = self.note
+        return out
+
+    def _base(self) -> dict[str, Any]:
         return {"task": self.task_id, "attempt": self.number,
                 "node": self.node_id[:12], "family": self.family,
                 "model": self.model, "reason": self.reason,
@@ -256,6 +263,7 @@ class Scheduler:
                         usable = True
                     if not usable:
                         attempt.status, attempt.code = "rejected", "E_QUALITY"
+                        attempt.note = " ".join(replica.text.split())[:160]
                         self.rejected += 1
                         rejected.append((replica, attempt))
                         self._event(attempt, "rejected")
