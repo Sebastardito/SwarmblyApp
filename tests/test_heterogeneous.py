@@ -144,3 +144,34 @@ def test_rejected_attempt_keeps_a_preview(monkeypatch):
                            validate=lambda text: "dog" in text))
     rejected = [a.to_dict() for a in s.attempts if a.status == "rejected"]
     assert rejected and rejected[0]["note"] == "1. perro"
+
+
+def test_hedges_never_queue_on_a_busy_worker():
+    s = _scheduler(_Nodes([LAPTOP], {}), k_min=1, k_max=3)
+    s._load["laptop"] = 1                                 # its only slot is taken
+    assert s._select(set(), set(), set(), free_only=True) is None
+    assert s._select(set(), set(), set()) is not None     # retries may still queue
+
+
+def test_failed_task_falls_back_to_the_local_model(tmp_path):
+    """P3b.3: when every remote attempt fails, the section is written locally."""
+    from test_p2p_two_nodes import connect, make_node
+    worker, _ = make_node(tmp_path, "W", worker=True, fail=True)
+    client, fake_c = make_node(tmp_path, "C",
+                               reply="1. Quito\n2. Lima\n3. Santiago\n4. Bogotá",
+                               extra={"swarm": {"k_min": 1, "k_max": 1}})
+    try:
+        connect(client, worker)
+        conv = client.chat.create_conversation(mode="lan")
+        client.chat.send(conv["id"], "Para cada uno de los siguientes países, indica solo "
+                         "el nombre de su capital:\n1. Ecuador\n2. Perú\n3. Chile\n"
+                         "4. Argentina\n5. Colombia\n6. Uruguay\n7. Paraguay\n8. Venezuela",
+                         mode="lan", run_async=False)
+        final = client.chat.get_messages(conv["id"])[-1]
+        assert final["meta"]["status"] == "done", final["meta"]
+        assert final["meta"]["executed"] == "distributed", final["meta"].get("local_reason")
+        assert final["meta"]["swarm"]["local_fallback_tasks"]
+        assert "Quito" in final["content"]
+    finally:
+        worker.stop()
+        client.stop()

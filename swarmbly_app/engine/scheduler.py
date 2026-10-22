@@ -165,12 +165,25 @@ class Scheduler:
 
         return collect(self.min_params_b) or collect(0.0)
 
+    def _capacity(self, peer) -> int:
+        try:
+            return max(1, int((peer.advertisement.get("policy") or {})
+                              .get("max_concurrent") or 1))
+        except (TypeError, ValueError):
+            return 1
+
     def _select(self, used_pairs: set[tuple[str, str]], used_families: set[str],
-                used_nodes: set[str]):
+                used_nodes: set[str], free_only: bool = False):
+        """Best (peer, family, model). ``free_only``: only workers with a free
+        slot — a hedge queued behind a busy worker adds load and saves no
+        time (P3b.3, 22 Oct 2026: after the server left, hedges queued on the
+        two remaining single-slot workers and every task missed its deadline)."""
         best = None
         best_key = None
         for peer, family, model in self._candidates():
             if (peer.node_id, family) in used_pairs:
+                continue
+            if free_only and self._load[peer.node_id] >= self._capacity(peer):
                 continue
             from .capability import rank_params
             key = (family in used_families,           # diversity first (MUST)
@@ -210,7 +223,8 @@ class Scheduler:
             nonlocal number
             if number >= self.k_max:
                 return False
-            choice = self._select(used_pairs, used_families, used_nodes)
+            choice = self._select(used_pairs, used_families, used_nodes,
+                                  free_only=(reason == "hedge"))
             if choice is None:
                 return False
             peer, family, model = choice

@@ -448,13 +448,27 @@ class Orchestrator:
             min_params_b=float(swarm_cfg.get("min_model_params_b", 1.5)))
         carries: dict[str, str] = {}
         resolved: dict[str, dict[str, Any]] = {}
+        local_fallbacks: list[str] = []
         embedder, embedder_name = self._embedder()
 
         async def run_one(task_id: str):
             build = make_builder(task_id, carries)
-            replicas = await scheduler.run_task(task_id, build, budgets[task_id],
-                                                validate=validators.get(task_id))
             loop = asyncio.get_running_loop()
+            try:
+                replicas = await scheduler.run_task(task_id, build, budgets[task_id],
+                                                    validate=validators.get(task_id))
+            except TaskFailed as exc:
+                # Every remote attempt failed (node gone, deadline, policy).
+                # The task is run on this device's model rather than failing
+                # the whole answer (P3b.3, 22 Oct 2026: losing the largest
+                # node made one section fail and the request with it).
+                fallback = await loop.run_in_executor(
+                    None, self._local_fallback, task_id, build(0, None),
+                    self._clamp(budgets[task_id], []), str(exc))
+                if fallback is None:
+                    raise
+                replicas = [fallback]
+                local_fallbacks.append(task_id)
             outcome = await loop.run_in_executor(
                 None, functools.partial(
                     self._resolve, task_id, replicas, contract, embedder,
@@ -614,6 +628,7 @@ class Orchestrator:
             "attempts": attempts,
             "hedges": scheduler.hedges, "retries": scheduler.retries,
             "rejected_quality": scheduler.rejected,
+            "local_fallback_tasks": sorted(local_fallbacks),
             "timeouts": scheduler.timeouts,
             "bytes": {"out": sum(a["bytes_out"] for a in attempts),
                       "in": sum(a["bytes_in"] for a in attempts)},
@@ -729,6 +744,22 @@ class Orchestrator:
             text = "\n".join(resolved[t.task_id]["text"].strip() for t in ordered)
             return text, seams, policy
         return assembly.text, seams, policy
+
+    def _local_fallback(self, task_id: str, message: dict[str, Any], max_tokens: int,
+                        reason: str):
+        """Run one packet on this device's model; ``None`` if there is none."""
+        from ..p2p.worker import render_packet_prompt
+        from .scheduler import Replica
+        backend = LocalPromptBackend(self.local_stream, self.local_model)
+        started = time.monotonic()
+        text = backend.generate(render_packet_prompt(message), max_tokens=max_tokens,
+                                temperature=0.2)
+        if not text.strip():
+            return None
+        self.bus.publish("swarm.local_fallback", task=task_id, reason=reason[:160])
+        return Replica(text=text, node_id="local", family="local", model=self.local_model,
+                       elapsed_ms=int((time.monotonic() - started) * 1000),
+                       telemetry={"local_fallback": True})
 
     @staticmethod
     def _validators(plan, path, outline) -> dict[str, Any]:

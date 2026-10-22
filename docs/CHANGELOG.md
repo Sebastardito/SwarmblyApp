@@ -20,6 +20,12 @@ Windows, Debian; 0.5 B to 8 B models)
   fences, bullets or added periods).
 - The composition outline gets back an explicit requirement of the request
   that the local model dropped (the presenter, in the Galápagos request).
+- Resilience (P3b.3, 22 October 2026: the largest node was shut down
+  mid-request): a task whose remote attempts all fail is run on this
+  device's model instead of failing the whole answer
+  (`local_fallback_tasks` in the metadata); hedges only go to workers with a
+  free slot (queued hedges made every remaining task miss its deadline).
+  Rejected replicas keep a 160-character preview for auditing.
 
 A single composition of a stated length (an essay, a speech, a report of N
 words) is no longer sent whole to one model or to whole-request replicas: the
