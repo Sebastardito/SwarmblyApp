@@ -235,3 +235,26 @@ def test_deadline_keeps_the_slot_for_a_grace_period(monkeypatch):
         asyncio.run(s.run_task("t0", lambda n, f, m=None: {"attempt_id": f"a{n}"}, 100))
     assert s._busy_until["laptop"] > _t.monotonic()
     assert s.attempts[0].note == "worker timeout"
+
+
+def test_retries_do_not_queue_when_a_local_model_exists(monkeypatch):
+    """P3b.3': queued retries waited ~50 s and timed out; fail fast instead."""
+    import swarmbly_app.engine.scheduler as sched
+    from swarmbly_app.p2p.node import PeerError
+
+    class Busy(_Nodes):
+        async def dispatch_async(self, node_id, message, timeout_s):
+            raise PeerError("E_DISCONNECTED", "gone")
+    s = Scheduler(Busy([LAPTOP], {}), _Bus(), "r", k_min=1, k_max=3, max_concurrency=4,
+                  timeout_s=5, hedge_fallback_s=5, latency=LatencyStats(),
+                  queue_retries=False)
+    s._load["laptop"] = 0
+    with pytest.raises(sched.TaskFailed):
+        asyncio.run(s.run_task("t0", lambda n, f, m=None: {"attempt_id": f"a{n}"}, 100))
+    assert len(s.attempts) == 1                  # no second attempt queued on a busy node
+
+
+def test_lone_fence_language_line_is_removed():
+    from swarmbly_app.engine import composer
+    sec = composer.Section("Intro", "x", 100)
+    assert composer.clean_section("markdown\nEn el vasto océano.", sec, "") == "En el vasto océano."

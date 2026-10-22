@@ -117,11 +117,15 @@ class Scheduler:
                  k_min: int, k_max: int, max_concurrency: int,
                  timeout_s: float, hedge_fallback_s: float,
                  latency: LatencyStats, kind: str = "generate",
-                 min_params_b: float = 0.0):
+                 min_params_b: float = 0.0, queue_retries: bool = True):
         self.nodes = nodes
         # Models below this size are not used (tags without a size always are).
         self.min_params_b = float(min_params_b)
         self.rejected = 0
+        # False when the requester has its own model: a retry that would wait
+        # behind busy workers fails fast instead, and the task runs locally
+        # (P3b.3': queued retries waited 50 s and then timed out anyway).
+        self.queue_retries = bool(queue_retries)
         # After a timeout or a cancelled hedge the worker may still be
         # finishing (older workers ignore "cancel"): keep its slot for a
         # short grace period instead of sending it work it would refuse.
@@ -226,12 +230,12 @@ class Scheduler:
         number = 0
         latency_key = LatencyStats.key(self.kind, max_tokens)
 
-        def launch(reason: str) -> bool:
+        def launch(reason: str, free_only: bool = False) -> bool:
             nonlocal number
             if number >= self.k_max:
                 return False
             choice = self._select(used_pairs, used_families, used_nodes,
-                                  free_only=(reason == "hedge"))
+                                  free_only=free_only or reason == "hedge")
             if choice is None:
                 return False
             peer, family, model = choice
@@ -288,7 +292,7 @@ class Scheduler:
                         self.rejected += 1
                         rejected.append((replica, attempt))
                         self._event(attempt, "rejected")
-                        if len(accepted) + len(inflight) < self.k_min and launch("retry"):
+                        if len(accepted) + len(inflight) < self.k_min and launch("retry", free_only=not self.queue_retries):
                             self.retries += 1
                         continue
                 if replica is not None:
@@ -298,7 +302,7 @@ class Scheduler:
                     self._event(attempt, "accepted")
                 else:
                     self._event(attempt, "failed")
-                    if len(accepted) + len(inflight) < self.k_min and launch("retry"):
+                    if len(accepted) + len(inflight) < self.k_min and launch("retry", free_only=not self.queue_retries):
                         self.retries += 1
 
         for task, attempt in inflight.items():

@@ -438,6 +438,8 @@ def clean_section(text: str, section: Section, title: str) -> str:
     token budget ended in "Estos puntos" in a live test)."""
     body = (text or "").strip()
     body = re.sub(r"^```[a-zA-Z]*\s*\n?|\n?```\s*$", "", body).strip()
+    # a fence's language tag left alone on the first line ("markdown")
+    body = re.sub(r"^(?:markdown|md|text)\s*\n", "", body, flags=re.I).strip()
     lines = [ln for ln in body.splitlines() if not re.match(r"^\s*([-*_]\s*){3,}$", ln)]
     names = {section.heading.casefold().strip(" .:*#"), (title or "").casefold().strip(" .:*#")}
     while lines and (not lines[0].strip()

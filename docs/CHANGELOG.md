@@ -33,6 +33,10 @@ Windows, Debian; 0.5 B to 8 B models)
   slot for 2 s, so it does not send work the worker would refuse as "at
   concurrency limit" — the actual cause of the `E_POLICY` refusals in P3b,
   not the idle-only setting. Failure details are kept in the attempt's note.
+- With a local model available, a retry that would wait behind busy workers
+  fails fast and the task runs locally (P3b.3': queued retries waited about
+  50 s and then timed out anyway). A fence's language tag left alone on a
+  section's first line ("markdown") is removed.
 
 A single composition of a stated length (an essay, a speech, a report of N
 words) is no longer sent whole to one model or to whole-request replicas: the

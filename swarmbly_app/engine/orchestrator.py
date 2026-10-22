@@ -445,7 +445,8 @@ class Orchestrator:
             hedge_fallback_s=float(swarm_cfg.get("hedge_fallback_ms",
                                                  int(timeout_s * 500))) / 1000.0,
             latency=self.latency,
-            min_params_b=float(swarm_cfg.get("min_model_params_b", 1.5)))
+            min_params_b=float(swarm_cfg.get("min_model_params_b", 1.5)),
+            queue_retries=not (self.local_stream is not None and self.local_model))
         carries: dict[str, str] = {}
         resolved: dict[str, dict[str, Any]] = {}
         local_fallbacks: list[str] = []
