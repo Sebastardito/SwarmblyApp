@@ -298,7 +298,35 @@ def make_outline(prompt: str, contract, lang: str, target_words: int, backend,
     if not outline.topic:
         outline.topic = topic_from(getattr(contract, "objective", "") or "")
     _ensure_table(outline, prompt, lang, target_words, max_sections)
+    _ensure_request_requirements(outline, prompt)
     return outline
+
+
+def _closing_sentences(prompt: str) -> list[str]:
+    """Sentences of the request's last paragraph, when it is prose (that is
+    where requests put delivery requirements: "as a speech opened by …")."""
+    tail = (prompt or "").strip().split("\n\n")[-1].strip()
+    if not tail or tail.lstrip().startswith(("-", "*", "•")) or re.match(r"\s*\d+[.)]", tail):
+        return []
+    return [x.strip() for x in re.split(r"(?<=[.!?])\s+", " ".join(tail.split())) if x.strip()]
+
+
+def _ensure_request_requirements(outline: Outline, prompt: str) -> None:
+    """An explicit requirement of the request whose names the outline lost is
+    attached to the opening section (live test 2026-10-21: the outline of the
+    Galápagos request dropped the presenter, so no section asked for him)."""
+    planned = " ".join(" ".join(s.must_include + s.key_points + [s.purpose, s.heading])
+                       for s in outline.sections).casefold()
+    for sentence in _closing_sentences(prompt):
+        if _TABLE_CUE.search(sentence):
+            continue                       # tables: _ensure_table
+        keys = requirement_keys(sentence)
+        proper = [k for k in keys if k not in _STOP]
+        if proper and not all(k in planned for k in proper):
+            outline.sections[0].must_include.insert(0, sentence[:200])
+            outline.adjustments.append(
+                "request requirement attached to the opening: " + ", ".join(proper))
+            planned += " " + sentence.casefold()
 
 
 def _ensure_table(outline: Outline, prompt: str, lang: str, target_words: int,
@@ -432,14 +460,16 @@ def assemble(outline: Outline, texts: list[str]) -> str:
 
 
 _STOP = frozenset("debe deben texto escrito como para con sobre incluye incluir include "
-                  "should must with that this esta este the and".split())
+                  "should must with that this esta este the and las los del una unos unas "
+                  "este esta estos estas".split())
 
 
 def requirement_keys(term: str) -> list[str]:
     """Words a text must contain to satisfy a requirement: its proper nouns
     (not the capitalised first word of a sentence), else its content words."""
     proper = [m.group(0) for m in re.finditer(r"\b[A-ZÁÉÍÓÚÑ][\wáéíóúñ]{2,}", term)
-              if not re.search(r"(^|[.!?:]\s*)$", term[:m.start()].rstrip(" ¡¿\"'“«"))]
+              if not re.search(r"(^|[.!?:]\s*)$", term[:m.start()].rstrip(" ¡¿\"'“«"))
+              and m.group(0).casefold() not in _STOP]
     if proper:
         return [w.casefold() for w in proper]
     words = [w for w in re.findall(r"\w{5,}", term.casefold()) if w not in _STOP]

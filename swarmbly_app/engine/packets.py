@@ -124,7 +124,7 @@ def build_message(pp: PacketPlan, gamma: dict[str, Any], session_id: bytes,
                   attempt: int, carries: dict[str, str],
                   positions: dict[str, tuple[int, int]], *, max_tokens: int,
                   deadline_ms: int, tier: str, temperature: float,
-                  model_family: str | None) -> dict[str, Any]:
+                  model_family: str | None, model: str | None = None) -> dict[str, Any]:
     """Assemble one wire packet for one attempt of one micro-task."""
     task_id = task_id_for(session_id, pp.level, pp.index)
     predecessors = []
@@ -139,6 +139,8 @@ def build_message(pp: PacketPlan, gamma: dict[str, Any], session_id: bytes,
                                    "stop": []}
     if model_family:
         constraints["model_family"] = model_family  # app extension (SWIP draft)
+    if model:
+        constraints["model"] = model                # exact model wanted (app extension)
     return wire_packet(
         attempt_id=attempt_id_for(task_id, attempt),
         contract=gamma,

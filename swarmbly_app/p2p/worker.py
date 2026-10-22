@@ -187,13 +187,27 @@ class WorkerService:
 
     def _pick_model(self, message: dict[str, Any],
                     models: list[str] | None = None) -> str:
+        """The exact model asked for (``constraints.model``) when shared; else
+        the *largest* shared model of the wanted family (the first one listed
+        was taken before, so a node offering llama3.2:1b and llama3.1:8b ran
+        the 1B model); else the first shared model."""
+        from ..engine.capability import rank_params
         shared = models if models is not None else self.shared_models()
-        wanted = ((message.get("constraints") or {}).get("model_family") or "")
+        constraints = message.get("constraints") or {}
+        exact = str(constraints.get("model") or "")
+        if exact and exact in shared:
+            return exact
+        wanted = str(constraints.get("model_family") or "")
         if wanted:
+            matches = []
             for name in shared:
                 fam = (self.model_info(name) or {}).get("family") or model_family(name)
-                if wanted in (fam, model_family(name), name):
-                    return name
+                base = model_family(name)
+                if wanted in (fam, base, name) or base.startswith(wanted) \
+                        or str(fam).startswith(wanted):
+                    matches.append(name)
+            if matches:
+                return max(matches, key=rank_params)
         return shared[0] if shared else "base"
 
     # -- execution (blocking; runs in an executor thread) -----------------------------

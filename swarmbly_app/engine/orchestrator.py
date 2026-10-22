@@ -250,8 +250,10 @@ class Orchestrator:
         tracker.start("ROUTING / DECOMPOSABILITY")
         routing = self._route(text)
         workers = directory.available_workers()
-        adm = admission_mod.admit(text, n_max=int(swarm_cfg.get("n_fragments_max", 4)),
-                                  n_workers=directory.capacity())
+        adm = admission_mod.admit(
+            text, n_max=int(swarm_cfg.get("n_fragments_max", 4)),
+            n_workers=directory.capacity(),
+            min_items_per_fragment=int(swarm_cfg.get("min_items_per_fragment", 3)))
         k_min = max(1, int(swarm_cfg.get("k_min", 1)))
         whole = False
         compose = self._composer_applies(text, adm, swarm_cfg, workers)
@@ -398,12 +400,13 @@ class Orchestrator:
         temperature = float(cfg["model"].get("temperature", 0.2))
 
         def make_builder(task_id: str, carries: dict[str, str]):
-            def build(attempt: int, family: str | None) -> dict[str, Any]:
+            def build(attempt: int, family: str | None,
+                      model: str | None = None) -> dict[str, Any]:
                 return build_message(
                     plans[task_id], gammas[task_id], session_id, attempt, carries,
                     positions, max_tokens=self._clamp(budgets[task_id], workers),
                     deadline_ms=int(timeout_s * 1000), tier=decision["tier"],
-                    temperature=temperature, model_family=family)
+                    temperature=temperature, model_family=family, model=model)
             return build
 
         preview = [make_builder(t.task_id, {})(0, None) for t in plan.tasks]
@@ -441,14 +444,16 @@ class Orchestrator:
             timeout_s=timeout_s,
             hedge_fallback_s=float(swarm_cfg.get("hedge_fallback_ms",
                                                  int(timeout_s * 500))) / 1000.0,
-            latency=self.latency)
+            latency=self.latency,
+            min_params_b=float(swarm_cfg.get("min_model_params_b", 1.5)))
         carries: dict[str, str] = {}
         resolved: dict[str, dict[str, Any]] = {}
         embedder, embedder_name = self._embedder()
 
         async def run_one(task_id: str):
             build = make_builder(task_id, carries)
-            replicas = await scheduler.run_task(task_id, build, budgets[task_id])
+            replicas = await scheduler.run_task(task_id, build, budgets[task_id],
+                                                validate=validators.get(task_id))
             loop = asyncio.get_running_loop()
             outcome = await loop.run_in_executor(
                 None, functools.partial(
@@ -463,6 +468,7 @@ class Orchestrator:
             return outcome
 
         plan_by_id = {t.task_id: t for t in plan.tasks}
+        validators = self._validators(plan, path, outline)
         required_by_task = ({f"t{i}": [k for req in sec.must_include
                                        for k in composer.requirement_keys(req)]
                              for i, sec in enumerate(outline.sections) if sec.kind != "table"}
@@ -487,10 +493,10 @@ class Orchestrator:
                 raise RuntimeError("distributed execution exceeded its global deadline")
 
         attempts = [a.to_dict() for a in scheduler.attempts]
-        accepted = [a for a in scheduler.attempts if a.status == "accepted"]
+        accepted = [a for a in scheduler.attempts if a.status in ("accepted", "degraded")]
         failed = [a for a in scheduler.attempts if a.status == "failed"]
         tracker.complete("DISPATCHING", attempts=len(attempts), hedges=scheduler.hedges,
-                         retries=scheduler.retries,
+                         retries=scheduler.retries, rejected_quality=scheduler.rejected,
                          hedge_timer=",".join(sorted(scheduler.hedge_timer_source)))
         tracker.complete("MODEL EXECUTION",
                          gen_ms_total=sum(int((a.get("telemetry") or {}).get("gen_ms") or 0)
@@ -607,6 +613,7 @@ class Orchestrator:
             "router": router_meta,
             "attempts": attempts,
             "hedges": scheduler.hedges, "retries": scheduler.retries,
+            "rejected_quality": scheduler.rejected,
             "timeouts": scheduler.timeouts,
             "bytes": {"out": sum(a["bytes_out"] for a in attempts),
                       "in": sum(a["bytes_in"] for a in attempts)},
@@ -654,7 +661,10 @@ class Orchestrator:
                  "truncated": _is_truncated(r, budget)}
                 for r in replicas]
         if len(replicas) < 2:
-            return {"text": replicas[0].text, "consensus": None, "replica_meta": meta,
+            text = replicas[0].text
+            if policy == "items" and items:
+                text = _normalise_items(text, items)
+            return {"text": text, "consensus": None, "replica_meta": meta,
                     "truncated": meta[0]["truncated"]}
         from swarmbly_v0.consensus import Replica as UpReplica, consensus
         result = consensus([UpReplica(replica_id=f"r{i}", text=r.text, family=r.family,
@@ -684,7 +694,10 @@ class Orchestrator:
                 return {"text": text, "consensus": block, "replica_meta": meta,
                         "truncated": False}
         block["selection"] = selection
-        return {"text": replicas[chosen].text, "consensus": block, "replica_meta": meta,
+        text = replicas[chosen].text
+        if policy == "items" and items:
+            text = _normalise_items(text, items)
+        return {"text": text, "consensus": block, "replica_meta": meta,
                 "truncated": meta[chosen]["truncated"]}
 
     def _assemble(self, plan, contract, resolved, bridge_backend, embedder, path):
@@ -707,7 +720,33 @@ class Orchestrator:
                   "similarity": round(float(s.similarity), 4),
                   "path": "bridge" if s.bridged else "splice"}
                  for s in assembly.seams]
+        if path == "enumerated":
+            # One answer per line, in item order. The upstream splice adds a
+            # period at each fragment's end ("4. Reptil."), which changes the
+            # answer itself; the seams above are still its measurement.
+            ordered = sorted((t for t in plan.tasks if t.task_id in resolved),
+                             key=lambda t: _order(t.task_id))
+            text = "\n".join(resolved[t.task_id]["text"].strip() for t in ordered)
+            return text, seams, policy
         return assembly.text, seams, policy
+
+    @staticmethod
+    def _validators(plan, path, outline) -> dict[str, Any]:
+        """Content checks per task (scheduler ``validate``): a replica that
+        fails is retried on another node, within ``k_max``."""
+        out: dict[str, Any] = {}
+        if path == "enumerated":
+            for t in plan.tasks:
+                items = _item_texts(t.instruction)
+                if items:
+                    need = max(1, -(-len(items) // 2))
+                    out[t.task_id] = (lambda text, items=items, need=need:
+                                      len(_parse_items(text, items)) >= need)
+        elif outline is not None:
+            for i, sec in enumerate(outline.sections):
+                floor = max(15, int(sec.words * 0.25))
+                out[f"t{i}"] = lambda text, floor=floor: len((text or "").split()) >= floor
+        return out
 
     @staticmethod
     def _assemble_composition(plan, outline, resolved, embedder):
@@ -975,6 +1014,15 @@ def _item_value(raw: str, item_text: str) -> str:
         value = _SEPARATOR.split(value)[-1].strip(_STRIP)
     value = value.rstrip(".;,").strip()
     return value if value and value.casefold() != item.casefold() else ""
+
+
+def _normalise_items(text: str, items: dict[int, str]) -> str:
+    """One ``n. value`` line per answered item, when at least half parse;
+    otherwise the text as given (never invent an answer)."""
+    parsed = _parse_items(text, items)
+    if len(parsed) * 2 < len(items):
+        return text
+    return "\n".join(f"{n}. {parsed[n]}" for n in sorted(parsed))
 
 
 def _vote_items(replicas, items: dict[int, str], ranking: list[int]):

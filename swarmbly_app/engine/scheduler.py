@@ -106,8 +106,12 @@ class Scheduler:
     def __init__(self, nodes, bus: EventBus, request_id: str, *,
                  k_min: int, k_max: int, max_concurrency: int,
                  timeout_s: float, hedge_fallback_s: float,
-                 latency: LatencyStats, kind: str = "generate"):
+                 latency: LatencyStats, kind: str = "generate",
+                 min_params_b: float = 0.0):
         self.nodes = nodes
+        # Models below this size are not used (tags without a size always are).
+        self.min_params_b = float(min_params_b)
+        self.rejected = 0
         self.bus = bus
         self.request_id = request_id
         self.k_min = max(1, int(k_min))
@@ -129,14 +133,30 @@ class Scheduler:
 
     # -- worker selection -------------------------------------------------------
     def _candidates(self) -> list[tuple[Any, str, str]]:
-        """(peer, family, model) for every model each connected worker serves."""
-        out = []
-        for peer in self.nodes.available_workers(self.kind):
-            models = peer.advertisement.get("models") or [{"family": "unknown"}]
-            for model in models:
-                out.append((peer, str(model.get("family") or "unknown"),
-                            str(model.get("version") or "")))
-        return out
+        """(peer, family, model): per worker and family, its largest eligible model.
+
+        Capability (parameter count from the tag) decides *which* model of a
+        family a node runs; models below ``min_params_b`` are skipped. If that
+        filter would leave no candidate at all, every model is allowed again
+        (a small swarm must still answer).
+        """
+        from .capability import eligible, rank_params
+
+        def collect(min_b: float) -> list[tuple[Any, str, str]]:
+            out = []
+            for peer in self.nodes.available_workers(self.kind):
+                best: dict[str, str] = {}
+                for model in (peer.advertisement.get("models") or [{"family": "unknown"}]):
+                    family = str(model.get("family") or "unknown")
+                    version = str(model.get("version") or "")
+                    if version and not eligible(version, min_b):
+                        continue
+                    if family not in best or rank_params(version) > rank_params(best[family]):
+                        best[family] = version
+                out.extend((peer, family, version) for family, version in best.items())
+            return out
+
+        return collect(self.min_params_b) or collect(0.0)
 
     def _select(self, used_pairs: set[tuple[str, str]], used_families: set[str],
                 used_nodes: set[str]):
@@ -145,9 +165,11 @@ class Scheduler:
         for peer, family, model in self._candidates():
             if (peer.node_id, family) in used_pairs:
                 continue
+            from .capability import rank_params
             key = (family in used_families,           # diversity first (MUST)
                    peer.node_id in used_nodes,         # then distinct machines
                    self._load[peer.node_id] + peer.tasks_inflight,
+                   -rank_params(model),                # then the most capable model
                    self._pair_load[(peer.node_id, family)],
                    self._pair_used[(peer.node_id, family)],  # spread across models
                    peer.rtt_ms if peer.rtt_ms is not None else 1e9,
@@ -157,9 +179,18 @@ class Scheduler:
         return best
 
     # -- one task ---------------------------------------------------------------
-    async def run_task(self, task_id: str, build: Callable[[int, str | None], dict],
-                       max_tokens: int) -> list[Replica]:
-        """Dispatch replicas of one task; return ≥1 verified replica or raise."""
+    async def run_task(self, task_id: str, build: Callable[..., dict],
+                       max_tokens: int,
+                       validate: Callable[[str], bool] | None = None) -> list[Replica]:
+        """Dispatch replicas of one task; return ≥1 verified replica or raise.
+
+        ``validate`` rejects a signed, well-formed replica whose content is
+        unusable (e.g. a batch answered by echoing its items): the attempt is
+        recorded as ``rejected`` (``E_QUALITY``) and another node is tried,
+        within ``k_max``. If every replica is rejected, the rejected ones are
+        returned rather than failing the request (the monitor shows it).
+        """
+        rejected: list[tuple[Replica, Attempt]] = []
         used_pairs: set[tuple[str, str]] = set()
         used_families: set[str] = set()
         used_nodes: set[str] = set()
@@ -180,7 +211,7 @@ class Scheduler:
             used_families.add(family)
             used_nodes.add(peer.node_id)
             multi = len(peer.advertisement.get("models") or []) > 1
-            message = build(number, family if multi else None)
+            message = build(number, family if multi else None, model if multi else None)
             attempt = Attempt(task_id, number, peer.node_id, family, reason,
                               model=model,
                               bytes_out=len(str(message)))
@@ -218,6 +249,19 @@ class Scheduler:
                 self._load[attempt.node_id] -= 1
                 self._pair_load[(attempt.node_id, attempt.family)] -= 1
                 replica = finished.result()
+                if replica is not None and validate is not None:
+                    try:
+                        usable = bool(validate(replica.text))
+                    except Exception:
+                        usable = True
+                    if not usable:
+                        attempt.status, attempt.code = "rejected", "E_QUALITY"
+                        self.rejected += 1
+                        rejected.append((replica, attempt))
+                        self._event(attempt, "rejected")
+                        if len(accepted) + len(inflight) < self.k_min and launch("retry"):
+                            self.retries += 1
+                        continue
                 if replica is not None:
                     attempt.status = "accepted"
                     accepted.append(replica)
@@ -234,6 +278,11 @@ class Scheduler:
             self._pair_load[(attempt.node_id, attempt.family)] -= 1
             attempt.status = "cancelled_slow"   # slow, not dishonest (SPEC §11.4)
             self._event(attempt, "cancelled_slow")
+        if not accepted and rejected:
+            # Degraded, but an answer: the attempts say so ("degraded").
+            for _, attempt in rejected:
+                attempt.status = "degraded"
+            return [replica for replica, _ in rejected]
         if not accepted:
             codes = ", ".join(sorted({a.code for a in self.attempts
                                       if a.task_id == task_id and a.code}))

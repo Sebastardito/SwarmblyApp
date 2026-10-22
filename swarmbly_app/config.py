@@ -77,6 +77,10 @@ DEFAULTS: dict[str, Any] = {
         "composer_min_words": 400,
         "composer_max_sections": 6,
         "composer_length_factor": 0.8,  # provisional: small models overshoot (P3.2)
+        # Heterogeneous swarms (P3b): models below this size (from the tag) are
+        # not used while larger ones exist; batches keep ≥ N items per fragment.
+        "min_model_params_b": 1.5,
+        "min_items_per_fragment": 3,
     },
     "privacy": {
         "tier": "LOCAL",              # GLOBAL | TRUSTED | LOCAL
@@ -229,6 +233,8 @@ _RANGES = {
     "swarm.composer_min_words": (50, 20000),
     "swarm.composer_max_sections": (3, 12),
     "swarm.composer_length_factor": (0.3, 1.5),
+    "swarm.min_model_params_b": (0.0, 100.0),
+    "swarm.min_items_per_fragment": (1, 50),
     "log_retention_days": (1, 3650),
 }
 # Never changeable from the browser: binding the admin API elsewhere is a

@@ -147,7 +147,8 @@ def normalise_inline_list(prompt: str) -> str | None:
     return out
 
 
-def admit(prompt: str, *, n_max: int, n_workers: int) -> Admission:
+def admit(prompt: str, *, n_max: int, n_workers: int,
+          min_items_per_fragment: int = 1) -> Admission:
     """Decide whether (and how) a prompt may be fragmented.
 
     ``n_workers`` is the swarm's concurrent capacity (sum of the workers'
@@ -178,6 +179,11 @@ def admit(prompt: str, *, n_max: int, n_workers: int) -> Admission:
             return Admission(False, "none", f"not a batch: {why}", prompt, 1,
                              normalised, preamble, items)
         n = min(upper, len(items), planner.suggest_n_tasks(candidate, maximum=upper))
+        # Fragments of one or two items multiply the chances of a weak model
+        # answering and add no useful parallelism (P3b.1, 21 Oct 2026: 8 items
+        # in 5 fragments on 8 workers scored worse than in 3).
+        per = max(1, int(min_items_per_fragment))
+        n = min(n, max(1, -(-len(items) // per)))
         n = max(2, n) if len(items) >= 2 else 1
         if n < 2:
             return Admission(False, "enumerated", "too few items to fragment",

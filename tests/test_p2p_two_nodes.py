@@ -178,7 +178,8 @@ class TestDistributed:
 
     def test_parallel_not_sequential(self, nodes):
         worker, _ = nodes("W", worker=True, delay=0.6, concurrent=4)
-        client, _ = nodes("C", extra={"swarm": {"max_concurrency": 4}})
+        client, _ = nodes("C", extra={"swarm": {"max_concurrency": 4,
+                                                "min_items_per_fragment": 1}})
         connect(client, worker)
         started = time.time()
         final = send(client)

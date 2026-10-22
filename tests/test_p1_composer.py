@@ -246,3 +246,15 @@ class TestSecondLiveRound:
         brief = composer.section_instruction(o, 1, "es", 0.8)
         assert f"unas {round(w * 0.8)} palabras" in brief
         assert o.sections[1].words == w                    # the target is unchanged
+
+
+def test_presenter_lost_by_the_outline_is_restored():
+    """P3b.2 (21 Oct 2026): the local model's outline dropped the presenter."""
+    data = json.loads(json.dumps(OUTLINE, ensure_ascii=False))
+    data["sections"][0]["must_include"] = ["presentar el tema"]
+    data["sections"][0]["purpose"] = "Presenta el tema"
+    o = _outline(json.dumps(data, ensure_ascii=False))
+    assert "Andrea" in o.sections[0].must_include[0]
+    assert any("opening" in a for a in o.adjustments)
+    assert composer.requirement_keys("Las Islas Galápagos y Sebastian") == \
+        ["islas", "galápagos", "sebastian"]

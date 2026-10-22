@@ -2,6 +2,25 @@
 
 ## 0.3.0 — Composition planner (unreleased)
 
+**Heterogeneous swarms** (21 October 2026, from P3b on four machines: macOS,
+Windows, Debian; 0.5 B to 8 B models)
+- Capability-aware routing: per node and family the scheduler now picks the
+  largest model (parameter count from the tag) and sends it as
+  `constraints.model`; workers honour it and otherwise run the largest shared
+  model of the wanted family (the first one listed was taken, e.g.
+  llama3.2:1b instead of llama3.1:8b). Models below
+  `swarm.min_model_params_b` (1.5) are skipped while larger ones exist.
+- Quality check before acceptance: a batch replica that answers fewer than
+  half of its items (e.g. echoes the Spanish words it should translate) or a
+  composition section far below its length is `rejected` (`E_QUALITY`) and
+  retried on another node within `k_max`; if every replica is rejected the
+  best is used and marked `degraded`.
+- Batches keep at least `swarm.min_items_per_fragment` (3) items per
+  fragment; answers are normalised to one `n. value` line per item (no code
+  fences, bullets or added periods).
+- The composition outline gets back an explicit requirement of the request
+  that the local model dropped (the presenter, in the Galápagos request).
+
 A single composition of a stated length (an essay, a speech, a report of N
 words) is no longer sent whole to one model or to whole-request replicas: the
 **local model plans it** and the swarm writes it section by section.
