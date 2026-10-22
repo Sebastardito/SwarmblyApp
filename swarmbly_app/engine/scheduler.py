@@ -64,6 +64,9 @@ class LatencyStats:
         return len(self._data.get(key, ()))
 
 
+CANCEL_GRACE_S = 2.0   # seconds a worker keeps its slot after a timeout/cancel
+
+
 @dataclass
 class Attempt:
     task_id: str
@@ -119,6 +122,10 @@ class Scheduler:
         # Models below this size are not used (tags without a size always are).
         self.min_params_b = float(min_params_b)
         self.rejected = 0
+        # After a timeout or a cancelled hedge the worker may still be
+        # finishing (older workers ignore "cancel"): keep its slot for a
+        # short grace period instead of sending it work it would refuse.
+        self._busy_until: dict[str, float] = {}
         self.bus = bus
         self.request_id = request_id
         self.k_min = max(1, int(k_min))
@@ -328,14 +335,21 @@ class Scheduler:
                             attempt: Attempt) -> Replica | None:
         started = time.monotonic()
         async with self._slot(node_id), self._sem:
+            wait = self._busy_until.get(node_id, 0.0) - time.monotonic()
+            if wait > 0:
+                await asyncio.sleep(wait)
             try:
                 result = await self.nodes.dispatch_async(node_id, message,
                                                          self.timeout_s)
             except asyncio.CancelledError:
+                self._busy_until[node_id] = time.monotonic() + CANCEL_GRACE_S
                 raise
             except Exception as exc:
                 attempt.status = "failed"
                 attempt.code = getattr(exc, "code", "") or "E_TRANSPORT"
+                attempt.note = str(getattr(exc, "detail", "") or exc)[:160]
+                if attempt.code == "E_DEADLINE":
+                    self._busy_until[node_id] = time.monotonic() + CANCEL_GRACE_S
                 if attempt.code == "E_DEADLINE":
                     self.timeouts += 1
                 attempt.elapsed_ms = int((time.monotonic() - started) * 1000)

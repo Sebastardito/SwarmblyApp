@@ -111,6 +111,7 @@ class NodeManager:
         self.server: TLSServer | None = None
         self.discovery: DiscoveryService | None = None
         self._task_handler = None
+        self._cancel_handler = None
         self._started = False
         self._ready = threading.Event()
         self._adv_seq = 0
@@ -119,11 +120,12 @@ class NodeManager:
         self.node_id = identity.load_or_create().node_id
 
     # -- lifecycle ---------------------------------------------------------------
-    def start(self, task_handler=None) -> None:
+    def start(self, task_handler=None, cancel_handler=None) -> None:
         if self._started:
             return
         self._started = True
         self._task_handler = task_handler
+        self._cancel_handler = cancel_handler
         self._thread = threading.Thread(target=self._run_loop,
                                         name="swarmbly-p2p", daemon=True)
         self._thread.start()
@@ -463,6 +465,14 @@ class NodeManager:
                 else:
                     future.set_exception(PeerError(
                         str(message.get("code", "")), str(message.get("detail", ""))))
+        elif mtype == "cancel":
+            # The requester no longer waits for this attempt (app extension;
+            # older nodes ignore unknown types, SPEC §3).
+            if self._cancel_handler is not None:
+                try:
+                    self._cancel_handler(node_id, str(message.get("attempt_id", "")))
+                except Exception:
+                    pass
         elif mtype == "ping":
             await self._write(session, {"v": WIRE_VERSION, "type": "pong",
                                         "echo": message.get("ts")})
@@ -568,10 +578,25 @@ class NodeManager:
             await self._write(peer.session, packet_message)
             return await asyncio.wait_for(future, timeout=timeout_s)
         except asyncio.TimeoutError:
+            self._send_cancel(peer, attempt_id)
             raise PeerError("E_DEADLINE", "worker timeout") from None
+        except asyncio.CancelledError:
+            self._send_cancel(peer, attempt_id)   # a hedge won, or the user stopped
+            raise
         finally:
             with self._pending_lock:
                 self._pending.pop(attempt_id, None)
+
+    def _send_cancel(self, peer, attempt_id: str) -> None:
+        """Best effort: tell the worker to stop generating for this attempt."""
+        session = getattr(peer, "session", None)
+        if session is None or not getattr(peer, "connected", False):
+            return
+        try:
+            self._spawn(self._write(session, {"v": WIRE_VERSION, "type": "cancel",
+                                              "attempt_id": attempt_id}))
+        except Exception:
+            pass
 
     @property
     def loop(self) -> asyncio.AbstractEventLoop | None:

@@ -17,6 +17,7 @@ reports the model actually used (SPEC §10).
 from __future__ import annotations
 
 import asyncio
+import functools
 import threading
 import time
 from typing import Any, Callable
@@ -74,6 +75,8 @@ class WorkerService:
         self.model_info = model_info or (lambda name: {})
         self._tasks_now = 0
         self._lock = threading.Lock()
+        # (requesting node, attempt_id) -> cancel flag checked between tokens
+        self._cancels: dict[tuple[str, str], threading.Event] = {}
 
     # -- policy -----------------------------------------------------------------
     def shared_models(self) -> list[str]:
@@ -158,12 +161,18 @@ class WorkerService:
             if self._tasks_now >= int(policy["max_concurrent"]):
                 return error("E_POLICY", "worker at concurrency limit", attempt_id)
             self._tasks_now += 1
+        cancel_event = threading.Event()
+        key = (node_id, str(attempt_id or ""))
+        self._cancels[key] = cancel_event
         try:
             hard_deadline = received + budget_s
             return await asyncio.get_running_loop().run_in_executor(
-                None, self._execute, message, hard_deadline,
-                int((time.monotonic() - received) * 1000))
+                None, functools.partial(
+                    self._execute, message, hard_deadline,
+                    int((time.monotonic() - received) * 1000),
+                    cancel_event=cancel_event))
         finally:
+            self._cancels.pop(key, None)
             with self._lock:
                 self._tasks_now -= 1
 
@@ -213,7 +222,8 @@ class WorkerService:
     # -- execution (blocking; runs in an executor thread) -----------------------------
     def _execute(self, message: dict[str, Any], hard_deadline: float,
                  queue_ms: int, models: list[str] | None = None,
-                 serving_others: bool = True) -> dict[str, Any]:
+                 serving_others: bool = True,
+                 cancel_event: threading.Event | None = None) -> dict[str, Any]:
         """Execute one packet. ``models`` overrides the shared set (local pool);
         contribution counters only count work served to *other* nodes."""
         started = time.monotonic()
@@ -228,8 +238,10 @@ class WorkerService:
             stream = self.backend_factory()
         except Exception as exc:
             return error("E_EXECUTION", f"backend unavailable: {exc}", attempt_id)
-        backend = PromptBackend(stream, model_name,
-                                interrupt=lambda: time.monotonic() > hard_deadline)
+        backend = PromptBackend(
+            stream, model_name,
+            interrupt=lambda: (time.monotonic() > hard_deadline
+                               or (cancel_event is not None and cancel_event.is_set())))
         try:
             guard = self.lce.worker_guard(model_name)
             if guard is not None:
@@ -274,6 +286,18 @@ class WorkerService:
             self.bus.publish("worker.task_served", model=model_name, gen_ms=gen_ms,
                              tokens_out=tokens_out)
         return reply
+
+    def cancel(self, node_id: str, attempt_id: str) -> bool:
+        """Stop a task the requesting node no longer waits for (it timed out,
+        or another replica won). Only the node that sent the task can cancel
+        it. Without this, a worker kept generating after the requester gave
+        up, and refused the requester's next task as "at concurrency limit"
+        (P3b.3, 22 Oct 2026)."""
+        event = self._cancels.get((node_id, str(attempt_id or "")))
+        if event is None:
+            return False
+        event.set()
+        return True
 
     def execute_local(self, message: dict[str, Any], models: list[str],
                       timeout_s: float) -> dict[str, Any]:

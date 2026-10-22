@@ -106,7 +106,8 @@ class AppState:
                 self.config, self.db, self.bus, self.identity_manager,
                 self.lce, lambda: self.backends.resolve(self.config.all()),
                 model_info=self.model_info)
-            self.nodes.start(task_handler=self.worker.handle)
+            self.nodes.start(task_handler=self.worker.handle,
+                             cancel_handler=self.worker.cancel)
 
     def _ollama_url(self) -> str:
         model_cfg = self.config.all()["model"]

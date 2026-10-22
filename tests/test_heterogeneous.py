@@ -175,3 +175,63 @@ def test_failed_task_falls_back_to_the_local_model(tmp_path):
     finally:
         worker.stop()
         client.stop()
+
+
+# -- cancellation (P3b.3: workers kept generating after the requester gave up) ----
+def test_worker_cancel_stops_the_task(app_state):
+    import threading
+    from conftest import FakeBackend
+    from test_worker_policy import make_worker, task_message
+    app_state.config.update({"swarm": {"worker_enabled": True}})
+    fake = FakeBackend("1. dog", delay=0.5)
+    worker = make_worker(app_state, fake)
+    message = task_message()
+
+    async def scenario():
+        task = asyncio.ensure_future(worker.handle("peerA", message))
+        await asyncio.sleep(0.1)
+        assert not worker.cancel("intruder", message["attempt_id"])   # only the sender
+        assert worker.cancel("peerA", message["attempt_id"])
+        return await task
+    reply = asyncio.run(scenario())
+    assert reply["type"] == "error" and reply["code"] == "E_DEADLINE"
+
+
+def test_timeout_sends_cancel_to_the_worker(tmp_path):
+    from test_p2p_two_nodes import connect, make_node, wait_for
+    from swarmbly_app.p2p.messages import packet
+    worker, _ = make_node(tmp_path, "W", worker=True, delay=1.5)
+    client, _ = make_node(tmp_path, "C")
+    try:
+        connect(client, worker)
+        msg = packet(attempt_id="a-cancel-1",
+                     contract={"v": 1, "objective": "x", "audience": "", "register": "formal",
+                               "format": "prose", "target_len": None,
+                               "lexicon": {"prefer": [], "forbid": []}, "entities": [],
+                               "style_seed": "", "budget": {"max_out_tokens": 50}},
+                     predecessors=[], task={"instruction": "hola", "kind": "generate",
+                                            "expects": {"format": "prose", "min_tokens": 0,
+                                                        "max_tokens": 50}},
+                     deadline_ms=10000)
+        with pytest.raises(Exception):
+            client.nodes.dispatch(worker.identity.node_id, msg, timeout_s=0.3)
+        assert wait_for(lambda: any(e.is_set() for e in worker.worker._cancels.values()),
+                        timeout=2.0)
+    finally:
+        worker.stop()
+        client.stop()
+
+
+def test_deadline_keeps_the_slot_for_a_grace_period(monkeypatch):
+    import time as _t
+    import swarmbly_app.engine.scheduler as sched
+    from swarmbly_app.p2p.node import PeerError
+
+    class Slow(_Nodes):
+        async def dispatch_async(self, node_id, message, timeout_s):
+            raise PeerError("E_DEADLINE", "worker timeout")
+    s = _scheduler(Slow([LAPTOP], {}), k_min=1, k_max=1)
+    with pytest.raises(sched.TaskFailed):
+        asyncio.run(s.run_task("t0", lambda n, f, m=None: {"attempt_id": f"a{n}"}, 100))
+    assert s._busy_until["laptop"] > _t.monotonic()
+    assert s.attempts[0].note == "worker timeout"

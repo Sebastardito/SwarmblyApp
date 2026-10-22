@@ -26,6 +26,13 @@ Windows, Debian; 0.5 B to 8 B models)
   (`local_fallback_tasks` in the metadata); hedges only go to workers with a
   free slot (queued hedges made every remaining task miss its deadline).
   Rejected replicas keep a 160-character preview for auditing.
+- Cancellation: when the requester gives up on an attempt (its timeout, a
+  hedge that won, the user stopping) it sends a `cancel` message; the worker
+  stops generating between tokens. Only the node that sent a task can cancel
+  it; older nodes ignore the message. The requester also keeps that worker's
+  slot for 2 s, so it does not send work the worker would refuse as "at
+  concurrency limit" — the actual cause of the `E_POLICY` refusals in P3b,
+  not the idle-only setting. Failure details are kept in the attempt's note.
 
 A single composition of a stated length (an essay, a speech, a report of N
 words) is no longer sent whole to one model or to whole-request replicas: the
