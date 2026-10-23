@@ -54,6 +54,20 @@ def minimal_objective(admission, contract) -> str:
 UPSTREAM_INTEGRATION_SUFFIX = " Close the answer; do not repeat earlier parts."
 
 
+_LANGUAGES = (r"ingl[ée]s|english|anglais|espa[ñn]ol|spanish|espagnol|franc[ée]s|french|"
+              r"fran[çc]ais|portugu[ée]s|portuguese|alem[áa]n|german|allemand|alem[ãa]o|"
+              r"italiano|italian|italien|chino|chinese|japon[ée]s|japanese|quechua|kichwa")
+# The request names the language of the answer ("traducción al inglés",
+# "translate into French"): "respond in <request language>" would contradict it.
+_TARGET_LANGUAGE = re.compile(
+    r"\b(?:al|a|en|para|into|to|in|en|vers|para o|em)\s+(?:el\s+|la\s+|l')?(?:"
+    + _LANGUAGES + r")\b", re.I)
+
+
+def answer_language_named(text: str) -> bool:
+    return bool(_TARGET_LANGUAGE.search(text or ""))
+
+
 def localise_instruction(instruction: str, lang: str, path: str) -> str:
     """The task text a worker receives, with directives in the request's language.
 
@@ -71,7 +85,10 @@ def localise_instruction(instruction: str, lang: str, path: str) -> str:
     s = strings(lang)
     if path == "enumerated":
         text = f"{text.rstrip()}\n\n{s['batch']}"
-    if lang != DEFAULT_LANG and s["respond_lang"]:
+    if lang != DEFAULT_LANG and s["respond_lang"] and not answer_language_named(text):
+        # P3h.1 (23 Oct 2026): "da solo su traducción al inglés … Responde en
+        # español." Small models obeyed the last line and echoed the Spanish
+        # words — the main source of the echo rejections since P3b.
         text = f"{text.rstrip()}\n{s['respond_lang']}"
     return text
 

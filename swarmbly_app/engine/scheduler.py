@@ -191,7 +191,7 @@ class Attempt:
     number: int
     node_id: str
     family: str
-    reason: str                       # initial | hedge | retry
+    reason: str                       # initial | hedge | retry | tie_break
     status: str = "dispatched"        # dispatched|accepted|extra|failed|cancelled_slow
     code: str = ""
     elapsed_ms: int | None = None
@@ -354,7 +354,8 @@ class Scheduler:
                        validate: Callable[[str], bool] | None = None, *,
                        k_min: int | None = None, k_max: int | None = None,
                        exclude: set[tuple[str, str]] | None = None,
-                       start_number: int = 0) -> list[Replica]:
+                       start_number: int = 0,
+                       reason: str = "initial") -> list[Replica]:
         """Dispatch replicas of one task; return ≥1 verified replica or raise.
 
         ``validate`` rejects a signed, well-formed replica whose content is
@@ -408,7 +409,7 @@ class Scheduler:
             return True
 
         for _ in range(k_min):
-            if not launch("initial"):
+            if not launch(reason):
                 break
         if not inflight:
             raise TaskFailed(f"{task_id}: no connected worker available")

@@ -528,6 +528,7 @@ class Orchestrator:
                         extra = await scheduler.run_task(
                             task_id, build, budgets[task_id], validate=check,
                             k_min=1, k_max=1, start_number=len(scheduler.attempts),
+                            reason="tie_break",
                             exclude={(r.node_id, r.family) for r in replicas})
                     except TaskFailed:
                         extra = []
@@ -1097,6 +1098,7 @@ def _select_whole(replicas, meta, embedder, lang: str | None,
 
 
 _ITEM_LINE = re.compile(r"^\s*[\[(]?(\d{1,3})[\]).:]\s+(.+?)\s*$", re.M)
+MAX_ITEM_ANSWER_WORDS = 4      # an answer on the line after its item is short
 _LABEL_ANYWHERE = re.compile(r"(?:^|(?<=\s))[\[(]?(\d{1,3})[\]).:]\**\s+")
 # A label left inside a value: "1. 7. libro" (renumbered from 1 with the
 # original number kept, P3d.1) or "7.* Asunción".
@@ -1135,7 +1137,15 @@ def _parse_items(text: str, items: dict[int, str]) -> dict[int, str]:
         if n not in items or n in found:
             continue
         end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-        value = _item_value(text[m.end():end].split("\n")[0], items[n])
+        lines = [ln for ln in text[m.end():end].split("\n")]
+        value = _item_value(lines[0], items[n])
+        if not value and len(lines) > 1:
+            # "4. Iguana marina\n- reptil": the label repeats the item and the
+            # answer is on the next line (qwen2.5:3b, P3h.1).
+            nxt = next((ln for ln in lines[1:] if ln.strip(_STRIP + "-•")), "")
+            bare = re.sub(r"^\s*[-*•]\s*", "", nxt).strip()
+            short = len(bare.split()) <= MAX_ITEM_ANSWER_WORDS and not bare.endswith(":")
+            value = _item_value(bare, items[n]) if nxt and short else ""
         if value:
             found[n] = value
     missing = [n for n in items if n not in found]
@@ -1205,8 +1215,13 @@ class _ItemCheck:
 
     def explain(self, text: str) -> str:
         parsed = _parse_items(text, self.items)
-        return (f"items {min(self.items)}-{max(self.items)}: read "
-                f"{sorted(parsed) or 'none'}, need {self.need}")
+        out = (f"items {min(self.items)}-{max(self.items)}: read "
+               f"{sorted(parsed) or 'none'}, need {self.need}")
+        if not parsed:
+            # Hidden characters do not survive the whitespace-collapsed
+            # preview (P3h.1: "1. 5. sol - sun …" read as nothing).
+            out += f"; raw {ascii((text or '')[:48])}"
+        return out
 
 
 def _no_answer(n: int, item: str, lang: str | None) -> str:
@@ -1229,8 +1244,30 @@ def _normalise_items(text: str, items: dict[int, str], lang: str | None = None,
                      for n in sorted(items))
 
 
+_NUMBER = re.compile(r"\s*(-?\d+(?:[.,]\d+)?)(?!\d)")
+
+
 def _vote_key(value: str) -> str:
-    return re.sub(r"[^\w]+", " ", value.casefold()).strip()
+    """What two answers must share to count as the same vote.
+
+    Numbers compare by value ("1.5" = "1.5 km" = "1,5"; after "=" the result
+    is taken), and a one-word answer by its singular ("Aves" = "ave"): in
+    P3h.1 every fragment of the length batch went to a tie-break over units
+    alone.
+    """
+    text = value.casefold()
+    if "=" in text:
+        text = text.rsplit("=", 1)[1]
+    number = _NUMBER.match(text)
+    if number:
+        return "#" + format(float(number.group(1).replace(",", ".")), "g")
+    key = re.sub(r"[^\w]+", " ", text).strip()
+    if " " not in key and len(key) > 3:
+        if key.endswith("es") and key[-3] in "lrnd":
+            key = key[:-2]
+        elif key.endswith("s"):
+            key = key[:-1]
+    return key
 
 
 def _split_items(replicas, items: dict[int, str]) -> list[int]:

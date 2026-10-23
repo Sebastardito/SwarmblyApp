@@ -109,6 +109,21 @@ Windows, Debian; 0.5 B to 8 B models)
     words (×0.75–1.0 below 200 words, provisional);
   - a rejected batch replica's note starts with what the check read
     ("items 4-6: read [5], need 2").
+- From P3h (23 October 2026):
+  - "respond in Spanish" is no longer added to a task that names the
+    language of the answer ("traducción al inglés"): with it qwen2.5:3b
+    echoed the Spanish words, without it translated them — the main source
+    of echo rejections since P3b;
+  - votes compare numbers by value and one-word answers by their singular
+    ("1.5" = "1.5 km", "Aves" = "ave"): every fragment of the length batch
+    had gone to a tie-break over units;
+  - an answer on the line after its repeated item ("4. Iguana marina /
+    - reptil") is read;
+  - format words the request did not ask for (tables, lists, headings) are
+    removed from the outline's style line, and prose sections are told to
+    write paragraphs without tables (and without lists unless requested);
+  - tie-break attempts are labelled `tie_break`; an unreadable rejected
+    replica's note keeps its first characters escaped.
 
 A single composition of a stated length (an essay, a speech, a report of N
 words) is no longer sent whole to one model or to whole-request replicas: the

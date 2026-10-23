@@ -214,6 +214,7 @@ def test_item_check_explains_a_rejection():
     check = _ItemCheck({19: "grande", 20: "pequeño"})
     assert not check("19. grande - grande\n20. pequeño - pequeño")
     assert check.explain("19. grande - grande\n20. small") == "items 19-20: read [20], need 1"
+    assert "raw" in check.explain("19. grande - grande")
     assert check("19. large")
 
 
@@ -331,3 +332,57 @@ def test_numbered_answers_win_ties_over_positional_ones():
     numbered = Replica("4. Reptil\n5. Ave\n6. Pez", "n2", "llama", "l", 1)
     text, _ = _vote_items([positional, numbered], items, [0, 1], "es")
     assert text.splitlines() == ["4. Reptil", "5. Ave", "6. Pez"]
+
+
+def test_style_loses_format_words_the_request_did_not_ask_for():
+    """P3g.2: 'formatting rules: … bullet points, numbered lists, tables' in
+    the style line gave every section its own table (31 rows)."""
+    o = composer.Outline("T", "agua", "register: formal; tone: informative; formatting "
+                         "rules: headings, subheadings, bullet points, numbered lists, tables",
+                         [composer.Section("Intro", "x", 100),
+                          composer.Section("Tabla", "x", 120, kind="table"),
+                          composer.Section("Cierre", "x", 100)], "local_model")
+    composer._clean_style(o, "Redacta un artículo con una tabla de ecosistemas.")
+    assert o.style == "register: formal; tone: informative" and not o.lists_ok
+    brief = composer.section_instruction(o, 0, "es")
+    assert "sin tablas ni listas" in brief and "tables" not in brief
+    assert "sin tablas" not in composer.section_instruction(o, 1, "es")
+
+
+def test_requested_lists_are_kept():
+    o = composer.Outline("T", "t", "tono cercano, con viñetas", [
+        composer.Section("A", "x", 100), composer.Section("B", "x", 100),
+        composer.Section("C", "x", 100)], "local_model")
+    composer._clean_style(o, "Escribe una guía con viñetas.")
+    assert o.style == "tono cercano, con viñetas" and o.lists_ok
+    assert "sin tablas." in composer.section_instruction(o, 1, "es")
+
+
+def test_no_respond_in_spanish_when_the_answer_language_is_named():
+    """P3h.1: 'traducción al inglés … Responde en español.' made qwen2.5:3b
+    echo the Spanish words; without the last line it translated them."""
+    from swarmbly_app.engine.packets import answer_language_named, localise_instruction
+    d = localise_instruction("Para cada una de las siguientes palabras en español, da solo "
+                             "su traducción al inglés:\n\n7. libro", "es", "enumerated")
+    assert "Responde en español" not in d and d.rstrip().endswith("cada uno.")
+    b = localise_instruction("Para cada uno de los siguientes países, indica solo el "
+                             "nombre de su capital:\n\n1. Ecuador", "es", "enumerated")
+    assert b.rstrip().endswith("Responde en español.")
+    assert answer_language_named("Traduce al francés") and answer_language_named(
+        "translate into German") and not answer_language_named("la capital de Inglaterra")
+
+
+def test_vote_key_ignores_units_and_plurals():
+    from swarmbly_app.engine.orchestrator import _vote_key
+    assert _vote_key("1.5") == _vote_key("1.5 km") == _vote_key("1,5 km")
+    assert _vote_key("250/1000 = 0.25 km") == _vote_key("0.25")
+    assert _vote_key("Aves") == _vote_key("ave") and _vote_key("Reptiles") == _vote_key("reptil")
+    assert _vote_key("Mamíferos") == _vote_key("mamífero")
+    assert _vote_key("car") != _vote_key("carro") and _vote_key("0.1 km") != _vote_key("70 m")
+
+
+def test_answer_on_the_line_after_the_repeated_item():
+    items = {4: "Iguana marina", 5: "Pinzón de Darwin", 6: "Tiburón martillo"}
+    text = "4. Iguana marina\n- reptil\n\n5. Pinzón de Darwin\n- ave\n\n6. Tiburón martillo\n- pez"
+    assert _parse_items(text, items) == {4: "reptil", 5: "ave", 6: "pez"}
+    assert _parse_items("4. Iguana marina\n5. Pinzón de Darwin", items) == {}

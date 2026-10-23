@@ -54,6 +54,11 @@ _SECTION_COUNT = re.compile(
 _OPENING_CUE = re.compile(r"\b(introducci[óo]n|introduction|introdu[çc][ãa]o)\b", re.I)
 _CLOSING_CUE = re.compile(r"\b(conclusi[óo]n|conclusion|conclus[ãa]o)\b", re.I)
 MAX_REQUESTED_SECTIONS = 8
+_LIST_CUE = re.compile(r"\b(listas?|vi[ñn]etas?|enumera\w*|lists?|bullets?|bullet points?|"
+                       r"puntos|listes?|puces)\b", re.I)
+_FORMAT_WORDS = re.compile(r"\b(tablas?|tables?|tabelas?|tableaux?|listas?|lists?|"
+                           r"vi[ñn]etas?|bullets?|bullet points?|numbered|numeradas?|"
+                           r"headings?|subheadings?|encabezados?|subt[íi]tulos?)\b", re.I)
 _HEADING_LINE = re.compile(r"^\s*(#{1,6}\s+.*|\*\*[^*]{1,120}\*\*\s*:?)\s*$")
 
 
@@ -81,9 +86,11 @@ class Outline:
     source: str                         # local_model | fallback
     errors: list[str] = field(default_factory=list)
     adjustments: list[str] = field(default_factory=list)
+    lists_ok: bool = False              # the request asks for lists or bullets
 
     def to_dict(self) -> dict[str, Any]:
         return {"title": self.title, "topic": self.topic, "style": self.style,
+                "lists_ok": self.lists_ok,
                 "source": self.source, "errors": list(self.errors),
                 "adjustments": list(self.adjustments),
                 "sections": [s.to_dict() for s in self.sections]}
@@ -343,8 +350,38 @@ def make_outline(prompt: str, contract, lang: str, target_words: int, backend,
     _drop_unrequested_tables(outline, prompt, target_words)
     _ensure_section_count(outline, wanted, lang, target_words)
     _ensure_request_requirements(outline, prompt)
+    _clean_style(outline, prompt)
     return outline
 
+
+def _clean_style(outline: Outline, prompt: str) -> None:
+    """Formatting the request did not ask for leaves the style line.
+
+    P3g.2 (23 Oct 2026): the local model wrote "formatting rules: headings,
+    subheadings, bullet points, numbered lists, tables" for a request that
+    asked for one table; every section added its own table (31 rows) and the
+    report got bullets. A requested table has its own section; lists stay
+    only if the request asks for them.
+    """
+    outline.lists_ok = bool(_LIST_CUE.search(prompt or ""))
+    if not outline.style:
+        return
+    parts = re.split(r"\s*[;]\s*", outline.style)
+    kept = []
+    for part in parts:
+        if _FORMAT_WORDS.search(part) and not (outline.lists_ok and _LIST_CUE.search(part)):
+            cleaned = _FORMAT_WORDS.sub("", part)
+            cleaned = re.sub(r"\b(formatting rules|formato|reglas de formato)\s*:?", "",
+                             cleaned, flags=re.I)
+            cleaned = re.sub(r"[,\s]+(,|$)", r"\1", cleaned).strip(" ,:")
+            if len(cleaned.split()) >= 2:
+                kept.append(cleaned)
+            continue
+        kept.append(part)
+    style = "; ".join(k for k in kept if k)
+    if style != outline.style:
+        outline.adjustments.append("format words removed from the style line")
+        outline.style = style
 
 def _drop_unrequested_tables(outline: Outline, prompt: str, target_words: int) -> None:
     """A table section the request did not ask for is removed; its key
@@ -482,6 +519,8 @@ _BRIEF = {
         "table": ("Presenta esta sección como una tabla en Markdown con encabezados de "
                   "columna, precedida por una frase breve."),
         "only": "Escribe solo el contenido de esta sección, sin el encabezado ni el título.",
+        "prose": "Escribe en párrafos, sin tablas.",
+        "prose_nolists": "Escribe en párrafos, sin tablas ni listas.",
     },
     "en": {
         "head": "Write section {i} of {n} of a text{title} about {topic}.",
@@ -499,6 +538,8 @@ _BRIEF = {
         "table": ("Present this section as a Markdown table with column headers, "
                   "preceded by one short sentence."),
         "only": "Write only the content of this section, without its heading or the title.",
+        "prose": "Write in paragraphs, without tables.",
+        "prose_nolists": "Write in paragraphs, without tables or lists.",
     },
 }
 
@@ -530,6 +571,8 @@ def section_instruction(outline: Outline, index: int, lang: str,
     if outline.style and sec.kind != "table":
         lines.append(b["style"].format(x="; ".join(_bare(x) for x in outline.style.split("; "))))
     lines.append(b["words"].format(w=asked_words(sec, length_factor)))
+    if sec.kind != "table":
+        lines.append(b["prose" if outline.lists_ok else "prose_nolists"])
     if sec.kind == "table":
         lines.append(b["table"])
     elif index == 0:
