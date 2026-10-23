@@ -552,7 +552,7 @@
   },
   "evidence__enabled": {
    "label": "Add public evidence to batches",
-   "help": "In lists of items that name something (\"Blue-footed booby\", \"Ecuador\"), the app looks each item up on Wikipedia and adds two sentences of its entry to that item's fragment. Only each item's text is sent to Wikipedia, never your request, and nothing if the request is classified as sensitive. In a test with 8 animals (5 repetitions) it fixed every error the models shared; it has not yet been measured on other topics."
+   "help": "In lists of items that name something (\"Blue-footed booby\", \"Ecuador\"), the app looks each item up on Wikipedia and adds two sentences of its entry to that item's fragment. Only each item's text is sent to Wikipedia, never your request, and nothing if the request is classified as sensitive. In tests it helped a lot when the models lacked the fact (authors of books), but it made some already-correct answers worse when the article was a homonym (\"Cecilia\" as a first name) or carried a neighbouring fact (the atomic number instead of the symbol). That is why it is off by default."
   },
   "evidence__timeout_s": {
    "label": "Maximum time per lookup (s)",

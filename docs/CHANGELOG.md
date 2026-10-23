@@ -179,6 +179,12 @@ Windows, Debian; 0.5 B to 8 B models)
   P2a (5 repetitions, R2): batch A went from 7.0/8 to 8/8 on average, the
   total from 46.8 to 48/48, with no change in B, C or D and ~0.7 s of
   lookups per batch. One battery only; kept off by default.
+- P2c (six varied batteries, 3 repetitions): with evidence the total rose
+  from 51–54 to 55–56/60, all of it from authors of books (3–5 → 9/10),
+  while the other batteries lost 2–3/50: homonym articles ("Cecilia" as a
+  first name) and neighbouring facts (atomic number instead of symbol,
+  largest city instead of capital) misled answers the network already got
+  right. The setting's help text says so; it stays off by default.
 - Settings → Privacy → "Public evidence (Wikipedia)": the switch, with what
   is sent and what was measured; timeout, length and number of lookups in
   the Advanced profile.
