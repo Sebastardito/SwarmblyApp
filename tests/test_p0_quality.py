@@ -163,7 +163,7 @@ class TestPackets:
         text = localise_instruction("1. a\n2. b" + UPSTREAM_INTEGRATION_SUFFIX, "en",
                                     "enumerated")
         assert "Close the answer" not in text and "[NN]" not in text
-        assert text.endswith("keeping each item's number.")
+        assert text.endswith("Do not repeat the item.")
 
     def test_max_packet_fraction_reported(self):
         messages = _messages(BATCH_ES)

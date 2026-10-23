@@ -82,11 +82,19 @@ def _number(raw: str) -> int:
 
 
 def _sentence_start_only(entity: str, prompt: str) -> bool:
-    """True when every occurrence of ``entity`` starts a line, bullet or sentence."""
-    occurrences = [m.start() for m in re.finditer(rf"\b{re.escape(entity)}\b", prompt)]
-    if not occurrences:
-        return False
-    return all(_POSITION_START.search(prompt[:pos]) is not None for pos in occurrences)
+    """True when ``entity`` is not a name of the request: no occurrence is
+    capitalised away from the start of a line, bullet or sentence.
+
+    Upstream also returns lower-case words: for "Para cada una de las
+    siguientes palabras…" it gave ("para", "cada", "una"), the case-sensitive
+    search found no occurrence and kept them, and every packet said "usa
+    exactamente estos nombres: para, cada, una" (P3i.1, 23 Oct 2026) — an
+    instruction to keep words unchanged, in a batch asking to translate them.
+    """
+    for m in re.finditer(rf"\b{re.escape(entity)}\b", prompt, re.I):
+        if m.group(0)[:1].isupper() and _POSITION_START.search(prompt[:m.start()]) is None:
+            return False
+    return True
 
 
 def build_contract(prompt: str) -> RequestContract:

@@ -124,6 +124,17 @@ Windows, Debian; 0.5 B to 8 B models)
     write paragraphs without tables (and without lists unless requested);
   - tie-break attempts are labelled `tie_break`; an unreadable rejected
     replica's note keeps its first characters escaped.
+- From P3i (23 October 2026), the echo traced to the packet itself:
+  - the batch directive is reworded in all four languages ("For each item,
+    write one line with its number and your answer (for example: “1.
+    answer”). Do not repeat the item."): with "answer only the numbered
+    items …, keeping each item's number", phi3.5 and qwen2.5:3b re-listed
+    the Spanish words; with the new wording both translated them (n = 1 per
+    model and wording). Batch ρ figures change slightly;
+  - lower-case words returned by the upstream entity extractor are no
+    longer sent as names ("usa exactamente estos nombres: para, cada, una"
+    in every batch packet);
+  - a style line copied from the outline schema's placeholder is dropped.
 
 A single composition of a stated length (an essay, a speech, a report of N
 words) is no longer sent whole to one model or to whole-request replicas: the

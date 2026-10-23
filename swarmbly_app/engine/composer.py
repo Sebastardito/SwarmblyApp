@@ -364,6 +364,10 @@ def _clean_style(outline: Outline, prompt: str) -> None:
     only if the request asks for them.
     """
     outline.lists_ok = bool(_LIST_CUE.search(prompt or ""))
+    if outline.style.lower().startswith("one line: register"):
+        # The local model copied the schema's placeholder (P3i.2).
+        outline.style = ""
+        outline.adjustments.append("style placeholder copied from the schema removed")
     if not outline.style:
         return
     parts = re.split(r"\s*[;]\s*", outline.style)

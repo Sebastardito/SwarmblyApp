@@ -364,7 +364,7 @@ def test_no_respond_in_spanish_when_the_answer_language_is_named():
     from swarmbly_app.engine.packets import answer_language_named, localise_instruction
     d = localise_instruction("Para cada una de las siguientes palabras en español, da solo "
                              "su traducción al inglés:\n\n7. libro", "es", "enumerated")
-    assert "Responde en español" not in d and d.rstrip().endswith("cada uno.")
+    assert "Responde en español" not in d and d.rstrip().endswith("No repitas el elemento.")
     b = localise_instruction("Para cada uno de los siguientes países, indica solo el "
                              "nombre de su capital:\n\n1. Ecuador", "es", "enumerated")
     assert b.rstrip().endswith("Responde en español.")
@@ -386,3 +386,20 @@ def test_answer_on_the_line_after_the_repeated_item():
     text = "4. Iguana marina\n- reptil\n\n5. Pinzón de Darwin\n- ave\n\n6. Tiburón martillo\n- pez"
     assert _parse_items(text, items) == {4: "reptil", 5: "ave", 6: "pez"}
     assert _parse_items("4. Iguana marina\n5. Pinzón de Darwin", items) == {}
+
+
+def test_lowercase_upstream_entities_are_not_names():
+    """P3i.1: 'usa exactamente estos nombres: para, cada, una' in every packet."""
+    assert build_contract("Para cada una de las siguientes palabras en español, da solo "
+                          "su traducción al inglés:\n1. perro\n2. gato"
+                          ).contract.canonical_entities == ()
+    assert "Darwin" in build_contract("Indica:\n1. Tortuga\n2. Pinzón de Darwin"
+                                      ).contract.canonical_entities
+
+
+def test_copied_style_placeholder_is_dropped():
+    o = composer.Outline("T", "t", "One line: register, tone, voice and formatting rules "
+                         "from the request", [composer.Section("A", "x", 100)] * 3,
+                         "local_model")
+    composer._clean_style(o, "Redacta un artículo.")
+    assert o.style == ""
