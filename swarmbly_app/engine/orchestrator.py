@@ -1106,6 +1106,7 @@ def _select_whole(replicas, meta, embedder, lang: str | None,
 
 
 _ITEM_LINE = re.compile(r"^\s*[\[(]?(\d{1,3})[\]).:]\s+(.+?)\s*$", re.M)
+_TABLE_ROW = re.compile(r"^\s*\|\s*\**(\d{1,3})\**\s*\|(.*?)\|?\s*$", re.M)
 MAX_ITEM_ANSWER_WORDS = 4      # an answer on the line after its item is short
 _LABEL_ANYWHERE = re.compile(r"(?:^|(?<=\s))[\[(]?(\d{1,3})[\]).:]\**\s+")
 # A label left inside a value: "1. 7. libro" (renumbered from 1 with the
@@ -1156,6 +1157,16 @@ def _parse_items(text: str, items: dict[int, str]) -> dict[int, str]:
             value = _item_value(bare, items[n]) if nxt and short else ""
         if value:
             found[n] = value
+    # Markdown table rows whose first cell is the item number:
+    # "| 7 | Pingüino de Galápagos | Ave |" (P3l.1: a model answered the
+    # whole batch as a table).
+    for row in _TABLE_ROW.finditer(text):
+        n = int(row.group(1))
+        if n in items and n not in found:
+            cells = [c.strip(_STRIP) for c in row.group(2).split("|")]
+            cells = [c for c in cells if c and c.casefold() != items[n].strip(_STRIP).casefold()]
+            if cells:
+                found[n] = _item_value(cells[-1], items[n]) or cells[-1]
     missing = [n for n in items if n not in found]
     if missing:
         for line in text.splitlines():

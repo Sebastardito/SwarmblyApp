@@ -441,3 +441,10 @@ def test_table_section_needs_a_table():
     checks = Orchestrator._validators(None, "composition", o)
     assert not checks["t1"]("Los ecosistemas andinos cumplen papeles distintos. " * 10)
     assert checks["t1"]("Resumen:\n| Ecosistema | Papel |\n|---|---|\n| Páramo | esponja |\n")
+
+
+def test_answers_in_a_markdown_table_are_read():
+    items = {7: "Pingüino de Galápagos", 8: "Rana arborícola"}
+    text = ("| Número | Animal | Tipo |\n|--------|--------|------|\n"
+            "| 7 | Pingüino de Galápagos | Ave |\n| 8 | Rana arborícola | Anfibio |")
+    assert _parse_items(text, items) == {7: "Ave", 8: "Anfibio"}

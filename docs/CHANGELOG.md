@@ -159,6 +159,8 @@ Windows, Debian; 0.5 B to 8 B models)
     rest of the request;
   - tie-breaks only go to a worker that is free now (one queued behind a
     cold load added 60 s and failed).
+- From P3l (23 October 2026): batch answers given as a Markdown table whose
+  first cell is the item number ("| 7 | Pingüino | Ave |") are read.
 
 A single composition of a stated length (an essay, a speech, a report of N
 words) is no longer sent whole to one model or to whole-request replicas: the
