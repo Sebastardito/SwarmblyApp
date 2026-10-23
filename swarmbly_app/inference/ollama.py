@@ -19,6 +19,9 @@ def _stream_lines(response: httpx.Response):
             yield line
 
 
+COLD_LOAD_READ_S = 90.0   # first chunk after a cold model load
+
+
 class OllamaBackend:
     name = "ollama"
 
@@ -61,10 +64,15 @@ class OllamaBackend:
         }
         started = time.monotonic()
         text_parts: list[str] = []
-        prompt_tokens = completion_tokens = None
+        prompt_tokens = completion_tokens = load_ns = None
         finish_reason = "stop"
         try:
-            with httpx.Client(timeout=self.timeout) as client:
+            # The first chunk only arrives once the model is in memory: a cold
+            # load took more than 30 s on a Windows node and every such task
+            # failed as "timed out" (P3k.1, 23 Oct 2026). Connecting still
+            # fails fast; callers stop long generations with ``interrupt``.
+            timeout = httpx.Timeout(self.timeout, read=max(self.timeout, COLD_LOAD_READ_S))
+            with httpx.Client(timeout=timeout) as client:
                 with client.stream("POST", f"{self.url}/api/chat", json=payload) as resp:
                     if resp.status_code >= 400:
                         body = resp.read().decode("utf-8", "replace")[:400]
@@ -87,6 +95,7 @@ class OllamaBackend:
                             prompt_tokens = obj.get("prompt_eval_count")
                             completion_tokens = obj.get("eval_count")
                             finish_reason = obj.get("done_reason") or "stop"
+                            load_ns = obj.get("load_duration")
                             break
         except httpx.HTTPError as exc:
             raise BackendError(str(exc)) from exc
@@ -95,7 +104,11 @@ class OllamaBackend:
             text="".join(text_parts), model=model,
             prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
             total_ms=elapsed_ms, finish_reason=finish_reason,
-            meta={"backend": self.name, "url": self.url})
+            meta={"backend": self.name, "url": self.url,
+                  # time Ollama spent loading the model into memory: a cold
+                  # load is not generation speed (P3k, 23 Oct 2026)
+                  "load_ms": (int(load_ns / 1e6) if isinstance(load_ns, (int, float))
+                              else None)})
 
 
 # Backwards-friendly helper mirroring the OpenAI-style call shape.

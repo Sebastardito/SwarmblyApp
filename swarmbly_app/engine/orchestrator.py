@@ -521,14 +521,16 @@ class Orchestrator:
                 split = _split_items(replicas, items)
                 if split:
                     # Two replicas that disagree cannot be decided by a vote;
-                    # one more replica on another family breaks the tie
+                    # one more replica on another family breaks the tie, only
+                    # on a worker that is free now (P3k.1: a tie-break queued
+                    # behind a cold model load added 60 s and then failed)
                     # (P3g.1, 23 Oct 2026: "carro / leite / vermelho" won
                     # over "car / milk / red" as the better-ranked replica).
                     try:
                         extra = await scheduler.run_task(
                             task_id, build, budgets[task_id], validate=check,
                             k_min=1, k_max=1, start_number=len(scheduler.attempts),
-                            reason="tie_break",
+                            reason="tie_break", free_only=True,
                             exclude={(r.node_id, r.family) for r in replicas})
                     except TaskFailed:
                         extra = []

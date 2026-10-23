@@ -148,6 +148,17 @@ Windows, Debian; 0.5 B to 8 B models)
     to be accepted;
   - nodes advertise their app version and build, operating system,
     architecture and free memory (shown in the Monitor's node tooltip).
+- From P3k (all five machines on `6762e76`, 23 October 2026):
+  - Ollama's first chunk may take up to 90 s (a cold model load): with a
+    30 s read timeout every cold load on a Windows node failed as "timed
+    out" (needs the update on each worker);
+  - workers report the model load time (`load_ms`), and the requester
+    subtracts it before learning speed: a cold load had made the largest
+    models look too slow;
+  - a model rejected by the quality check ranks after the others for the
+    rest of the request;
+  - tie-breaks only go to a worker that is free now (one queued behind a
+    cold load added 60 s and failed).
 
 A single composition of a stated length (an essay, a speech, a report of N
 words) is no longer sent whole to one model or to whole-request replicas: the

@@ -272,8 +272,12 @@ class WorkerService:
         }
         finish_reason = (getattr(backend.last, "finish_reason", "") or ""
                          if backend.last is not None else "")
+        load_ms = ((backend.last.meta or {}).get("load_ms")
+                   if backend.last is not None else None)
         telemetry = {"gen_ms": gen_ms, "queue_ms": queue_ms,
                      "tokens_out": tokens_out, "energy_j": None,
+                     # model load time inside gen_ms (app extension; Ollama)
+                     "load_ms": load_ms,
                      # "length" = the generation hit max_tokens (truncated).
                      "finish_reason": finish_reason}
         reply = result(attempt_id, text, profile, telemetry, b"", commitment=None)

@@ -211,3 +211,33 @@ def test_a_worker_without_backend_is_a_last_resort():
     assert s._select({("b", "gemma2")}, {"gemma2"}, {"b"}, max_tokens=300)[0].node_id == "a"
     speed.record_success("a")
     assert not speed.unavailable("a")
+
+
+def test_cold_model_load_is_not_generation_speed(monkeypatch):
+    """P3k.1: a 25 s cold load made the largest models look too slow."""
+    import asyncio
+    import swarmbly_app.engine.scheduler as sched
+    monkeypatch.setattr(sched, "verify_result", lambda *x: "")
+
+    class Nodes(_Nodes):
+        async def dispatch_async(self, node_id, message, timeout_s):
+            return {"type": "result", "attempt_id": message["attempt_id"], "text": "ok",
+                    "profile": {"model_version": "llama3.1:8b"},
+                    "telemetry": {"tokens_out": 100, "gen_ms": 25000, "load_ms": 20000}}
+
+    speed = SpeedStats()
+    s = Scheduler(Nodes([_peer("srv", [("llama", "llama3.1:8b")])]), _Bus(), "r", k_min=1,
+                  k_max=1, max_concurrency=4, timeout_s=60, hedge_fallback_s=30,
+                  latency=LatencyStats(), speed=speed)
+    asyncio.run(s.run_task("t0", lambda n, f, m=None: {"attempt_id": f"a{n}"}, 400))
+    assert speed.tokens_per_s("srv", "llama3.1:8b") == 20        # 100 tokens in 5 s
+
+
+def test_a_model_rejected_in_this_request_ranks_after_the_others():
+    a = _peer("a", [("phi3", "phi3.5:3.8b")])
+    b = _peer("b", [("gemma2", "gemma2:2b")])
+    s = Scheduler(_Nodes([a, b]), _Bus(), "r", k_min=1, k_max=3, max_concurrency=4,
+                  timeout_s=60, hedge_fallback_s=30, latency=LatencyStats())
+    assert s._select(set(), set(), set(), max_tokens=100)[2] == "phi3.5:3.8b"
+    s.rejected_models.add("phi3.5:3.8b")
+    assert s._select(set(), set(), set(), max_tokens=100)[2] == "gemma2:2b"

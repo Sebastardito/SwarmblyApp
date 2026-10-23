@@ -267,6 +267,10 @@ class Scheduler:
         self._slots: dict[str, asyncio.Semaphore] = {}
         self.attempts: list[Attempt] = []
         self.hedges = 0
+        # Models whose replica failed the quality check in this request: for
+        # the request's other tasks they come after the rest (P3k.1: phi3.5
+        # echoed items 7–12 and 19–24, and the tie-break went to phi3.5 again).
+        self.rejected_models: set[str] = set()
         self.retries = 0
         self.timeouts = 0
         self.hedge_timer_source: set[str] = set()
@@ -335,6 +339,7 @@ class Scheduler:
             key = (self.speed.unavailable(peer.node_id),   # no backend: last resort
                    family in used_families,           # diversity first (MUST)
                    peer.node_id in used_nodes,         # then distinct machines
+                   model in self.rejected_models,      # then not just rejected
                    self._load[peer.node_id] + peer.tasks_inflight
                    + (self._capacity(peer) if busy else 0),
                    too_slow,                           # then: can it finish in time?
@@ -355,7 +360,8 @@ class Scheduler:
                        k_min: int | None = None, k_max: int | None = None,
                        exclude: set[tuple[str, str]] | None = None,
                        start_number: int = 0,
-                       reason: str = "initial") -> list[Replica]:
+                       reason: str = "initial",
+                       free_only: bool = False) -> list[Replica]:
         """Dispatch replicas of one task; return ≥1 verified replica or raise.
 
         ``validate`` rejects a signed, well-formed replica whose content is
@@ -409,7 +415,7 @@ class Scheduler:
             return True
 
         for _ in range(k_min):
-            if not launch(reason):
+            if not launch(reason, free_only=free_only):
                 break
         if not inflight:
             raise TaskFailed(f"{task_id}: no connected worker available")
@@ -441,6 +447,7 @@ class Scheduler:
                         usable = True
                     if not usable:
                         attempt.status, attempt.code = "rejected", "E_QUALITY"
+                        self.rejected_models.add(attempt.model)
                         attempt.note = " ".join(replica.text.split())[:160]
                         explain = getattr(validate, "explain", None)
                         if explain is not None:
@@ -580,12 +587,23 @@ class Scheduler:
         profile = result.get("profile") or {}
         telemetry = result.get("telemetry") or {}
         attempt.tokens_out = telemetry.get("tokens_out")
+        # A cold model load is not generation speed: P3k.1 (23 Oct 2026),
+        # the first request after a restart took 25 s on two nodes and their
+        # largest models were then ranked too slow and skipped.
+        try:
+            load_s = max(0.0, float(telemetry.get("load_ms") or 0) / 1000.0)
+        except (TypeError, ValueError):
+            load_s = 0.0
+        gen_ms = telemetry.get("gen_ms")
+        if isinstance(gen_ms, (int, float)) and load_s:
+            gen_ms = max(1.0, gen_ms - load_s * 1000.0)
         self.speed.observe(node_id, str(profile.get("model_version") or attempt.model),
-                           telemetry.get("tokens_out"), telemetry.get("gen_ms"))
+                           telemetry.get("tokens_out"), gen_ms)
         self.speed.record_success(node_id)
         if attempt.latency_key and attempt.started_at is not None:
             self.speed.observe_elapsed(node_id, attempt.model, attempt.latency_key,
-                                       time.monotonic() - attempt.started_at)
+                                       max(0.1, time.monotonic() - attempt.started_at
+                                           - load_s))
         attempt.model = str(profile.get("model_version") or attempt.model)
         family = str(profile.get("model_family") or attempt.family)
         return Replica(text=str(result["text"]), node_id=node_id, family=family,
