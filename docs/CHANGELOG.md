@@ -70,6 +70,22 @@ Windows, Debian; 0.5 B to 8 B models)
     introducción, tres secciones y una conclusión" → 5): the local model is
     told, and the outline is corrected (extra middle sections folded into
     the previous one, missing ones added before the closing).
+- From P3e (same network, 22 October 2026):
+  - hedges use the learned time of each attempt's node and model for this
+    kind of task: an attempt is hedged once it runs past twice that time
+    (plus 1 s, never sooner than 2 s), when that comes before the p95 or the
+    30 s fallback (`speed` in `hedge_timer`); each attempt triggers at most
+    one such hedge;
+  - a worker that missed a deadline or refused a task as "at concurrency
+    limit" is marked busy for 15 s, across requests: hedges skip it and
+    other choices rank it last (the old Mac refused five tries in a row, one
+    per model family);
+  - a retry after a quality rejection may wait for a busy worker (two echoes
+    with no free worker used to end in a degraded answer);
+  - the upstream suffix glued to the last item ("8. 7000 m Close the
+    answer; …") is removed from the item list;
+  - a table section the request did not ask for is removed from the
+    outline.
 
 A single composition of a stated length (an essay, a speech, a report of N
 words) is no longer sent whole to one model or to whole-request replicas: the

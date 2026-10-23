@@ -340,9 +340,31 @@ def make_outline(prompt: str, contract, lang: str, target_words: int, backend,
     if not outline.topic:
         outline.topic = topic_from(getattr(contract, "objective", "") or "")
     _ensure_table(outline, prompt, lang, target_words, max_sections)
+    _drop_unrequested_tables(outline, prompt, target_words)
     _ensure_section_count(outline, wanted, lang, target_words)
     _ensure_request_requirements(outline, prompt)
     return outline
+
+
+def _drop_unrequested_tables(outline: Outline, prompt: str, target_words: int) -> None:
+    """A table section the request did not ask for is removed; its key
+    points go to the section before it (P3e.2, 22 Oct 2026: the solar-energy
+    report, which asks for no table, got "Tabla de comparación de costos")."""
+    if _TABLE_CUE.search(prompt or ""):
+        return
+    dropped = []
+    for i in range(len(outline.sections) - 1, 0, -1):
+        sec = outline.sections[i]
+        if sec.kind == "table" and len(outline.sections) > MIN_SECTIONS:
+            prev = outline.sections[i - 1]
+            prev.key_points = (prev.key_points + sec.key_points)[:6]
+            prev.must_include = (prev.must_include + sec.must_include)[:5]
+            outline.sections.pop(i)
+            dropped.append(sec.heading)
+    if dropped:
+        _rescale(outline.sections, target_words)
+        outline.adjustments.append("table section removed: not requested ("
+                                   + "; ".join(dropped) + ")")
 
 
 def _ensure_section_count(outline: Outline, wanted: int | None, lang: str,

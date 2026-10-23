@@ -167,3 +167,28 @@ def test_local_rescue_retries_the_bare_task(tmp_path):
     finally:
         worker.stop()
         client.stop()
+
+
+def test_item_texts_drop_the_upstream_suffix():
+    from swarmbly_app.engine.orchestrator import _item_texts
+    text = ("Convierte:\n\n7. 100 m\n8. 7000 m Close the answer; do not repeat "
+            "earlier parts.")
+    assert _item_texts(text) == {7: "100 m", 8: "7000 m"}
+
+
+def test_unrequested_table_is_removed_and_count_kept():
+    """P3e.2: the report asked for no table and got one."""
+    import json
+    raw = json.dumps({"title": "Energía solar rural", "topic": "energía solar",
+                      "style": "profesional", "sections": [
+                          {"heading": "Introducción", "purpose": "abre", "words": 60},
+                          {"heading": "Ventajas", "purpose": "v", "words": 90},
+                          {"heading": "Riesgos", "purpose": "r", "words": 80},
+                          {"heading": "Tabla de costos", "purpose": "t", "words": 120,
+                           "kind": "table", "key_points": ["costos"]},
+                          {"heading": "Conclusión", "purpose": "cierra", "words": 60}]})
+    o = composer.make_outline(REPORT_ES, build_contract(REPORT_ES).contract, "es", 500,
+                              _Backend(raw), 6)
+    assert [s.kind for s in o.sections] == ["prose"] * 5
+    assert "costos" in o.sections[2].key_points
+    assert any("table section removed" in a for a in o.adjustments)

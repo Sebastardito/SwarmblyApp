@@ -302,3 +302,20 @@ def test_all_rejected_tries_the_local_model_before_degrading(tmp_path):
     finally:
         worker.stop()
         client.stop()
+
+
+def test_retry_after_a_rejection_may_queue_on_a_busy_worker(monkeypatch):
+    """P3e.1: two echoes, no free worker, so no retry; the local rescue
+    echoed too. A quality rejection now retries even if it must wait."""
+    import swarmbly_app.engine.scheduler as sched
+    monkeypatch.setattr(sched, "verify_result", lambda *a: "")
+    echo = _peer("echo", [("phi3", "phi3.5:3.8b")])
+    good = _peer("good", [("gemma2", "gemma2:2b")])
+    nodes = _Nodes([echo, good], {"echo": "1. perro", "good": "1. dog"})
+    s = Scheduler(nodes, _Bus(), "r", k_min=1, k_max=3, max_concurrency=4, timeout_s=5,
+                  hedge_fallback_s=5, latency=LatencyStats(), queue_retries=False)
+    s._load["good"] = 1           # busy right now (another task of the request)
+    out = asyncio.run(s.run_task("t0", lambda n, f, m=None: {"attempt_id": f"a{n}"}, 100,
+                                 validate=lambda text: "dog" in text))
+    assert [r.text for r in out] == ["1. dog"]
+    assert [a.status for a in s.attempts] == ["rejected", "accepted"]

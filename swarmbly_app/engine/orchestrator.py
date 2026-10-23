@@ -1065,8 +1065,17 @@ _STRIP = " \t*_`#>\"'“”«»"
 
 
 def _item_texts(instruction: str) -> dict[int, str]:
-    """``{number: item text}`` for the numbered items of one fragment."""
-    return {int(m.group(1)): m.group(2) for m in _ITEM_LINE.finditer(instruction or "")}
+    """``{number: item text}`` for the numbered items of one fragment.
+
+    The upstream planner appends its integration suffix to the last line of
+    the last fragment ("8. 7000 m Close the answer; …"); workers never see it
+    (``localise_instruction`` removes it), and neither does the item list
+    (P3e.1, 22 Oct 2026: item 8 was shown with the English suffix)."""
+    from .packets import UPSTREAM_INTEGRATION_SUFFIX
+    text = instruction or ""
+    if text.endswith(UPSTREAM_INTEGRATION_SUFFIX):
+        text = text[: -len(UPSTREAM_INTEGRATION_SUFFIX)]
+    return {int(m.group(1)): m.group(2) for m in _ITEM_LINE.finditer(text)}
 
 
 def _parse_items(text: str, items: dict[int, str]) -> dict[int, str]:

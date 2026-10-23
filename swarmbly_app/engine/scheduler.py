@@ -14,7 +14,9 @@ Runs on the P2P event loop. Responsibilities:
   ``k_epist`` / ``k_avail`` split of whitepaper v2 §12.4.
 - **Hedging.** The hedge timer is the observed p95 for (kind, budget) once
   enough samples exist (SPEC §11.3); until then a declared fallback is used
-  and reported as such.
+  and reported as such. When the elapsed time of the node and model running
+  an attempt has been learned, the attempt is hedged once it runs past
+  twice that time, if that comes sooner (``speed`` in ``hedge_timer``).
 - **Verification before acceptance.** A result enters assembly only after its
   Ed25519 signature, attempt id and schema check pass (SPEC §10, §13). Layer-1
   commitments are not available and never simulated.
@@ -35,6 +37,9 @@ from ..p2p.messages import verify_signed
 
 MAX_RESULT_CHARS = 64_000
 MIN_SAMPLES_FOR_P95 = 8
+HEDGE_FACTOR = 2.0       # hedge an attempt running past 2× its learned time…
+HEDGE_MARGIN_S = 1.0     # …plus a second of transport,
+MIN_HEDGE_S = 2.0        # never sooner than this
 
 
 class SpeedStats:
@@ -48,11 +53,28 @@ class SpeedStats:
     """
 
     FAILURE_MEMORY_S = 300.0
+    BUSY_BACKOFF_S = 15.0
 
     def __init__(self, alpha: float = 0.5):
         self.alpha = alpha
         self._tps: dict[tuple[str, str], float] = {}
+        self._elapsed: dict[tuple[str, str, str], float] = {}
         self._failed_at: dict[str, float] = {}
+        self._busy_until: dict[str, float] = {}
+
+    def observe_elapsed(self, node_id: str, model: str, key: str, seconds: float) -> None:
+        """Time from sending an attempt to its result, per (node, model, task
+        kind and budget). Unlike tokens per second it includes how long the
+        node really writes for this kind of task (a batch answer is 30 tokens
+        of a 400-token budget)."""
+        if seconds > 0:
+            k = (node_id, model, key)
+            old = self._elapsed.get(k)
+            self._elapsed[k] = seconds if old is None else (
+                (1 - self.alpha) * old + self.alpha * seconds)
+
+    def expected_elapsed(self, node_id: str, model: str, key: str) -> float | None:
+        return self._elapsed.get((node_id, model, key))
 
     def record_failure(self, node_id: str) -> None:
         """A node that just failed (backend timeout, execution error, deadline)
@@ -62,6 +84,18 @@ class SpeedStats:
 
     def record_success(self, node_id: str) -> None:
         self._failed_at.pop(node_id, None)
+        self._busy_until.pop(node_id, None)
+
+    def record_busy(self, node_id: str, seconds: float | None = None) -> None:
+        """The worker is still busy with work it was given and gave up on:
+        it refused a task as "at concurrency limit", or missed a deadline.
+        P3e.1 (22 Oct 2026): after a 60 s deadline the old Mac refused five
+        tries in a row, one per model family, across two requests."""
+        self._busy_until[node_id] = time.monotonic() + (
+            self.BUSY_BACKOFF_S if seconds is None else seconds)
+
+    def busy(self, node_id: str) -> bool:
+        return self._busy_until.get(node_id, 0.0) > time.monotonic()
 
     def recently_failed(self, node_id: str) -> bool:
         at = self._failed_at.get(node_id)
@@ -141,6 +175,10 @@ class Attempt:
     bytes_in: int = 0
     model: str = ""
     note: str = ""                    # e.g. the start of a rejected replica
+    max_tokens: int = 0
+    latency_key: str = ""
+    started_at: float | None = None   # sent; reset when it leaves the slot queue
+    hedged: bool = False              # already triggered a speed hedge
 
     def to_dict(self) -> dict[str, Any]:
         out = self._base()
@@ -257,7 +295,8 @@ class Scheduler:
         for peer, family, model in self._candidates():
             if (peer.node_id, family) in used_pairs:
                 continue
-            if free_only and self._load[peer.node_id] >= self._capacity(peer):
+            busy = self.speed.busy(peer.node_id)
+            if free_only and (busy or self._load[peer.node_id] >= self._capacity(peer)):
                 continue
             from .capability import rank_params
             estimate = self.speed.estimate_s(
@@ -265,7 +304,8 @@ class Scheduler:
             too_slow = estimate is not None and estimate > 0.9 * self.timeout_s
             key = (family in used_families,           # diversity first (MUST)
                    peer.node_id in used_nodes,         # then distinct machines
-                   self._load[peer.node_id] + peer.tasks_inflight,
+                   self._load[peer.node_id] + peer.tasks_inflight
+                   + (self._capacity(peer) if busy else 0),
                    too_slow,                           # then: can it finish in time?
                    self.speed.recently_failed(peer.node_id),   # and is it healthy?
                    -rank_params(model),                # then the most capable model
@@ -316,7 +356,9 @@ class Scheduler:
             message = build(number, family if multi else None, model if multi else None)
             attempt = Attempt(task_id, number, peer.node_id, family, reason,
                               model=model,
-                              bytes_out=len(str(message)))
+                              bytes_out=len(str(message)),
+                              max_tokens=int(max_tokens), latency_key=latency_key,
+                              started_at=time.monotonic())
             number += 1
             self.attempts.append(attempt)
             self._load[peer.node_id] += 1
@@ -335,14 +377,17 @@ class Scheduler:
             raise TaskFailed(f"{task_id}: no connected worker available")
 
         while inflight and len(accepted) < self.k_min:
-            p95 = self.latency.p95(latency_key)
-            self.hedge_timer_source.add("p95" if p95 is not None else "fallback")
-            hedge_after = p95 if p95 is not None else self.hedge_fallback_s
+            hedge_after, source, late = self._hedge_after(list(inflight.values()),
+                                                          latency_key)
             can_hedge = number < self.k_max
+            if can_hedge:
+                self.hedge_timer_source.add(source)
             done, _ = await asyncio.wait(
                 set(inflight), timeout=hedge_after if can_hedge else None,
                 return_when=asyncio.FIRST_COMPLETED)
             if not done:
+                if late is not None:
+                    late.hedged = True
                 if launch("hedge"):
                     self.hedges += 1
                 continue
@@ -362,7 +407,11 @@ class Scheduler:
                         self.rejected += 1
                         rejected.append((replica, attempt))
                         self._event(attempt, "rejected")
-                        if len(accepted) + len(inflight) < self.k_min and launch("retry", free_only=not self.queue_retries):
+                        # A rejected replica says nothing about the workers'
+                        # health, and the local model tends to fail the same
+                        # way (P3e.1: two echoes, no free worker, no retry,
+                        # the local rescue echoed too): this retry may queue.
+                        if len(accepted) + len(inflight) < self.k_min and launch("retry"):
                             self.retries += 1
                         continue
                 if replica is not None:
@@ -393,6 +442,36 @@ class Scheduler:
             raise TaskFailed(f"{task_id}: all {number} attempt(s) failed ({codes})")
         return accepted
 
+    def _hedge_after(self, attempts: list[Attempt], latency_key: str):
+        """Seconds to wait before hedging, its source, and the attempt it is for.
+
+        The p95 for (kind, budget), or the fallback, is the ceiling. On a
+        heterogeneous swarm one figure fits no node: a gemma2:2b answers a
+        batch in 1–2 s and llama3.1:8b on a CPU in 6–12 s, so the fixed 30 s
+        fallback let a stuck fast node hold a task for 30 s (P3d, 22 Oct 2026).
+        With a learned elapsed time for an attempt's node and model, that
+        attempt is hedged at ``HEDGE_FACTOR`` × that time; each attempt
+        triggers at most one such hedge.
+        """
+        p95 = self.latency.p95(latency_key)
+        base = p95 if p95 is not None else self.hedge_fallback_s
+        source = "p95" if p95 is not None else "fallback"
+        now = time.monotonic()
+        best, late = None, None
+        for attempt in attempts:
+            if attempt.hedged or attempt.started_at is None:
+                continue
+            expected = self.speed.expected_elapsed(attempt.node_id, attempt.model,
+                                                   latency_key)
+            if expected is None:
+                continue
+            due = attempt.started_at + HEDGE_FACTOR * expected + HEDGE_MARGIN_S - now
+            if best is None or due < best:
+                best, late = due, attempt
+        if best is not None and best < base:
+            return max(MIN_HEDGE_S, best), "speed", late
+        return base, source, None
+
     def _slot(self, node_id: str) -> asyncio.Semaphore:
         """Respect each worker's advertised capacity: queue here rather than
         send a task the worker would refuse as over its limit."""
@@ -413,6 +492,7 @@ class Scheduler:
             wait = self._busy_until.get(node_id, 0.0) - time.monotonic()
             if wait > 0:
                 await asyncio.sleep(wait)
+            attempt.started_at = time.monotonic()
             try:
                 result = await self.nodes.dispatch_async(node_id, message,
                                                          self.timeout_s)
@@ -425,11 +505,15 @@ class Scheduler:
                 attempt.note = str(getattr(exc, "detail", "") or exc)[:160]
                 if attempt.code in ("E_EXECUTION", "E_DEADLINE", "E_TRANSPORT"):
                     self.speed.record_failure(node_id)
+                if attempt.code == "E_DEADLINE" or (
+                        attempt.code == "E_POLICY" and "concurrency" in attempt.note):
+                    self.speed.record_busy(node_id)
                 if attempt.code == "E_DEADLINE":
                     self._busy_until[node_id] = time.monotonic() + CANCEL_GRACE_S
                     self.timeouts += 1
                     self.speed.observe_timeout(node_id, attempt.model,
-                                               self._max_tokens, self.timeout_s)
+                                               attempt.max_tokens or self._max_tokens,
+                                               self.timeout_s)
                 attempt.elapsed_ms = int((time.monotonic() - started) * 1000)
                 return None
         attempt.elapsed_ms = int((time.monotonic() - started) * 1000)
@@ -445,6 +529,9 @@ class Scheduler:
         self.speed.observe(node_id, str(profile.get("model_version") or attempt.model),
                            telemetry.get("tokens_out"), telemetry.get("gen_ms"))
         self.speed.record_success(node_id)
+        if attempt.latency_key and attempt.started_at is not None:
+            self.speed.observe_elapsed(node_id, attempt.model, attempt.latency_key,
+                                       time.monotonic() - attempt.started_at)
         attempt.model = str(profile.get("model_version") or attempt.model)
         family = str(profile.get("model_family") or attempt.family)
         return Replica(text=str(result["text"]), node_id=node_id, family=family,
