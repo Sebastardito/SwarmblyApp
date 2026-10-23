@@ -86,7 +86,8 @@
   "mean_seam_similarity": "seam similarity",
   "total_ms": "total ms",
   "group": {
-   "worker": "Sharing this computer (worker)"
+   "worker": "Sharing this computer (worker)",
+   "evidence": "Public evidence (Wikipedia)"
   }
  },
  "node": {
@@ -149,7 +150,11 @@
    "internet": "Internet swarms arrive in Phase 3.",
    "tierLocal": "Your privacy tier is LOCAL, so nothing will be sent. Change it in Settings → Privacy to use the swarm."
   },
-  "replicas": "{n} replicas"
+  "replicas": "{n} replicas",
+  "evidenceChip": "Wikipedia · {n}",
+  "evidenceTitle": "Public context from Wikipedia was added to {n} items; only those items' texts were sent.",
+  "lceChip": "Local sources · {n}",
+  "lceTitle": "The answer used passages from your sources (LCE C1); they did not leave this device."
  },
  "explore": {
   "title": "How this answer was made",
@@ -214,7 +219,12 @@
    "HIGH": "high",
    "MEDIUM": "medium",
    "LOW": "low"
-  }
+  },
+  "sources": "Sources",
+  "evidenceNote": "Public context from Wikipedia (CC BY-SA 4.0) added to the fragments. Only these items' texts were sent to Wikipedia:",
+  "evidenceErrors": "Failed lookups:",
+  "evidenceSkipped": "Public evidence not applied:",
+  "lceNote": "Passages from your sources used in this answer (they did not leave this device):"
  },
  "monitor": {
   "title": "Swarm",
@@ -539,6 +549,22 @@
   "results__keep_stats": {
    "label": "Keep statistics",
    "help": "Daily counters for the Swarm view."
+  },
+  "evidence__enabled": {
+   "label": "Add public evidence to batches",
+   "help": "In lists of items that name something (\"Blue-footed booby\", \"Ecuador\"), the app looks each item up on Wikipedia and adds two sentences of its entry to that item's fragment. Only each item's text is sent to Wikipedia, never your request, and nothing if the request is classified as sensitive. In a test with 8 animals (5 repetitions) it fixed every error the models shared; it has not yet been measured on other topics."
+  },
+  "evidence__timeout_s": {
+   "label": "Maximum time per lookup (s)",
+   "help": "If Wikipedia does not answer in time, the item is sent without evidence."
+  },
+  "evidence__max_chars": {
+   "label": "Maximum characters per evidence",
+   "help": "The first two sentences of the entry are cut to this length."
+  },
+  "evidence__max_items": {
+   "label": "Items looked up per request",
+   "help": "Maximum lookups per request."
   }
  },
  "models": {

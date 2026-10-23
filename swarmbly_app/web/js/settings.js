@@ -60,6 +60,10 @@ const Settings = (() => {
     privacy: [
       { key: "privacy.tier", type: "select", options: [["LOCAL", "tier.LOCAL"], ["GLOBAL", "tier.GLOBAL"], ["TRUSTED", "tier.TRUSTED"]] },
       { key: "privacy.trusted_networks", type: "list", advanced: true },
+      { key: "evidence.enabled", type: "bool", group: "evidence" },
+      { key: "evidence.timeout_s", type: "number", min: 0.5, max: 30, step: 0.5, group: "evidence", advanced: true },
+      { key: "evidence.max_chars", type: "number", min: 60, max: 1000, step: 10, group: "evidence", advanced: true },
+      { key: "evidence.max_items", type: "number", min: 1, max: 100, group: "evidence", advanced: true },
     ],
     results: [
       { key: "results.export_format", type: "select", options: [["markdown", "Markdown"], ["json", "JSON"], ["html", "HTML"]] },

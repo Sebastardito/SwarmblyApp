@@ -334,12 +334,16 @@ const Chat = (() => {
     } else if (meta.status && meta.status !== "failed") {
       chips.push(chip(t("chat.execLocal")));
     }
+    if (sw.evidence?.used) chips.push(chip(t("chat.evidenceChip").replace("{n}", sw.evidence.used),
+      "", t("chat.evidenceTitle").replace("{n}", sw.evidence.used)));
+    if (meta.lce?.sources?.length) chips.push(chip(t("chat.lceChip").replace("{n}", meta.lce.sources.length),
+      "", t("chat.lceTitle")));
     if (meta.model) chips.push(chip(meta.model));
     const ms = sw.total_ms ?? meta.total_ms;
     if (ms) chips.push(chip(UI.fmtMs(ms)));
     if (meta.completion_tokens) chips.push(chip(t("chat.tokens").replace("{n}", meta.completion_tokens)));
     const actions = [];
-    if ((m.stages && m.stages.length) || meta.swarm) {
+    if ((m.stages && m.stages.length) || meta.swarm || meta.lce) {
       actions.push(button(t("chat.explore"), () => Explore.open(m), "ghost small"));
     }
     if (meta.status === "failed" || meta.status === "stopped") {
@@ -365,6 +369,26 @@ const Chat = (() => {
 const Explore = (() => {
   const { h, t, readout, chip, button } = UI;
 
+  // Where the answer's outside information came from: public evidence sent
+  // with the fragments (Wikipedia, attributed) and local LCE passages.
+  function sourcesView(evidence, lce) {
+    const parts = [];
+    if (evidence && evidence.sources?.length) {
+      parts.push(h("p.muted", t("explore.evidenceNote")),
+        h("ul.sources", evidence.sources.map((s) => h("li",
+          h("span", `${s.item}: `),
+          h("a", { href: s.url, target: "_blank", rel: "noopener noreferrer" }, s.title)))));
+      if (evidence.errors?.length) parts.push(h("p.note", `${t("explore.evidenceErrors")} ${evidence.errors.join(", ")}`));
+    } else if (evidence && evidence.skipped) {
+      parts.push(h("p.muted", `${t("explore.evidenceSkipped")} ${evidence.skipped}`));
+    }
+    if (lce && lce.sources?.length) {
+      parts.push(h("p.muted", t("explore.lceNote")),
+        h("ul.sources", lce.sources.map((s) => h("li", `[${s.n}] ${s.source}`))));
+    }
+    return parts.length ? h("div", parts) : null;
+  }
+
   function open(m) {
     const meta = m.meta || {};
     const sw = meta.swarm || {};
@@ -380,6 +404,8 @@ const Explore = (() => {
       readout(t("explore.embedder"), sw.embedder, null))];
     if (meta.local_reason) sections.push(h("p.note", meta.local_reason));
     sections.push(h("h3", t("explore.pipeline")), Helix.render(m.stages || []));
+    const sources = sourcesView(sw.evidence, meta.lce);
+    if (sources) sections.push(h("h3", t("explore.sources")), sources);
     if (sw.attempts?.length) sections.push(h("h3", t("explore.attempts")), attemptsTable(sw.attempts));
     if (sw.consensus) sections.push(h("h3", t("explore.consensus")), consensusView(sw.consensus));
     if (sw.seams?.length) {

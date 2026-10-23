@@ -86,7 +86,8 @@
   "mean_seam_similarity": "similitud de costuras",
   "total_ms": "ms totales",
   "group": {
-   "worker": "Compartir esta computadora (worker)"
+   "worker": "Compartir esta computadora (worker)",
+   "evidence": "Evidencia pública (Wikipedia)"
   }
  },
  "node": {
@@ -149,7 +150,11 @@
    "internet": "Los enjambres por internet llegan en la Fase 3.",
    "tierLocal": "Tu tier de privacidad es LOCAL, así que no se enviará nada. Cámbialo en Ajustes → Privacidad para usar el enjambre."
   },
-  "replicas": "{n} réplicas"
+  "replicas": "{n} réplicas",
+  "evidenceChip": "Wikipedia · {n}",
+  "evidenceTitle": "Se añadió contexto público de Wikipedia a {n} elementos; solo se enviaron los textos de esos elementos.",
+  "lceChip": "Fuentes locales · {n}",
+  "lceTitle": "La respuesta usó pasajes de tus fuentes (LCE C1); no salieron del equipo."
  },
  "explore": {
   "title": "Cómo se construyó esta respuesta",
@@ -214,7 +219,12 @@
    "HIGH": "alto",
    "MEDIUM": "medio",
    "LOW": "bajo"
-  }
+  },
+  "sources": "Fuentes",
+  "evidenceNote": "Contexto público de Wikipedia (CC BY-SA 4.0) añadido a los fragmentos. A Wikipedia solo se enviaron los textos de estos elementos:",
+  "evidenceErrors": "Consultas fallidas:",
+  "evidenceSkipped": "Evidencia pública no aplicada:",
+  "lceNote": "Pasajes de tus fuentes usados en esta respuesta (no salieron del equipo):"
  },
  "monitor": {
   "title": "Enjambre",
@@ -539,6 +549,22 @@
   "results__keep_stats": {
    "label": "Conservar estadísticas",
    "help": "Contadores diarios para la vista Enjambre."
+  },
+  "evidence__enabled": {
+   "label": "Añadir evidencia pública a los lotes",
+   "help": "En listas de elementos que nombran algo («Piquero de patas azules», «Ecuador»), la app busca cada elemento en Wikipedia y añade dos oraciones de su entrada al fragmento de ese elemento. Solo se envía a Wikipedia el texto de cada elemento, nunca tu solicitud, y nada si la solicitud se clasifica como sensible. En una prueba con 8 animales (5 repeticiones) corrigió todos los errores que compartían los modelos; aún no se ha medido con otros temas."
+  },
+  "evidence__timeout_s": {
+   "label": "Tiempo máximo por consulta (s)",
+   "help": "Si Wikipedia no responde a tiempo, el elemento se envía sin evidencia."
+  },
+  "evidence__max_chars": {
+   "label": "Caracteres máximos por evidencia",
+   "help": "Las dos primeras oraciones de la entrada se recortan a esta longitud."
+  },
+  "evidence__max_items": {
+   "label": "Elementos consultados por solicitud",
+   "help": "Máximo de búsquedas por solicitud."
   }
  },
  "models": {

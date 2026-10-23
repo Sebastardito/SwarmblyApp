@@ -175,8 +175,16 @@ Windows, Debian; 0.5 B to 8 B models)
 - `evidence` in the request metadata: items queried, sources used (title
   and URL, for attribution), errors and time.
 - Motivation: several models agreed on the same wrong answer ("piquero →
-  pez", "pingüino → mamífero"), which no vote can correct. Whether the
-  evidence helps is measured in a preregistered round, not assumed.
+  pez", "pingüino → mamífero"), which no vote can correct. Measured in
+  P2a (5 repetitions, R2): batch A went from 7.0/8 to 8/8 on average, the
+  total from 46.8 to 48/48, with no change in B, C or D and ~0.7 s of
+  lookups per batch. One battery only; kept off by default.
+- Settings → Privacy → "Public evidence (Wikipedia)": the switch, with what
+  is sent and what was measured; timeout, length and number of lookups in
+  the Advanced profile.
+- Answers show a "Wikipedia · n" chip, and "Explore processing" lists the
+  Wikipedia sources used (attribution, CC BY-SA 4.0); answers that used LCE
+  C1 passages show "Local sources · n" and list the files.
 
 **LCE C1: retrieval over your sources, for local answers (P2b)**
 - With LCE enabled at C1, answers produced on this device get the most
