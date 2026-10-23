@@ -475,6 +475,18 @@ class Orchestrator:
                     raise
                 replicas = [fallback]
                 local_fallbacks.append(task_id)
+            check = validators.get(task_id)
+            if check is not None and replicas and all(
+                    (r.telemetry or {}).get("degraded") for r in replicas):
+                # Every remote replica failed the quality check (e.g. all of
+                # them echoed the Spanish words, P3c.1): try this device's
+                # model before accepting a degraded answer.
+                fallback = await loop.run_in_executor(
+                    None, self._local_fallback, task_id, build(0, None),
+                    self._clamp(budgets[task_id], []), "all replicas rejected")
+                if fallback is not None and check(fallback.text):
+                    replicas = [fallback]
+                    local_fallbacks.append(task_id)
             outcome = await loop.run_in_executor(
                 None, functools.partial(
                     self._resolve, task_id, replicas, contract, embedder,
@@ -1036,6 +1048,30 @@ def _parse_items(text: str, items: dict[int, str]) -> dict[int, str]:
                     value = _item_value(bare, items[n])
                     if value:
                         found[n] = value
+    if not found and matches:
+        # Renumbered from 1 ("1. large 2. small …" for items 19–24, P3c.1):
+        # accepted only when the labels are exactly 1..k for k items.
+        order = sorted(items)
+        labels = [int(m.group(1)) for m in matches]
+        if labels == list(range(1, len(order) + 1)):
+            for i, m in enumerate(matches):
+                end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+                value = _item_value(text[m.end():end].split("\n")[0], items[order[i]])
+                if value:
+                    found[order[i]] = value
+    if not found:
+        # No labels at all, one answer per line in item order ("Reptil\nAve\nPez"):
+        # accepted only when the line count matches the item count exactly
+        # (P3c.1, 22 Oct 2026: correct answers rejected for lacking numbers).
+        lines = [re.sub(r"^\s*[-*•]\s*", "", ln).strip(_STRIP).rstrip(".;,")
+                 for ln in text.split("```")[0 if not text.lstrip().startswith("```") else 1]
+                 .splitlines()]
+        lines = [ln for ln in lines if ln and ln.lower() not in ("markdown", "md", "text")]
+        if len(lines) == len(items):
+            for n, line in zip(sorted(items), lines):
+                value = _item_value(line, items[n])
+                if value:
+                    found[n] = value
     return found
 
 

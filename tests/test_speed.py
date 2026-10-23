@@ -60,3 +60,15 @@ def test_app_keeps_speed_across_orchestrator_rebuilds(app_state):
     first.speed.observe("n", "m", 100, 1000)
     app_state.orchestrator = None
     assert app_state.get_orchestrator().speed.tokens_per_s("n", "m") == 100
+
+
+def test_a_node_that_just_failed_ranks_below_healthy_ones():
+    a = _peer("a", [("phi3", "phi3.5:3.8b")])
+    b = _peer("b", [("phi3", "phi3.5:3.8b")])
+    speed = SpeedStats()
+    speed.record_failure("a")
+    s = Scheduler(_Nodes([a, b]), _Bus(), "r", k_min=1, k_max=2, max_concurrency=4,
+                  timeout_s=60, hedge_fallback_s=30, latency=LatencyStats(), speed=speed)
+    assert s._select(set(), set(), set(), max_tokens=300)[0].node_id == "b"
+    speed.record_success("a")
+    assert not speed.recently_failed("a")

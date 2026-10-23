@@ -42,6 +42,16 @@ Windows, Debian; 0.5 B to 8 B models)
   requests; a model expected to miss the deadline for the task's budget
   ranks below one that can finish, even if smaller (P3b.3'': llama3.1:8b on
   a server CPU timed out on a section that phi3.5 finished in 21–36 s).
+- From P3c (five machines, 22 October 2026), audited with the new rejection
+  previews:
+  - batch answers without numbers ("Reptil / Ave / Pez") are read in item
+    order when the line count matches, and answers renumbered from 1 for
+    items 19–24 are mapped to their items when the labels are exactly 1..k;
+    both were correct answers rejected by the quality check;
+  - a node that just failed (backend unreachable, execution error,
+    deadline) ranks below healthy ones for five minutes;
+  - when every remote replica of a task is rejected, this device's model is
+    tried before accepting a degraded answer.
 
 A single composition of a stated length (an essay, a speech, a report of N
 words) is no longer sent whole to one model or to whole-request replicas: the

@@ -258,3 +258,47 @@ def test_lone_fence_language_line_is_removed():
     from swarmbly_app.engine import composer
     sec = composer.Section("Intro", "x", 100)
     assert composer.clean_section("markdown\nEn el vasto océano.", sec, "") == "En el vasto océano."
+
+
+def test_unnumbered_answers_in_order_are_accepted_only_when_counts_match():
+    """P3c.1: 'Reptil / Ave / Pez' (correct, but unnumbered) was rejected."""
+    from swarmbly_app.engine.orchestrator import _parse_items
+    items = {4: "Iguana marina", 5: "Pinzón de Darwin", 6: "Tiburón martillo"}
+    assert _parse_items("Reptil\nAve\nPez", items) == {4: "Reptil", 5: "Ave", 6: "Pez"}
+    assert _parse_items("```\nReptil\nAve\nPez\n```", items) == {4: "Reptil", 5: "Ave",
+                                                                 6: "Pez"}
+    assert _parse_items("Reptil\nAve", items) == {}      # count mismatch: no guessing
+
+
+def test_answers_renumbered_from_one_are_mapped_to_their_items():
+    """P3c.1: items 19–24 answered as '1. large … 6. river'."""
+    from swarmbly_app.engine.orchestrator import _parse_items
+    items = {19: "grande", 20: "pequeño", 21: "rápido", 22: "ciudad", 23: "montaña",
+             24: "río"}
+    out = _parse_items("1. large 2. small 3. fast 4. city 5. mountain 6. river", items)
+    assert out == {19: "large", 20: "small", 21: "fast", 22: "city", 23: "mountain",
+                   24: "river"}
+    assert _parse_items("1. large 2. small", items) == {}        # partial: no guessing
+
+
+def test_all_rejected_tries_the_local_model_before_degrading(tmp_path):
+    """P3c.1: every remote replica echoed its items; the local model did not."""
+    from test_p2p_two_nodes import connect, make_node
+    worker, _ = make_node(tmp_path, "W", worker=True, reply="No lo sé.")
+    client, _ = make_node(tmp_path, "C", reply="1. Quito\n2. Lima\n3. Santiago\n"
+                          "4. Buenos Aires\n5. Bogotá\n6. Montevideo\n7. Asunción\n8. Caracas",
+                          extra={"swarm": {"k_min": 1, "k_max": 1}})
+    try:
+        connect(client, worker)
+        conv = client.chat.create_conversation(mode="lan")
+        client.chat.send(conv["id"], "Para cada uno de los siguientes países, indica solo "
+                         "el nombre de su capital:\n1. Ecuador\n2. Perú\n3. Chile\n"
+                         "4. Argentina\n5. Colombia\n6. Uruguay\n7. Paraguay\n8. Venezuela",
+                         mode="lan", run_async=False)
+        final = client.chat.get_messages(conv["id"])[-1]
+        assert final["meta"]["status"] == "done", final["meta"]
+        assert final["meta"]["swarm"]["local_fallback_tasks"]
+        assert "Quito" in final["content"] and "No lo sé" not in final["content"]
+    finally:
+        worker.stop()
+        client.stop()

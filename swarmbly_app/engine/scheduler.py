@@ -47,9 +47,25 @@ class SpeedStats:
     results (tokens / generation time); a timeout records an upper bound.
     """
 
+    FAILURE_MEMORY_S = 300.0
+
     def __init__(self, alpha: float = 0.5):
         self.alpha = alpha
         self._tps: dict[tuple[str, str], float] = {}
+        self._failed_at: dict[str, float] = {}
+
+    def record_failure(self, node_id: str) -> None:
+        """A node that just failed (backend timeout, execution error, deadline)
+        ranks below healthy ones for a few minutes (P3c.1, 22 Oct 2026: a node
+        whose Ollama timed out after 31 s kept receiving tasks)."""
+        self._failed_at[node_id] = time.monotonic()
+
+    def record_success(self, node_id: str) -> None:
+        self._failed_at.pop(node_id, None)
+
+    def recently_failed(self, node_id: str) -> bool:
+        at = self._failed_at.get(node_id)
+        return at is not None and time.monotonic() - at < self.FAILURE_MEMORY_S
 
     def observe(self, node_id: str, model: str, tokens: Any, gen_ms: Any) -> None:
         try:
@@ -251,6 +267,7 @@ class Scheduler:
                    peer.node_id in used_nodes,         # then distinct machines
                    self._load[peer.node_id] + peer.tasks_inflight,
                    too_slow,                           # then: can it finish in time?
+                   self.speed.recently_failed(peer.node_id),   # and is it healthy?
                    -rank_params(model),                # then the most capable model
                    self._pair_load[(peer.node_id, family)],
                    self._pair_used[(peer.node_id, family)],  # spread across models
@@ -366,8 +383,9 @@ class Scheduler:
             self._event(attempt, "cancelled_slow")
         if not accepted and rejected:
             # Degraded, but an answer: the attempts say so ("degraded").
-            for _, attempt in rejected:
+            for replica, attempt in rejected:
                 attempt.status = "degraded"
+                replica.telemetry = dict(replica.telemetry or {}, degraded=True)
             return [replica for replica, _ in rejected]
         if not accepted:
             codes = ", ".join(sorted({a.code for a in self.attempts
@@ -405,6 +423,8 @@ class Scheduler:
                 attempt.status = "failed"
                 attempt.code = getattr(exc, "code", "") or "E_TRANSPORT"
                 attempt.note = str(getattr(exc, "detail", "") or exc)[:160]
+                if attempt.code in ("E_EXECUTION", "E_DEADLINE", "E_TRANSPORT"):
+                    self.speed.record_failure(node_id)
                 if attempt.code == "E_DEADLINE":
                     self._busy_until[node_id] = time.monotonic() + CANCEL_GRACE_S
                     self.timeouts += 1
@@ -424,6 +444,7 @@ class Scheduler:
         attempt.tokens_out = telemetry.get("tokens_out")
         self.speed.observe(node_id, str(profile.get("model_version") or attempt.model),
                            telemetry.get("tokens_out"), telemetry.get("gen_ms"))
+        self.speed.record_success(node_id)
         attempt.model = str(profile.get("model_version") or attempt.model)
         family = str(profile.get("model_family") or attempt.family)
         return Replica(text=str(result["text"]), node_id=node_id, family=family,
