@@ -135,6 +135,19 @@ Windows, Debian; 0.5 B to 8 B models)
     longer sent as names ("usa exactamente estos nombres: para, cada, una"
     in every batch packet);
   - a style line copied from the outline schema's placeholder is dropped.
+- From P3j (23 October 2026):
+  - the batch directive loses its example line ("1. answer"): workers
+    renumbered from 1 or wrote "respuesta: table". Compared on this Mac
+    (4 models × 2 fragments, n = 1 each), the plain wording "For each item,
+    write one line with its number and your answer. Do not repeat the item."
+    was the only one read and translated in all eight cells;
+  - renumbered answers repeated in a code fence are read (only the first
+    1..k run counts); bold markers inside an answer are removed
+    ("**12.5** km");
+  - a composition table section must contain a Markdown table (≥ 3 rows)
+    to be accepted;
+  - nodes advertise their app version and build, operating system,
+    architecture and free memory (shown in the Monitor's node tooltip).
 
 A single composition of a stated length (an essay, a speech, a report of N
 words) is no longer sent whole to one model or to whole-request replicas: the

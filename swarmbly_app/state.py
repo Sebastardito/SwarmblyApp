@@ -22,6 +22,34 @@ from .p2p.node import NodeManager
 from .p2p.worker import WorkerService
 
 
+def _app_build() -> str | None:
+    """Short commit of the running checkout, if it is a git checkout."""
+    import subprocess
+    from pathlib import Path
+    try:
+        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                             cwd=Path(__file__).resolve().parent.parent,
+                             capture_output=True, text=True, timeout=2)
+        return out.stdout.strip() or None if out.returncode == 0 else None
+    except Exception:
+        return None
+
+
+_BUILD = _app_build()
+
+
+def _node_info() -> dict:
+    """What a node says about itself besides its models (app extension of
+    the SPEC §12 ``resources`` block). Heterogeneous rounds (P3b–P3i) could
+    not tell which version or system each node ran from the network."""
+    import platform
+
+    from . import __version__
+    return {"os": f"{platform.system()} {platform.release()}".strip(),
+            "machine": platform.machine(),
+            "app_version": __version__, "app_build": _BUILD}
+
+
 def _build_advertisement(state: "AppState") -> dict:
     """SPEC §12 node profile from live state.
 
@@ -47,7 +75,10 @@ def _build_advertisement(state: "AppState") -> dict:
         "models": models,
         "capabilities": {"tee": False, "attestation": None},
         "swarm": None,
-        "resources": {"vram_mb": None, "ram_mb": int(vm.total // (1024 ** 2))},
+        "resources": {"vram_mb": None, "ram_mb": int(vm.total // (1024 ** 2)),
+                      # free memory when this advertisement was built
+                      "ram_available_mb": int(vm.available // (1024 ** 2)),
+                      **_node_info()},
         "policy": {"max_tokens_per_task":
                    int(cfg["swarm"].get("worker_max_tokens_per_task", 800)),
                    "kinds": list(worker_policy.get("kinds", [])),

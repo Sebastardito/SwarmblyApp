@@ -856,6 +856,12 @@ class Orchestrator:
                     out[t.task_id] = _ItemCheck(items)
         elif outline is not None:
             for i, sec in enumerate(outline.sections):
+                if sec.kind == "table":
+                    # A table section without a table is not usable (P3j.2:
+                    # the water-cycle article came out with no table at all).
+                    out[f"t{i}"] = lambda text: len(re.findall(
+                        r"^\s*\|.*\|\s*$", text or "", re.M)) >= 3
+                    continue
                 floor = max(15, int(sec.words * 0.25))
                 out[f"t{i}"] = lambda text, floor=floor: len((text or "").split()) >= floor
         return out
@@ -1163,8 +1169,14 @@ def _parse_items(text: str, items: dict[int, str]) -> dict[int, str]:
         # accepted only when the labels are exactly 1..k for k items.
         order = sorted(items)
         labels = [int(m.group(1)) for m in matches]
-        if labels == list(range(1, len(order) + 1)):
-            for i, m in enumerate(matches):
+        # Only the first run 1..k counts: a model that repeats its answer in a
+        # code fence ("1. Ave 2. Anfibio ```markdown 1. Ave 2. Anfibio```")
+        # restarts the numbering (P3j.1).
+        run = 0
+        while run < len(labels) and labels[run] == run + 1:
+            run += 1
+        if run == len(order):
+            for i, m in enumerate(matches[:run]):
                 end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
                 value = _item_value(text[m.end():end].split("\n")[0], items[order[i]])
                 if value:
@@ -1190,7 +1202,8 @@ _SEPARATOR = re.compile(r"\s[:–—=→-]\s|:\s")
 
 
 def _item_value(raw: str, item_text: str) -> str:
-    value = raw.split("```")[0].strip(_STRIP).rstrip(".;,").strip(_STRIP)
+    value = re.sub(r"\*\*|__", "", raw.split("```")[0])     # "**12.5** km" (P3j.1)
+    value = value.strip(_STRIP).rstrip(".;,").strip(_STRIP)
     value = _RESIDUAL_LABEL.sub("", value).strip(_STRIP)
     item = item_text.strip(_STRIP).rstrip(".;,")
     if value.casefold().startswith(item.casefold()):

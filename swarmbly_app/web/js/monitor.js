@@ -148,6 +148,17 @@ const Monitor = (() => {
     if (families.size) els.health.appendChild(h("p.caveat", t("monitor.diversityCaveat")));
   }
 
+  // Node id plus what the node says about itself (older nodes say nothing).
+  function peerTitle(p) {
+    const r = p.resources || {};
+    const parts = [p.node_id];
+    if (r.os) parts.push(`${r.os}${r.machine ? " · " + r.machine : ""}`);
+    if (r.app_version) parts.push(`Swarmbly ${r.app_version}${r.app_build ? " (" + r.app_build + ")" : ""}`);
+    if (r.ram_mb) parts.push(`RAM ${Math.round(r.ram_mb / 1024)} GB` +
+      (r.ram_available_mb ? ` (${Math.round(r.ram_available_mb / 1024)} GB free)` : ""));
+    return parts.join("\n");
+  }
+
   function renderPeers(peers) {
     clear(els.peers);
     if (!peers.length) {
@@ -158,7 +169,7 @@ const Monitor = (() => {
       h("thead", h("tr", ["node", "address", "state", "role", "models", "rtt", "inflight", "seen"]
         .map((k) => h("th", { scope: "col" }, t(`monitor.col.${k}`))))),
       h("tbody", peers.map((p) => h("tr",
-        h("td", h("code", { title: p.node_id }, p.short_id || UI.shortId(p.node_id))),
+        h("td", h("code", { title: peerTitle(p) }, p.short_id || UI.shortId(p.node_id))),
         h("td", `${p.address}:${p.port}`),
         h("td", h(`span.status-word.${p.connected ? "completed" : "failed"}`,
           t(p.connected ? (p.authenticated ? "monitor.authenticatedShort" : "monitor.connectedShort")

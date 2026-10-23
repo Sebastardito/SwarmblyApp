@@ -403,3 +403,41 @@ def test_copied_style_placeholder_is_dropped():
                          "local_model")
     composer._clean_style(o, "Redacta un artículo.")
     assert o.style == ""
+
+
+def test_advertisement_says_version_system_and_memory(app_state):
+    from swarmbly_app import __version__
+    from swarmbly_app.state import _build_advertisement
+    res = _build_advertisement(app_state)["resources"]
+    assert res["app_version"] == __version__ and res["os"] and res["ram_available_mb"] > 0
+    assert "app_build" in res
+
+
+def test_batch_directive_has_no_example_line():
+    """P3j: an example ("1. respuesta") was copied or made workers renumber."""
+    from swarmbly_app.engine.packets import localise_instruction
+    text = localise_instruction("Indica la clase:\n\n7. Pingüino\n8. Rana", "es", "enumerated")
+    assert "respuesta»" not in text and "respuesta. No repitas el elemento." in text
+
+
+def test_renumbered_answer_repeated_in_a_fence_is_read():
+    """P3j.1: '1. Ave 2. Anfibio ```markdown 1. Ave 2. Anfibio```' for items 7–8."""
+    items = {7: "Pingüino de Galápagos", 8: "Rana arborícola"}
+    text = "1. Ave\n2. Anfibio\n\n```markdown\n1. Ave\n2. Anfibio\n```"
+    assert _parse_items(text, items) == {7: "Ave", 8: "Anfibio"}
+    assert _parse_items("1. Ave\n2. Anfibio\n3. Pez", items) == {}
+
+
+def test_bold_markers_inside_an_answer_are_removed():
+    assert _parse_items("4. **12.5** km\n5. __0.8__ km", {4: "12500 m", 5: "800 m"}) == {
+        4: "12.5 km", 5: "0.8 km"}
+
+
+def test_table_section_needs_a_table():
+    from swarmbly_app.engine.orchestrator import Orchestrator
+    o = composer.Outline("T", "agua", "", [composer.Section("Intro", "x", 100),
+                                           composer.Section("Tabla", "x", 120, kind="table"),
+                                           composer.Section("Cierre", "x", 100)], "local_model")
+    checks = Orchestrator._validators(None, "composition", o)
+    assert not checks["t1"]("Los ecosistemas andinos cumplen papeles distintos. " * 10)
+    assert checks["t1"]("Resumen:\n| Ecosistema | Papel |\n|---|---|\n| Páramo | esponja |\n")

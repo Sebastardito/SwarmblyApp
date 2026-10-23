@@ -51,9 +51,11 @@ def detect_language(text: str) -> str:
 
 # Strings the pipeline itself writes into a worker prompt. English entries
 # reproduce the historical wording byte for byte (the ρ figures depend on it),
-# except "batch", reworded on 23 Oct 2026 (P3i): "answer only the numbered
+# except "batch", reworded on 23 Oct 2026 (P3i/P3j): "answer only the numbered
 # items …, keeping each item's number" made phi3.5 and qwen2.5:3b re-list the
-# items instead of answering them.
+# items; an example line ("1. answer") made them renumber or write "respuesta".
+# In 8 model × fragment cells (n = 1 each) the plain wording below was the only
+# one parsed and translated in all eight.
 STRINGS: dict[str, dict[str, str]] = {
     "en": {
         "contract": "[GLOBAL CONTRACT]", "objective": "objective",
@@ -63,8 +65,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "context": "CONTEXT", "task": "[TASK]",
         "respond_format": "Respond in {fmt} format.",
         "respond_lang": "",
-        "batch": ("For each item, write one line with its number and your answer "
-                  "(for example: “1. answer”). Do not repeat the item."),
+        "batch": ("For each item, write one line with its number and your answer. "
+                  "Do not repeat the item."),
         "no_answer": "(no verified answer)",
     },
     "es": {
@@ -75,8 +77,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "context": "CONTEXTO", "task": "[TAREA]",
         "respond_format": "Responde en formato {fmt}.",
         "respond_lang": "Responde en español.",
-        "batch": ("Para cada elemento, escribe una línea con su número y tu respuesta "
-                  "(por ejemplo: «1. respuesta»). No repitas el elemento."),
+        "batch": ("Para cada elemento, escribe una línea con su número y tu respuesta. "
+                  "No repitas el elemento."),
         "no_answer": "(sin respuesta verificada)",
     },
     "pt": {
@@ -87,8 +89,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "context": "CONTEXTO", "task": "[TAREFA]",
         "respond_format": "Responda em formato {fmt}.",
         "respond_lang": "Responda em português.",
-        "batch": ("Para cada item, escreva uma linha com o número e a sua resposta "
-                  "(por exemplo: «1. resposta»). Não repita o item."),
+        "batch": ("Para cada item, escreva uma linha com o número e a sua resposta. "
+                  "Não repita o item."),
         "no_answer": "(sem resposta verificada)",
     },
     "fr": {
@@ -99,8 +101,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "context": "CONTEXTE", "task": "[TÂCHE]",
         "respond_format": "Réponds au format {fmt}.",
         "respond_lang": "Réponds en français.",
-        "batch": ("Pour chaque élément, écris une ligne avec son numéro et ta réponse "
-                  "(par exemple : « 1. réponse »). Ne répète pas l'élément."),
+        "batch": ("Pour chaque élément, écris une ligne avec son numéro et ta réponse. "
+                  "Ne répète pas l'élément."),
         "no_answer": "(pas de réponse vérifiée)",
     },
 }
