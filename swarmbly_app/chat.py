@@ -46,6 +46,9 @@ class ChatService:
         self.orchestrator = orchestrator_getter  # distributed engine (Phase 2)
         self._active: dict[str, ActiveRequest] = {}
         self.report_sink: Callable[[str], None] | None = None  # set by AppState
+        # LCE C1: local retrieval over the user's sources (set by AppState);
+        # used only for answers produced on this device.
+        self.retriever: Callable[[str], list[dict[str, Any]]] | None = None
         self._lock = threading.Lock()
 
     # -- conversations -------------------------------------------------------
@@ -181,6 +184,15 @@ class ChatService:
                                  message_id=request.message_id, delta=delta)
 
             from .engine.contract import answer_budget
+            sources: list[dict[str, Any]] = []
+            if self.retriever is not None:
+                try:
+                    sources = self.retriever(user_text) or []
+                except Exception:
+                    sources = []
+            if sources:
+                context = [{"role": "system", "content": _sources_block(sources, user_text)},
+                           *context]
             result = backend.stream_chat(
                 context, model=model,
                 max_tokens=answer_budget(
@@ -192,6 +204,10 @@ class ChatService:
             if local_reason:
                 extra = {"executed": "local", "local_reason": local_reason,
                          "swarm": routing_meta}
+            if sources:
+                extra["lce"] = {"level": "C1", "sources": [
+                    {"n": i, "source": s["source"], "start": s["start"], "end": s["end"],
+                     "score": s.get("score")} for i, s in enumerate(sources, 1)]}
             self._finish(request, result, note=local_reason, stages=routing_stages,
                          extra=extra)
         except Interrupted:
@@ -370,3 +386,21 @@ class ChatService:
         return ("<!doctype html><html><head><meta charset='utf-8'>"
                 "<title>Swarmbly export</title></head><body>"
                 + "".join(parts) + "</body></html>")
+
+
+_SOURCES_HEAD = {
+    "es": ("Fuentes locales del usuario (no salen de este equipo). Úsalas solo si son "
+           "pertinentes y cita la que uses como [1], [2]…:"),
+    "en": ("The user's local sources (they never leave this device). Use them only if "
+           "relevant and cite the one you use as [1], [2]…:"),
+}
+
+
+def _sources_block(sources: list[dict[str, Any]], user_text: str) -> str:
+    """LCE C1: retrieved paragraphs for a local answer, with their origin."""
+    from .lang import detect_language
+    head = _SOURCES_HEAD.get(detect_language(user_text), _SOURCES_HEAD["en"])
+    lines = [head]
+    for i, s in enumerate(sources, 1):
+        lines.append(f"[{i}] ({s['source']}) {s['text']}")
+    return "\n".join(lines)

@@ -123,6 +123,7 @@ class AppState:
         self.chat = ChatService(self.db, self.bus, self.backends,
                                 self.config.all, self.get_orchestrator)
         self.chat.report_sink = self._auto_report
+        self.chat.retriever = self._lce_retrieve
         from .doctor import Installer
         from .model_manager import OllamaModels
         self.installer = Installer(self.bus)
@@ -131,6 +132,13 @@ class AppState:
         self.bus.subscribe(lambda e: self.model_manager.invalidate()
                            if e["type"] == "models.pull"
                            and e["payload"].get("status") == "done" else None)
+
+    def _lce_retrieve(self, query: str) -> list:
+        """LCE C1 retrieval for local answers, when the user enabled C1."""
+        cfg = self.config.all().get("lce") or {}
+        if not cfg.get("enabled") or cfg.get("level") not in ("C1", "C2", "C3", "C4"):
+            return []
+        return self.lce.retrieve(query, k=3, extra_dirs=cfg.get("sources_dirs") or [])
 
     # -- P2P lifecycle -----------------------------------------------------------
     def start_p2p(self) -> None:

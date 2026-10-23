@@ -1,4 +1,4 @@
-"""LCE adapter — C0 active, C1 prepared (v0.1 scope).
+"""LCE adapter — C0 active, C1 retrieval over sources for local answers.
 
 C0 is "Swarmbly unchanged": the app works without any LCE component. When LCE
 is enabled, the adapter prepares the local plane (source space, conservative
@@ -20,9 +20,11 @@ from .paths import DataDirs
 LEVELS = {
     "C0": {"active": True, "status": "active",
            "note": "Swarmbly unchanged; no LCE components applied."},
-    "C1": {"active": False, "status": "prepared",
-           "note": "Source space + conservative policy ready; answering retrieval "
-                  "(raw sources) arrives with the full LCE integration phase."},
+    "C1": {"active": True, "status": "active (local answers)",
+           "note": "Retrieval over your raw sources (BM25 over paragraphs) is added "
+                  "to answers produced on this device, with the source cited. "
+                  "Passages never leave the device; projection into Γ needs "
+                  "digested claims (C2) and stays empty at C1."},
     "C2": {"active": False, "status": "disabled",
            "note": "Automatic digestion — later phase (digester exists in SwarmblyLCE)."},
     "C3": {"active": False, "status": "disabled",
@@ -135,6 +137,57 @@ class LCEAdapter:
                             "size_bytes": size})
         return out
 
+    # -- C1: retrieval over raw sources (WP LCE v0.2 §11.7–11.8, R13) ---------
+    def retrieve(self, query: str, k: int = 3,
+                 extra_dirs: list[str] | tuple[str, ...] = ()) -> list[dict[str, Any]]:
+        """Top paragraphs of the user's sources for ``query`` (local only).
+
+        Sources are the LCE source space plus ``lce.sources_dirs``; files are
+        read, never written. The index is rebuilt for a file only when its
+        content hash changes.
+        """
+        roots = [self.dirs.sources, *[Path(d).expanduser() for d in extra_dirs or ()]]
+        spans = self._spans(roots)
+        if not spans or not (query or "").strip():
+            return []
+        index = _BM25([s["text"] for s in spans])
+        ranked = index.search(query, k)
+        # Paragraphs that only share function words ("de", "es") score far
+        # below a real match: keep those within 35 % of the best one.
+        top = ranked[0][1] if ranked else 0.0
+        hits = []
+        for i, score in ranked:
+            if score < RELATIVE_FLOOR * top:
+                continue
+            hit = dict(spans[i])
+            hit["score"] = round(score, 3)
+            hits.append(hit)
+        return hits
+
+    def _spans(self, roots: list[Path]) -> list[dict[str, Any]]:
+        import hashlib
+        cache = getattr(self, "_span_cache", None)
+        if cache is None:
+            cache = self._span_cache = {}
+        out: list[dict[str, Any]] = []
+        for root in roots:
+            if not root.is_dir():
+                continue
+            for path in sorted(root.rglob("*")):
+                if (not path.is_file() or path.suffix.lower() not in SOURCE_SUFFIXES
+                        or path.name == "README.md" and path.parent == self.dirs.sources
+                        or any(p.startswith(".") for p in path.relative_to(root).parts)):
+                    continue
+                try:
+                    data = path.read_bytes()
+                except OSError:
+                    continue
+                key = (str(path), hashlib.sha256(data).hexdigest())
+                if key not in cache:
+                    cache[key] = _paragraphs(path.name, data.decode("utf-8", "replace"))
+                out.extend(cache[key])
+        return out
+
     def worker_guard(self, declared_model: str):
         """WorkerGuard (invariant I2) bound to the base model this node
         advertises; it refuses to run if the serving backend differs or carries
@@ -144,3 +197,57 @@ class LCEAdapter:
             return WorkerGuard(declared_model=declared_model)
         except Exception:
             return None
+
+
+SOURCE_SUFFIXES = frozenset({".md", ".txt", ".markdown", ".rst", ".org", ".csv"})
+SPAN_MAX_CHARS = 600
+RELATIVE_FLOOR = 0.35
+
+
+def _paragraphs(name: str, text: str) -> list[dict[str, Any]]:
+    """Paragraph spans (≤ 600 characters, as SwarmblyLCE's SourceSpace.spans)."""
+    out: list[dict[str, Any]] = []
+    pos = 0
+    for block in text.split("\n\n"):
+        start = text.find(block, pos)
+        start = pos if start < 0 else start
+        pos = start + len(block)
+        body = " ".join(block.split())
+        while body:
+            piece, body = body[:SPAN_MAX_CHARS], body[SPAN_MAX_CHARS:]
+            out.append({"source": name, "start": start, "end": pos, "text": piece})
+    return out
+
+
+class _BM25:
+    """BM25 (k1 1.5, b 0.75), the same scoring as SwarmblyLCE's retriever."""
+
+    def __init__(self, docs: list[str], k1: float = 1.5, b: float = 0.75):
+        import math
+        import re
+        from collections import Counter
+        self._tok = lambda t: [w.lower() for w in re.findall(r"[\wáéíóúñü]+", t, re.I)
+                               if len(w) > 1]
+        self.k1, self.b, self._log = k1, b, math.log
+        self.tf = [Counter(self._tok(d)) for d in docs]
+        self.df: Counter = Counter()
+        for tf in self.tf:
+            self.df.update(tf.keys())
+        self.avg = sum(sum(tf.values()) for tf in self.tf) / max(1, len(self.tf))
+
+    def search(self, query: str, k: int) -> list[tuple[int, float]]:
+        q = self._tok(query)
+        n = len(self.tf)
+        scored = []
+        for i, tf in enumerate(self.tf):
+            dl = sum(tf.values()) or 1
+            s = 0.0
+            for t in q:
+                if t in tf:
+                    idf = self._log(1 + (n - self.df[t] + 0.5) / (self.df[t] + 0.5))
+                    s += idf * tf[t] * (self.k1 + 1) / (
+                        tf[t] + self.k1 * (1 - self.b + self.b * dl / (self.avg or 1)))
+            if s > 0:
+                scored.append((i, s))
+        scored.sort(key=lambda x: -x[1])
+        return scored[:k]

@@ -178,6 +178,17 @@ Windows, Debian; 0.5 B to 8 B models)
   pez", "pingüino → mamífero"), which no vote can correct. Whether the
   evidence helps is measured in a preregistered round, not assumed.
 
+**LCE C1: retrieval over your sources, for local answers (P2b)**
+- With LCE enabled at C1, answers produced on this device get the most
+  relevant paragraphs of the user's sources (LCE source folder plus
+  `lce.sources_dirs`; BM25 over ≤ 600-character paragraphs, the scoring of
+  SwarmblyLCE) as a system message, and the answer is asked to cite them
+  as [1], [2]. The metadata lists the sources used (`lce.sources`).
+- Passages never leave the device: requests answered by the swarm do not
+  use them. Projection into Γ needs digested claims (C2) and stays empty.
+- Following WP LCE v0.2 §11.7–11.8 (R13): retrieval runs over raw sources,
+  not over the digested wiki.
+
 A single composition of a stated length (an essay, a speech, a report of N
 words) is no longer sent whole to one model or to whole-request replicas: the
 **local model plans it** and the swarm writes it section by section.
