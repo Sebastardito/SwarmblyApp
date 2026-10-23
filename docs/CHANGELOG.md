@@ -37,6 +37,11 @@ Windows, Debian; 0.5 B to 8 B models)
   fails fast and the task runs locally (P3b.3': queued retries waited about
   50 s and then timed out anyway). A fence's language tag left alone on a
   section's first line ("markdown") is removed.
+- Speed-aware routing: tokens per second are learned per node and model from
+  accepted results (a timeout records an upper bound) and kept across
+  requests; a model expected to miss the deadline for the task's budget
+  ranks below one that can finish, even if smaller (P3b.3'': llama3.1:8b on
+  a server CPU timed out on a section that phi3.5 finished in 21–36 s).
 
 A single composition of a stated length (an essay, a speech, a report of N
 words) is no longer sent whole to one model or to whole-request replicas: the

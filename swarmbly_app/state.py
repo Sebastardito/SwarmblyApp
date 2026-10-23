@@ -87,6 +87,8 @@ class AppState:
         self.console = ConsoleReporter(self.bus, lambda: self.nodes.peers)
         self.orchestrator = None  # built lazily with a live local backend
         self.latency = None       # p95 history shared across orchestrator rebuilds
+        from .engine.scheduler import SpeedStats
+        self.speed = SpeedStats()  # tokens/s per (node, model), shared the same way
         self.chat = ChatService(self.db, self.bus, self.backends,
                                 self.config.all, self.get_orchestrator)
         self.chat.report_sink = self._auto_report
@@ -205,7 +207,7 @@ class AppState:
             self.orchestrator = Orchestrator(
                 self.nodes, self.bus, local_stream, self.config.all,
                 local_model=cfg["model"].get("model_name", ""),
-                latency=self.latency, stats_sink=self._client_stats,
+                latency=self.latency, speed=self.speed, stats_sink=self._client_stats,
                 local_pool_factory=self._local_pool)
         return self.orchestrator
 

@@ -162,13 +162,17 @@ class Orchestrator:
                  config_getter: Callable[[], dict[str, Any]],
                  local_model: str = "", latency: LatencyStats | None = None,
                  stats_sink: Callable[..., None] | None = None,
-                 local_pool_factory: Callable[[], Any] | None = None):
+                 local_pool_factory: Callable[[], Any] | None = None,
+                 speed: Any = None):
         self.nodes = nodes
         self.bus = bus
         self.local_stream = local_stream
         self.config = config_getter
         self.local_model = local_model
         self.latency = latency or LatencyStats()
+        from .scheduler import SpeedStats
+        # learned per (node, model); the app keeps one across orchestrator rebuilds
+        self.speed = speed or SpeedStats()
         self.stats_sink = stats_sink
         self.local_pool_factory = local_pool_factory
 
@@ -446,7 +450,8 @@ class Orchestrator:
                                                  int(timeout_s * 500))) / 1000.0,
             latency=self.latency,
             min_params_b=float(swarm_cfg.get("min_model_params_b", 1.5)),
-            queue_retries=not (self.local_stream is not None and self.local_model))
+            queue_retries=not (self.local_stream is not None and self.local_model),
+            speed=self.speed)
         carries: dict[str, str] = {}
         resolved: dict[str, dict[str, Any]] = {}
         local_fallbacks: list[str] = []

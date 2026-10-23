@@ -37,6 +37,49 @@ MAX_RESULT_CHARS = 64_000
 MIN_SAMPLES_FOR_P95 = 8
 
 
+class SpeedStats:
+    """Observed generation speed per (node, model), shared across requests.
+
+    On the heterogeneous network a node's largest model is not always the
+    best choice: llama3.1:8b on the CPU of a 512 GB server needed more than
+    60 s for one section and timed out (P3b.3'', 22 Oct 2026) while a
+    3.8 B model on another node took 20–36 s. Speed is learned from accepted
+    results (tokens / generation time); a timeout records an upper bound.
+    """
+
+    def __init__(self, alpha: float = 0.5):
+        self.alpha = alpha
+        self._tps: dict[tuple[str, str], float] = {}
+
+    def observe(self, node_id: str, model: str, tokens: Any, gen_ms: Any) -> None:
+        try:
+            tokens, gen_ms = float(tokens), float(gen_ms)
+        except (TypeError, ValueError):
+            return
+        if tokens <= 0 or gen_ms <= 0:
+            return
+        self._update((node_id, model), tokens / (gen_ms / 1000.0))
+
+    def observe_timeout(self, node_id: str, model: str, max_tokens: int,
+                        timeout_s: float) -> None:
+        """It could not produce ``max_tokens`` in ``timeout_s``: at most that rate."""
+        if timeout_s > 0 and max_tokens > 0:
+            bound = max_tokens / timeout_s
+            key = (node_id, model)
+            self._tps[key] = min(self._tps.get(key, bound), bound)
+
+    def _update(self, key: tuple[str, str], value: float) -> None:
+        old = self._tps.get(key)
+        self._tps[key] = value if old is None else (1 - self.alpha) * old + self.alpha * value
+
+    def tokens_per_s(self, node_id: str, model: str) -> float | None:
+        return self._tps.get((node_id, model))
+
+    def estimate_s(self, node_id: str, model: str, max_tokens: int) -> float | None:
+        tps = self.tokens_per_s(node_id, model)
+        return None if not tps else max_tokens / tps
+
+
 class LatencyStats:
     """Per (kind, budget-bucket) latency history for the p95 hedge timer."""
 
@@ -117,7 +160,8 @@ class Scheduler:
                  k_min: int, k_max: int, max_concurrency: int,
                  timeout_s: float, hedge_fallback_s: float,
                  latency: LatencyStats, kind: str = "generate",
-                 min_params_b: float = 0.0, queue_retries: bool = True):
+                 min_params_b: float = 0.0, queue_retries: bool = True,
+                 speed: SpeedStats | None = None):
         self.nodes = nodes
         # Models below this size are not used (tags without a size always are).
         self.min_params_b = float(min_params_b)
@@ -126,6 +170,8 @@ class Scheduler:
         # behind busy workers fails fast instead, and the task runs locally
         # (P3b.3': queued retries waited 50 s and then timed out anyway).
         self.queue_retries = bool(queue_retries)
+        self.speed = speed or SpeedStats()
+        self._max_tokens = 0          # budget of the task being dispatched
         # After a timeout or a cancelled hedge the worker may still be
         # finishing (older workers ignore "cancel"): keep its slot for a
         # short grace period instead of sending it work it would refuse.
@@ -184,7 +230,8 @@ class Scheduler:
             return 1
 
     def _select(self, used_pairs: set[tuple[str, str]], used_families: set[str],
-                used_nodes: set[str], free_only: bool = False):
+                used_nodes: set[str], free_only: bool = False,
+                max_tokens: int | None = None):
         """Best (peer, family, model). ``free_only``: only workers with a free
         slot — a hedge queued behind a busy worker adds load and saves no
         time (P3b.3, 22 Oct 2026: after the server left, hedges queued on the
@@ -197,9 +244,13 @@ class Scheduler:
             if free_only and self._load[peer.node_id] >= self._capacity(peer):
                 continue
             from .capability import rank_params
+            estimate = self.speed.estimate_s(
+                peer.node_id, model, max_tokens if max_tokens is not None else self._max_tokens)
+            too_slow = estimate is not None and estimate > 0.9 * self.timeout_s
             key = (family in used_families,           # diversity first (MUST)
                    peer.node_id in used_nodes,         # then distinct machines
                    self._load[peer.node_id] + peer.tasks_inflight,
+                   too_slow,                           # then: can it finish in time?
                    -rank_params(model),                # then the most capable model
                    self._pair_load[(peer.node_id, family)],
                    self._pair_used[(peer.node_id, family)],  # spread across models
@@ -229,13 +280,15 @@ class Scheduler:
         inflight: dict[asyncio.Task, Attempt] = {}
         number = 0
         latency_key = LatencyStats.key(self.kind, max_tokens)
+        self._max_tokens = int(max_tokens)
 
         def launch(reason: str, free_only: bool = False) -> bool:
             nonlocal number
             if number >= self.k_max:
                 return False
             choice = self._select(used_pairs, used_families, used_nodes,
-                                  free_only=free_only or reason == "hedge")
+                                  free_only=free_only or reason == "hedge",
+                                  max_tokens=max_tokens)
             if choice is None:
                 return False
             peer, family, model = choice
@@ -354,8 +407,9 @@ class Scheduler:
                 attempt.note = str(getattr(exc, "detail", "") or exc)[:160]
                 if attempt.code == "E_DEADLINE":
                     self._busy_until[node_id] = time.monotonic() + CANCEL_GRACE_S
-                if attempt.code == "E_DEADLINE":
                     self.timeouts += 1
+                    self.speed.observe_timeout(node_id, attempt.model,
+                                               self._max_tokens, self.timeout_s)
                 attempt.elapsed_ms = int((time.monotonic() - started) * 1000)
                 return None
         attempt.elapsed_ms = int((time.monotonic() - started) * 1000)
@@ -368,6 +422,8 @@ class Scheduler:
         profile = result.get("profile") or {}
         telemetry = result.get("telemetry") or {}
         attempt.tokens_out = telemetry.get("tokens_out")
+        self.speed.observe(node_id, str(profile.get("model_version") or attempt.model),
+                           telemetry.get("tokens_out"), telemetry.get("gen_ms"))
         attempt.model = str(profile.get("model_version") or attempt.model)
         family = str(profile.get("model_family") or attempt.family)
         return Replica(text=str(result["text"]), node_id=node_id, family=family,
