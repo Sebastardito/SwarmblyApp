@@ -529,7 +529,7 @@ def section_instruction(outline: Outline, index: int, lang: str,
         lines.append(b["points"].format(x="; ".join(_bare(k) for k in sec.key_points)))
     if outline.style and sec.kind != "table":
         lines.append(b["style"].format(x="; ".join(_bare(x) for x in outline.style.split("; "))))
-    lines.append(b["words"].format(w=max(30, round(sec.words * length_factor))))
+    lines.append(b["words"].format(w=asked_words(sec, length_factor)))
     if sec.kind == "table":
         lines.append(b["table"])
     elif index == 0:
@@ -540,6 +540,18 @@ def section_instruction(outline: Outline, index: int, lang: str,
         lines.append(b["middle"].format(prev=prev))
     lines.append(b["only"])
     return "\n".join(lines)
+
+
+SMALL_SECTION_WORDS = 200
+
+
+def asked_words(sec: Section, length_factor: float = 1.0) -> int:
+    """Words asked of the worker for a section. Short sections are scaled
+    down further: asked for 74–89 words, small models wrote 1.0–2.1 times
+    that (median ~1.7) in P3g.2, while for 150+ words they stayed within
+    1.0–1.4. Provisional, like ``length_factor``."""
+    scale = min(1.0, max(0.75, sec.words / SMALL_SECTION_WORDS))
+    return max(30, round(sec.words * length_factor * scale))
 
 
 def section_budget(section: Section, tokens_per_word: float, headroom: float = 1.5) -> int:
@@ -581,14 +593,21 @@ _STOP = frozenset("debe deben texto escrito como para con sobre incluye incluir 
                   "este esta estos estas".split())
 
 
+def proper_keys(term: str) -> list[str]:
+    """The proper nouns of a requirement (not a sentence's capitalised first
+    word), case-folded: names such as the presenter's."""
+    return [m.group(0).casefold()
+            for m in re.finditer(r"\b[A-ZÁÉÍÓÚÑ][\wáéíóúñ]{2,}", term)
+            if not re.search(r"(^|[.!?:]\s*)$", term[:m.start()].rstrip(" ¡¿\"'“«"))
+            and m.group(0).casefold() not in _STOP]
+
+
 def requirement_keys(term: str) -> list[str]:
     """Words a text must contain to satisfy a requirement: its proper nouns
     (not the capitalised first word of a sentence), else its content words."""
-    proper = [m.group(0) for m in re.finditer(r"\b[A-ZÁÉÍÓÚÑ][\wáéíóúñ]{2,}", term)
-              if not re.search(r"(^|[.!?:]\s*)$", term[:m.start()].rstrip(" ¡¿\"'“«"))
-              and m.group(0).casefold() not in _STOP]
+    proper = proper_keys(term)
     if proper:
-        return [w.casefold() for w in proper]
+        return proper
     words = [w for w in re.findall(r"\w{5,}", term.casefold()) if w not in _STOP]
     return words[:3]
 

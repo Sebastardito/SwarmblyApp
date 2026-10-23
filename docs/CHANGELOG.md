@@ -95,6 +95,20 @@ Windows, Debian; 0.5 B to 8 B models)
   - composition: outside the ±30 % band the replica closest to the
     section's target wins (195 and 83 words for 144: the 83 was chosen);
     table sections have no word target.
+- From P3g (same network with the old Mac healthy, 23 October 2026):
+  - when the two replicas of a batch fragment disagree on an item, one more
+    replica on another family breaks the tie (`swarm.tie_break`, on;
+    `tie_breaks` in the metadata): "carro / leite / vermelho" had won over
+    "car / milk / red" as the better-ranked replica;
+  - in the item vote, numbered answers win ties over answers read by
+    position (a model listed "6. Pez / 5. Aves / 4. Reptil"; without the
+    numbers that order maps to the wrong items);
+  - composition selection: required names first, then length within the
+    band, then the other requirement words (they favoured the longest
+    replica: +37 % and +41 % texts); short sections are asked for fewer
+    words (×0.75–1.0 below 200 words, provisional);
+  - a rejected batch replica's note starts with what the check read
+    ("items 4-6: read [5], need 2").
 
 A single composition of a stated length (an essay, a speech, a report of N
 words) is no longer sent whole to one model or to whole-request replicas: the

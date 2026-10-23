@@ -456,6 +456,8 @@ class Orchestrator:
         resolved: dict[str, dict[str, Any]] = {}
         local_fallbacks: list[str] = []
         local_rejected: list[str] = []
+        tie_breaks: list[dict[str, Any]] = []
+        tie_break = bool(swarm_cfg.get("tie_break", True))
         embedder, embedder_name = self._embedder()
 
         async def local_rescue(task_id: str, build, check, reason: str):
@@ -513,6 +515,26 @@ class Orchestrator:
                 if fallback is not None and ok:
                     replicas = [fallback]
                     local_fallbacks.append(task_id)
+            if path == "enumerated" and tie_break and len(replicas) == 2 and not any(
+                    (r.telemetry or {}).get("degraded") for r in replicas):
+                items = _item_texts(plan_by_id[task_id].instruction)
+                split = _split_items(replicas, items)
+                if split:
+                    # Two replicas that disagree cannot be decided by a vote;
+                    # one more replica on another family breaks the tie
+                    # (P3g.1, 23 Oct 2026: "carro / leite / vermelho" won
+                    # over "car / milk / red" as the better-ranked replica).
+                    try:
+                        extra = await scheduler.run_task(
+                            task_id, build, budgets[task_id], validate=check,
+                            k_min=1, k_max=1, start_number=len(scheduler.attempts),
+                            exclude={(r.node_id, r.family) for r in replicas})
+                    except TaskFailed:
+                        extra = []
+                    extra = [r for r in extra if not (r.telemetry or {}).get("degraded")]
+                    if extra:
+                        replicas = replicas + extra[:1]
+                        tie_breaks.append({"task": task_id, "items": split})
             outcome = await loop.run_in_executor(
                 None, functools.partial(
                     self._resolve, task_id, replicas, contract, embedder,
@@ -521,6 +543,7 @@ class Orchestrator:
                     items=(_item_texts(plan_by_id[task_id].instruction)
                            if path == "enumerated" else None),
                     required=required_by_task.get(task_id),
+                    critical=critical_by_task.get(task_id),
                     target_words=(outline.sections[_order(task_id)].words
                                   if outline is not None
                                   and outline.sections[_order(task_id)].kind != "table"
@@ -533,6 +556,10 @@ class Orchestrator:
         validators = self._validators(plan, path, outline)
         required_by_task = ({f"t{i}": [k for req in sec.must_include
                                        for k in composer.requirement_keys(req)]
+                             for i, sec in enumerate(outline.sections) if sec.kind != "table"}
+                            if outline is not None else {})
+        critical_by_task = ({f"t{i}": [k for req in sec.must_include
+                                       for k in composer.proper_keys(req)]
                              for i, sec in enumerate(outline.sections) if sec.kind != "table"}
                             if outline is not None else {})
         order = [t.task_id for t in sorted(plan.tasks, key=lambda t: positions[t.task_id])]
@@ -678,6 +705,7 @@ class Orchestrator:
             "rejected_quality": scheduler.rejected,
             "local_fallback_tasks": sorted(local_fallbacks),
             "local_fallback_rejected": sorted(set(local_rejected)),
+            "tie_breaks": tie_breaks,
             "timeouts": scheduler.timeouts,
             "bytes": {"out": sum(a["bytes_out"] for a in attempts),
                       "in": sum(a["bytes_in"] for a in attempts)},
@@ -704,7 +732,8 @@ class Orchestrator:
                  lang: str | None = None, budget: int | None = None,
                  items: dict[int, str] | None = None,
                  required: list[str] | None = None,
-                 target_words: int | None = None) -> dict[str, Any]:
+                 target_words: int | None = None,
+                 critical: list[str] | None = None) -> dict[str, Any]:
         """One text per task: the only replica, or a consensus over replicas (§14b).
 
         ``policy="units"`` (independent items of a batch) returns upstream's
@@ -752,7 +781,7 @@ class Orchestrator:
                     "replica_meta": meta,
                     "truncated": all(m["truncated"] for m in meta)}
         chosen, selection = _select_whole(replicas, meta, embedder, lang, required,
-                                          target_words)
+                                          target_words, critical)
         if policy == "items" and items:
             vote = _vote_items(replicas, items, selection["ranking"], lang)
             if vote is not None:
@@ -823,9 +852,7 @@ class Orchestrator:
             for t in plan.tasks:
                 items = _item_texts(t.instruction)
                 if items:
-                    need = max(1, -(-len(items) // 2))
-                    out[t.task_id] = (lambda text, items=items, need=need:
-                                      len(_parse_items(text, items)) >= need)
+                    out[t.task_id] = _ItemCheck(items)
         elif outline is not None:
             for i, sec in enumerate(outline.sections):
                 floor = max(15, int(sec.words * 0.25))
@@ -1014,12 +1041,13 @@ LENGTH_TOLERANCE = 0.3
 
 
 def _select_whole(replicas, meta, embedder, lang: str | None,
-                  required: list[str] | None = None, target_words: int | None = None):
-    """Pick one complete replica: request language, then the most section
-    requirements met (composition: e.g. the presenter's name), then not
-    truncated, then within ±30 % of the section's word target (outside it,
-    the closest; tables have no word target), then the document medoid
-    (highest mean cosine to the others).
+                  required: list[str] | None = None, target_words: int | None = None,
+                  critical: list[str] | None = None):
+    """Pick one complete replica: request language, then the names the
+    section must carry (the presenter), then within ±30 % of the section's
+    word target, then the other requirement words, then not truncated, then
+    (outside the band) the closest length — tables have no word target —
+    then the document medoid (highest mean cosine to the others).
 
     The length term (P3d.2, 22 Oct 2026): with the medoid alone the
     Galápagos speech came out 25 % short and the water-cycle article 29 %
@@ -1043,21 +1071,26 @@ def _select_whole(replicas, meta, embedder, lang: str | None,
     fits = [e <= LENGTH_TOLERANCE for e in error]
     # Within the band length is not a criterion; outside it the closer wins
     # (P3f.2: 195 and 83 words for a 144-word section, the 83 was chosen).
-    keys = [((langs[i] == lang) if lang else True, met[i], not meta[i]["truncated"],
-             -(0.0 if fits[i] else error[i]), centrality[i],
+    names = [sum(1 for key in (critical or []) if key in lowered[i]) for i in range(k)]
+    # Names first (the presenter), then length: counting the other required
+    # words before length favoured the longest replica (P3g.2: 164 words
+    # chosen over 73 for a 99-word section; the report came out +41 %).
+    keys = [((langs[i] == lang) if lang else True, names[i], fits[i], met[i],
+             not meta[i]["truncated"], -(0.0 if fits[i] else error[i]), centrality[i],
              -int(replicas[i].elapsed_ms or 0)) for i in range(k)]
     chosen = max(range(k), key=lambda i: keys[i])
     ranking = sorted(range(k), key=lambda i: keys[i], reverse=True)
     return chosen, {
         "ranking": ranking,
-        "policy": ("whole replica: language match, then requirements met, then "
-                   "complete, then length within ±30 % of the target, then "
-                   "document medoid"),
+        "policy": ("whole replica: language match, then required names, then "
+                   "length within ±30 % of the target, then requirement words, "
+                   "then complete, then closest length, then document medoid"),
         "target_words": target_words,
         "chosen": chosen, "chosen_family": replicas[chosen].family,
         "candidates": [{"family": replicas[i].family, "language": langs[i],
                         "truncated": meta[i]["truncated"],
-                        "requirements_met": met[i], "words": words[i],
+                        "requirements_met": met[i], "names_met": names[i],
+                        "words": words[i],
                         "length_fits": fits[i],
                         "centrality": round(centrality[i], 4)} for i in range(k)],
     }
@@ -1158,6 +1191,24 @@ def _item_value(raw: str, item_text: str) -> str:
     return value if value and value.casefold() != item.casefold() else ""
 
 
+class _ItemCheck:
+    """Quality check of a batch replica: at least half its items answered.
+    ``explain`` goes into the rejected attempt's note (P3f: a correct-looking
+    replica was rejected and the reason could not be reconstructed)."""
+
+    def __init__(self, items: dict[int, str]):
+        self.items = items
+        self.need = max(1, -(-len(items) // 2))
+
+    def __call__(self, text: str) -> bool:
+        return len(_parse_items(text, self.items)) >= self.need
+
+    def explain(self, text: str) -> str:
+        parsed = _parse_items(text, self.items)
+        return (f"items {min(self.items)}-{max(self.items)}: read "
+                f"{sorted(parsed) or 'none'}, need {self.need}")
+
+
 def _no_answer(n: int, item: str, lang: str | None) -> str:
     from ..lang import strings
     return f"{n}. {item.strip(_STRIP)} — {strings(lang)['no_answer']}"
@@ -1178,6 +1229,17 @@ def _normalise_items(text: str, items: dict[int, str], lang: str | None = None,
                      for n in sorted(items))
 
 
+def _vote_key(value: str) -> str:
+    return re.sub(r"[^\w]+", " ", value.casefold()).strip()
+
+
+def _split_items(replicas, items: dict[int, str]) -> list[int]:
+    """Items that two replicas both answer, differently."""
+    a, b = (_parse_items(r.text, items) for r in replicas[:2])
+    return [n for n in sorted(items)
+            if n in a and n in b and _vote_key(a[n]) != _vote_key(b[n])]
+
+
 def _vote_items(replicas, items: dict[int, str], ranking: list[int],
                 lang: str | None = None):
     """Majority vote per numbered item; ``None`` when replicas are unparseable."""
@@ -1185,27 +1247,33 @@ def _vote_items(replicas, items: dict[int, str], ranking: list[int],
     if sum(len(p) for p in parsed) < 0.5 * len(items) * len(replicas):
         return None
     rank = {idx: pos for pos, idx in enumerate(ranking)}
+    # Answers read by position carry no item numbers; a model that reorders
+    # them ("6. Pez / 5. Aves / 4. Reptil" without the numbers) would map
+    # them to the wrong items (P3g.1). In a tie they lose to labelled ones.
+    labelled = [_LABEL_ANYWHERE.search(r.text or "") is not None for r in replicas]
     lines, report, missing = [], [], []
     for n in sorted(items):
         votes: dict[str, list[int]] = {}
         for idx, answers in enumerate(parsed):
             if n in answers:
-                key = re.sub(r"[^\w]+", " ", answers[n].casefold()).strip()
-                votes.setdefault(key, []).append(idx)
+                votes.setdefault(_vote_key(answers[n]), []).append(idx)
         if not votes:
             missing.append(n)
             lines.append(_no_answer(n, items[n], lang))
             continue
-        best = max(votes.values(), key=lambda idxs: (len(idxs), -min(rank[i] for i in idxs)))
-        winner = min(best, key=lambda i: rank[i])
+        best = max(votes.values(), key=lambda idxs: (len(idxs),
+                                                     sum(labelled[i] for i in idxs),
+                                                     -min(rank[i] for i in idxs)))
+        winner = min(best, key=lambda i: (not labelled[i], rank[i]))
         value = parsed[winner][n]
         lines.append(f"{n}. {value}")
         report.append({"item": n, "value": value,
                        "agreement": round(len(best) / len(replicas), 4),
                        "distinct_answers": len(votes)})
     return "\n".join(lines), {
-        "policy": "item vote: majority per numbered item, ties to the best-ranked "
-                  "replica (language, complete, document medoid)",
+        "policy": "item vote: majority per numbered item, ties to numbered answers, "
+                  "then to the best-ranked replica (language, complete, document "
+                  "medoid)",
         "items": report, "missing_items": missing,
         "mean_item_agreement": (round(sum(r["agreement"] for r in report) / len(report), 4)
                                 if report else None),

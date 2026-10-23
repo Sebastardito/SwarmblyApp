@@ -351,7 +351,10 @@ class Scheduler:
     # -- one task ---------------------------------------------------------------
     async def run_task(self, task_id: str, build: Callable[..., dict],
                        max_tokens: int,
-                       validate: Callable[[str], bool] | None = None) -> list[Replica]:
+                       validate: Callable[[str], bool] | None = None, *,
+                       k_min: int | None = None, k_max: int | None = None,
+                       exclude: set[tuple[str, str]] | None = None,
+                       start_number: int = 0) -> list[Replica]:
         """Dispatch replicas of one task; return ≥1 verified replica or raise.
 
         ``validate`` rejects a signed, well-formed replica whose content is
@@ -361,18 +364,21 @@ class Scheduler:
         returned rather than failing the request (the monitor shows it).
         """
         rejected: list[tuple[Replica, Attempt]] = []
-        used_pairs: set[tuple[str, str]] = set()
-        used_families: set[str] = set()
-        used_nodes: set[str] = set()
+        k_min = self.k_min if k_min is None else int(k_min)
+        k_max = self.k_max if k_max is None else int(k_max)
+        used_pairs: set[tuple[str, str]] = set(exclude or ())
+        used_families: set[str] = {family for _, family in used_pairs}
+        used_nodes: set[str] = {node for node, _ in used_pairs}
         accepted: list[Replica] = []
         inflight: dict[asyncio.Task, Attempt] = {}
-        number = 0
+        number = int(start_number)
+        k_max += number            # attempt numbers continue an earlier round
         latency_key = LatencyStats.key(self.kind, max_tokens)
         self._max_tokens = int(max_tokens)
 
         def launch(reason: str, free_only: bool = False) -> bool:
             nonlocal number
-            if number >= self.k_max:
+            if number >= k_max:
                 return False
             choice = self._select(used_pairs, used_families, used_nodes,
                                   free_only=free_only or reason == "hedge",
@@ -401,16 +407,16 @@ class Scheduler:
             self._event(attempt, "dispatched")
             return True
 
-        for _ in range(self.k_min):
+        for _ in range(k_min):
             if not launch("initial"):
                 break
         if not inflight:
             raise TaskFailed(f"{task_id}: no connected worker available")
 
-        while inflight and len(accepted) < self.k_min:
+        while inflight and len(accepted) < k_min:
             hedge_after, source, late = self._hedge_after(list(inflight.values()),
                                                           latency_key)
-            can_hedge = number < self.k_max
+            can_hedge = number < k_max
             if can_hedge:
                 self.hedge_timer_source.add(source)
             done, _ = await asyncio.wait(
@@ -435,6 +441,12 @@ class Scheduler:
                     if not usable:
                         attempt.status, attempt.code = "rejected", "E_QUALITY"
                         attempt.note = " ".join(replica.text.split())[:160]
+                        explain = getattr(validate, "explain", None)
+                        if explain is not None:
+                            try:
+                                attempt.note = f"[{explain(replica.text)}] {attempt.note}"[:240]
+                            except Exception:
+                                pass
                         self.rejected += 1
                         rejected.append((replica, attempt))
                         self._event(attempt, "rejected")
@@ -442,7 +454,7 @@ class Scheduler:
                         # health, and the local model tends to fail the same
                         # way (P3e.1: two echoes, no free worker, no retry,
                         # the local rescue echoed too): this retry may queue.
-                        if len(accepted) + len(inflight) < self.k_min and launch("retry"):
+                        if len(accepted) + len(inflight) < k_min and launch("retry"):
                             self.retries += 1
                         continue
                 if replica is not None:
@@ -452,7 +464,7 @@ class Scheduler:
                     self._event(attempt, "accepted")
                 else:
                     self._event(attempt, "failed")
-                    if len(accepted) + len(inflight) < self.k_min and launch("retry", free_only=not self.queue_retries):
+                    if len(accepted) + len(inflight) < k_min and launch("retry", free_only=not self.queue_retries):
                         self.retries += 1
 
         for task, attempt in inflight.items():

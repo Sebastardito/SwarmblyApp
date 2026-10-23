@@ -81,6 +81,8 @@ DEFAULTS: dict[str, Any] = {
         # not used while larger ones exist; batches keep ≥ N items per fragment.
         "min_model_params_b": 1.5,
         "min_items_per_fragment": 3,
+        # Two batch replicas that disagree on an item get a third (P3g).
+        "tie_break": True,
     },
     "privacy": {
         "tier": "LOCAL",              # GLOBAL | TRUSTED | LOCAL

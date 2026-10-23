@@ -207,3 +207,127 @@ def test_outside_the_band_the_closest_length_wins(app_state):
                         build_contract(REPORT_ES).contract, HashEmbedder(),
                         policy="whole", lang="es", target_words=144)
     assert out["text"] == long_
+
+
+def test_item_check_explains_a_rejection():
+    from swarmbly_app.engine.orchestrator import _ItemCheck
+    check = _ItemCheck({19: "grande", 20: "pequeño"})
+    assert not check("19. grande - grande\n20. pequeño - pequeño")
+    assert check.explain("19. grande - grande\n20. small") == "items 19-20: read [20], need 1"
+    assert check("19. large")
+
+
+def test_split_items_finds_disagreements():
+    from swarmbly_app.engine.orchestrator import _split_items
+    from swarmbly_app.engine.scheduler import Replica
+    items = {13: "coche", 14: "pan", 15: "leche"}
+    a = Replica("13. car\n14. bread\n15. milk", "n1", "llama", "l", 1)
+    b = Replica("13. carro\n14. Bread.\n15. leite", "n2", "phi3", "p", 1)
+    assert _split_items([a, b], items) == [13, 15]
+
+
+def test_run_task_continues_with_excluded_pairs(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    import swarmbly_app.engine.scheduler as sched
+    monkeypatch.setattr(sched, "verify_result", lambda *x: "")
+
+    def peer(node_id, family, version):
+        return SimpleNamespace(node_id=node_id, tasks_inflight=0, rtt_ms=1.0,
+                               advertisement={"models": [{"family": family,
+                                                          "version": version}],
+                                              "policy": {"max_concurrent": 1}})
+
+    class Nodes:
+        def __init__(self, peers):
+            self.peers = {p.node_id: p for p in peers}
+            self.sent = []
+
+        def available_workers(self, kind="generate"):
+            return list(self.peers.values())
+
+        async def dispatch_async(self, node_id, message, timeout_s):
+            self.sent.append((node_id, message["attempt_id"]))
+            return {"type": "result", "attempt_id": message["attempt_id"],
+                    "text": node_id, "profile": {}, "telemetry": {}}
+
+    class Bus:
+        def publish(self, *a, **k):
+            pass
+
+    nodes = Nodes([peer("a", "llama", "llama3.1:8b"), peer("b", "phi3", "phi3.5:3.8b"),
+                   peer("c", "gemma2", "gemma2:2b")])
+    s = sched.Scheduler(nodes, Bus(), "r", k_min=2, k_max=4, max_concurrency=4,
+                        timeout_s=5, hedge_fallback_s=5, latency=sched.LatencyStats())
+    out = asyncio.run(s.run_task("t0", lambda n, f, m=None: {"attempt_id": f"x{n}"}, 100,
+                                 k_min=1, k_max=1, start_number=2,
+                                 exclude={("a", "llama"), ("b", "phi3")}))
+    assert [r.text for r in out] == ["c"] and nodes.sent == [("c", "x2")]
+
+
+def test_disagreeing_replicas_get_a_third(tmp_path):
+    from test_p2p_two_nodes import connect, make_node
+    w1, _ = make_node(tmp_path, "W1", worker=True, model="llama3.2:3b",
+                      reply="1. Quito\n2. Lima\n3. Santiago\n4. Buenos Aires")
+    w2, _ = make_node(tmp_path, "W2", worker=True, model="phi3.5:3.8b",
+                      reply="1. Quito\n2. Lima\n3. Valparaíso\n4. Buenos Aires")
+    w3, _ = make_node(tmp_path, "W3", worker=True, model="gemma2:2b",
+                      reply="1. Quito\n2. Lima\n3. Santiago\n4. Buenos Aires")
+    client, _ = make_node(tmp_path, "C", extra={"swarm": {"k_min": 2, "k_max": 4,
+                                                          "min_items_per_fragment": 4}})
+    try:
+        for w in (w1, w2, w3):
+            connect(client, w)
+        conv = client.chat.create_conversation(mode="lan")
+        client.chat.send(conv["id"], "Para cada uno de los siguientes países, indica solo "
+                         "el nombre de su capital:\n1. Ecuador\n2. Perú\n3. Chile\n"
+                         "4. Argentina\n5. Colombia\n6. Uruguay\n7. Paraguay\n8. Venezuela",
+                         mode="lan", run_async=False)
+        final = client.chat.get_messages(conv["id"])[-1]
+        swarm = final["meta"]["swarm"]
+        assert final["meta"]["status"] == "done", final["meta"]
+        assert any(3 in tb["items"] for tb in swarm["tie_breaks"]) or not any(
+            "Valparaíso" in line for line in final["content"].splitlines())
+        assert "3. Santiago" in final["content"]
+    finally:
+        for st in (w1, w2, w3, client):
+            st.stop()
+
+
+def test_length_beats_extra_requirement_words_but_not_names(app_state):
+    """P3g.2: a 164-word replica beat a 73-word one for a 99-word section
+    because it repeated more of the brief's words."""
+    from swarmbly_v0 import HashEmbedder
+    from swarmbly_app.engine.orchestrator import Orchestrator
+    from swarmbly_app.engine.scheduler import Replica
+    orch = Orchestrator(app_state.nodes, app_state.bus, None, app_state.config.all)
+    long_ = "Las estrategias para maximizar ventajas y reducir riesgos rurales. " * 18
+    fit = "El sol abastece a las comunidades aisladas del país. " * 11       # ~99
+    out = orch._resolve("t3", [Replica(long_, "n1", "llama", "l", 5),
+                               Replica(fit, "n2", "phi3", "p", 6)],
+                        build_contract(REPORT_ES).contract, HashEmbedder(),
+                        policy="whole", lang="es", target_words=99,
+                        required=["estrategias", "maximizar", "riesgos"])
+    assert out["text"] == fit
+    named = "Soy Sebastian y presento las Galápagos. " * 26                  # ~182
+    out = orch._resolve("t0", [Replica(named, "n1", "llama", "l", 5),
+                               Replica(fit, "n2", "phi3", "p", 6)],
+                        build_contract(REPORT_ES).contract, HashEmbedder(),
+                        policy="whole", lang="es", target_words=99,
+                        required=["sebastian"], critical=["sebastian"])
+    assert out["text"] == named
+
+
+def test_short_sections_ask_for_fewer_words():
+    assert composer.asked_words(composer.Section("x", "x", 100), 0.8) == 60
+    assert composer.asked_words(composer.Section("x", "x", 250), 0.8) == 200
+
+
+def test_numbered_answers_win_ties_over_positional_ones():
+    """P3g.1: unnumbered answers in another order were mapped to the wrong items."""
+    from swarmbly_app.engine.scheduler import Replica
+    items = {4: "Iguana marina", 5: "Pinzón de Darwin", 6: "Tiburón martillo"}
+    positional = Replica("pez\nave\nreptil", "n1", "qwen2", "q", 1)
+    numbered = Replica("4. Reptil\n5. Ave\n6. Pez", "n2", "llama", "l", 1)
+    text, _ = _vote_items([positional, numbered], items, [0, 1], "es")
+    assert text.splitlines() == ["4. Reptil", "5. Ave", "6. Pez"]
