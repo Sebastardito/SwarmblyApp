@@ -52,6 +52,24 @@ Windows, Debian; 0.5 B to 8 B models)
     deadline) ranks below healthy ones for five minutes;
   - when every remote replica of a task is rejected, this device's model is
     tried before accepting a degraded answer.
+- From P3d (same five machines, 22 October 2026):
+  - a label left inside an answer ("1. 7. libro", "7.* Asunción") is
+    removed before the answer is read, so a renumbered echo is rejected
+    instead of accepted as a translation;
+  - answers are read by position only when no line carries a label (a
+    labelled echo plus "En formato markdown…" had become an answer);
+  - an item without an answer is shown as "(sin respuesta verificada)" (in
+    the request's language), and the raw text of a rejected replica is
+    never shown;
+  - the local rescue tries the bare task after the packet: the same 3B
+    model echoed a fragment wrapped in the contract header and answered it
+    without; `local_fallback_rejected` lists tasks where both failed;
+  - composition sections prefer a replica within ±30 % of the section's
+    word target (after language, requirements and completeness);
+  - the outline keeps the number of sections the request asks for ("una
+    introducción, tres secciones y una conclusión" → 5): the local model is
+    told, and the outline is corrected (extra middle sections folded into
+    the previous one, missing ones added before the closing).
 
 A single composition of a stated length (an essay, a speech, a report of N
 words) is no longer sent whole to one model or to whole-request replicas: the

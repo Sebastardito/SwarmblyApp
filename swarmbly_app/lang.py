@@ -62,6 +62,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "respond_lang": "",
         "batch": ("Answer only the numbered items in this part, one per line, "
                   "keeping each item's number."),
+        "no_answer": "(no verified answer)",
     },
     "es": {
         "contract": "[CONTRATO GLOBAL]", "objective": "objetivo",
@@ -73,6 +74,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "respond_lang": "Responde en español.",
         "batch": ("Responde solo a los elementos numerados de esta parte, uno por "
                   "línea, conservando el número de cada uno."),
+        "no_answer": "(sin respuesta verificada)",
     },
     "pt": {
         "contract": "[CONTRATO GLOBAL]", "objective": "objetivo",
@@ -84,6 +86,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "respond_lang": "Responda em português.",
         "batch": ("Responda apenas aos itens numerados desta parte, um por linha, "
                   "mantendo o número de cada um."),
+        "no_answer": "(sem resposta verificada)",
     },
     "fr": {
         "contract": "[CONTRAT GLOBAL]", "objective": "objectif",
@@ -95,6 +98,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "respond_lang": "Réponds en français.",
         "batch": ("Réponds uniquement aux éléments numérotés de cette partie, un par "
                   "ligne, en gardant le numéro de chacun."),
+        "no_answer": "(pas de réponse vérifiée)",
     },
 }
 

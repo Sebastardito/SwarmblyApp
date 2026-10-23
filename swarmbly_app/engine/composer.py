@@ -44,6 +44,16 @@ OUTLINE_MAX_TOKENS = 1400
 LANGUAGE_NAMES = {"en": "English", "es": "Spanish", "pt": "Portuguese", "fr": "French"}
 _TABLE_CUE = re.compile(r"\b(tablas?|tables?|tabelas?|tableaux?|tabla de resumen)\b", re.I)
 _BULLET = re.compile(r"^\s*[-*•]\s+(.+?)\s*$", re.M)
+_NUMBER_WORDS = {"dos": 2, "tres": 3, "cuatro": 4, "cinco": 5, "seis": 6, "siete": 7,
+                 "ocho": 8, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+                 "seven": 7, "eight": 8, "deux": 2, "trois": 3, "quatre": 4, "cinq": 5,
+                 "duas": 2, "três": 3, "quatro": 4}
+_SECTION_COUNT = re.compile(
+    r"\b(\d|" + "|".join(_NUMBER_WORDS) + r")\s+(?:secciones|apartados|partes|"
+    r"sections|parts|seções|secções|parties)\b(\s*:)?", re.I)
+_OPENING_CUE = re.compile(r"\b(introducci[óo]n|introduction|introdu[çc][ãa]o)\b", re.I)
+_CLOSING_CUE = re.compile(r"\b(conclusi[óo]n|conclusion|conclus[ãa]o)\b", re.I)
+MAX_REQUESTED_SECTIONS = 8
 _HEADING_LINE = re.compile(r"^\s*(#{1,6}\s+.*|\*\*[^*]{1,120}\*\*\s*:?)\s*$")
 
 
@@ -80,8 +90,35 @@ class Outline:
 
 
 # -- outline -----------------------------------------------------------------------
-def outline_prompt(prompt: str, lang: str, target_words: int, max_sections: int) -> str:
+def requested_sections(prompt: str) -> int | None:
+    """The number of prose sections the request asks for, or ``None``.
+
+    "una introducción, tres secciones y una conclusión" → 5: the opening and
+    the closing are named apart from the three. "en tres secciones:
+    introducción, desarrollo y conclusión" → 3: the colon introduces the
+    sections themselves. P3d.2 (22 Oct 2026): the report asked for an
+    introduction, three sections and a conclusion and the outline had four.
+    """
+    match = _SECTION_COUNT.search(prompt or "")
+    if not match:
+        return None
+    word = match.group(1).lower()
+    n = int(word) if word.isdigit() else _NUMBER_WORDS.get(word, 0)
+    if n < 1:
+        return None
+    if not match.group(2):
+        n += int(bool(_OPENING_CUE.search(prompt))) + int(bool(_CLOSING_CUE.search(prompt)))
+    return n if MIN_SECTIONS <= n <= MAX_REQUESTED_SECTIONS else None
+
+
+def outline_prompt(prompt: str, lang: str, target_words: int, max_sections: int,
+                   sections: int | None = None) -> str:
     language = LANGUAGE_NAMES.get(lang, "the language of the request")
+    count = (f"- Exactly {sections} sections (a table section, if any, is extra), as "
+             f"the request asks; their words add up to about {target_words}.\n"
+             if sections else
+             f"- {MIN_SECTIONS} to {max_sections} sections; their words add up to about "
+             f"{target_words}.\n")
     return (
         "You are planning a long text before it is written. Read the request and "
         "return ONLY a JSON object, with no commentary and no code fence.\n\n"
@@ -94,8 +131,7 @@ def outline_prompt(prompt: str, lang: str, target_words: int, max_sections: int)
         '"must_include": ["explicit requirement of the request that belongs here"], '
         '"kind": "prose"}]}\n\n'
         "Rules:\n"
-        f"- {MIN_SECTIONS} to {max_sections} sections; their words add up to about "
-        f"{target_words}.\n"
+        + count +
         "- The first section opens the text; the last section closes it.\n"
         "- Put each explicit requirement of the request (people, how to open, tables, "
         "examples, how to close) in the must_include of the one section where it "
@@ -276,10 +312,14 @@ def make_outline(prompt: str, contract, lang: str, target_words: int, backend,
     """Outline from the local model, or the deterministic fallback."""
     errors: list[str] = []
     outline = None
+    wanted = requested_sections(prompt)
+    if wanted:
+        max_sections = max(max_sections, wanted + 1)       # + a table section
     # Two attempts: the second at temperature 0 (a malformed outline is
     # usually a sampling accident, not a misunderstanding of the request).
     for temperature in ((0.2, 0.0) if backend is not None else ()):
-        raw = backend.generate(outline_prompt(prompt, lang, target_words, max_sections),
+        raw = backend.generate(outline_prompt(prompt, lang, target_words, max_sections,
+                                              wanted),
                                max_tokens=OUTLINE_MAX_TOKENS,
                                temperature=temperature) or ""
         if not raw.strip():
@@ -292,14 +332,67 @@ def make_outline(prompt: str, contract, lang: str, target_words: int, backend,
         except (ValueError, json.JSONDecodeError) as exc:
             errors.append(str(exc)[:160])
     if outline is None:
-        return fallback_outline(prompt, contract, lang, target_words,
-                                "; ".join(errors) or "no local model for the outline")
+        outline = fallback_outline(prompt, contract, lang, target_words,
+                                   "; ".join(errors) or "no local model for the outline")
+        _ensure_section_count(outline, wanted, lang, target_words)
+        return outline
     outline.errors = errors                       # recovered on the retry
     if not outline.topic:
         outline.topic = topic_from(getattr(contract, "objective", "") or "")
     _ensure_table(outline, prompt, lang, target_words, max_sections)
+    _ensure_section_count(outline, wanted, lang, target_words)
     _ensure_request_requirements(outline, prompt)
     return outline
+
+
+def _ensure_section_count(outline: Outline, wanted: int | None, lang: str,
+                          target_words: int) -> None:
+    """Give the outline the number of prose sections the request asked for.
+
+    The opening and the closing are kept. Extra middle sections are folded
+    into the section before them (their key points and requirements travel
+    with them); missing ones are added before the closing, each on an angle
+    the outline does not already have. Table sections are not counted.
+    """
+    if not wanted:
+        return
+    prose = [i for i, sec in enumerate(outline.sections) if sec.kind != "table"]
+    before = len(prose)
+    if before == wanted or before < 2:
+        return
+    while len(prose) > wanted and len(prose) > 2:
+        middle = prose[1:-1]
+        drop = min(middle, key=lambda i: outline.sections[i].words)
+        into = prose[prose.index(drop) - 1]
+        gone, keep = outline.sections[drop], outline.sections[into]
+        keep.key_points = (keep.key_points + [gone.heading] + gone.key_points)[:6]
+        keep.must_include = (keep.must_include + gone.must_include)[:5]
+        outline.sections.pop(drop)
+        prose = [i for i, sec in enumerate(outline.sections) if sec.kind != "table"]
+    s = _FALLBACK.get(lang, _FALLBACK["en"])
+    angles = list(_ANGLES.get(lang, _ANGLES["en"]))
+    taken = " ".join(sec.heading + " " + sec.purpose for sec in outline.sections).casefold()
+    fresh = [a for a in angles if a.split(",")[0].casefold() not in taken]
+    added = 0
+    while len(prose) < wanted:
+        added += 1
+        angle = fresh.pop(0) if fresh else None
+        heading = (angle.split(",")[0][:1].upper() + angle.split(",")[0][1:]
+                   if angle else s[2].format(n=added))
+        section = Section(heading, s[3].format(a=angle or outline.topic or heading), 1)
+        first_table = next((i for i, sec in enumerate(outline.sections)
+                            if sec.kind == "table" and i > 0), None)
+        at = first_table if first_table is not None else prose[-1]
+        outline.sections.insert(min(at, prose[-1]), section)
+        prose = [i for i, sec in enumerate(outline.sections) if sec.kind != "table"]
+    middle_words = [outline.sections[i].words for i in prose[1:-1] if outline.sections[i].words > 1]
+    for i in prose:
+        if outline.sections[i].words <= 1:
+            outline.sections[i].words = (round(sum(middle_words) / len(middle_words))
+                                         if middle_words else 100)
+    _rescale(outline.sections, target_words)
+    outline.adjustments.append(
+        f"section count set to the {wanted} the request asks for (outline had {before})")
 
 
 def _closing_sentences(prompt: str) -> list[str]:
