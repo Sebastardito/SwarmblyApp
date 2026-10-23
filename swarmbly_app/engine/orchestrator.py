@@ -390,11 +390,14 @@ class Orchestrator:
             objective = (outline.title or outline.topic or objective)[:240]
         plans: dict[str, PacketPlan] = {}
         gammas: dict[str, dict[str, Any]] = {}
+        evidence_blocks, evidence_report = self._evidence(plan, path, lang, lane, cfg)
         for task in plan.tasks:
             level_no, index = positions[task.task_id]
             plans[task.task_id] = PacketPlan(
                 task_id=task.task_id, wire_task_id="", level=level_no, index=index,
-                instruction=localise_instruction(task.instruction, lang, path),
+                instruction=localise_instruction(
+                    _with_block(task.instruction, evidence_blocks.get(task.task_id, "")),
+                    lang, path),
                 consumes=bool(consumed[task.task_id]),
                 depends_on=tuple(task.depends_on), lane=lane)
             gammas[task.task_id] = gamma_for(contract, objective, task.instruction,
@@ -708,6 +711,7 @@ class Orchestrator:
             "rejected_quality": scheduler.rejected,
             "local_fallback_tasks": sorted(local_fallbacks),
             "local_fallback_rejected": sorted(set(local_rejected)),
+            "evidence": evidence_report,
             "tie_breaks": tie_breaks,
             "timeouts": scheduler.timeouts,
             "bytes": {"out": sum(a["bytes_out"] for a in attempts),
@@ -829,6 +833,37 @@ class Orchestrator:
             text = "\n".join(resolved[t.task_id]["text"].strip() for t in ordered)
             return text, seams, policy
         return assembly.text, seams, policy
+
+    @staticmethod
+    def _evidence(plan, path: str, lang: str, lane: str, cfg: dict[str, Any]):
+        """Public evidence per fragment (P2 prototype, ``evidence.enabled``).
+
+        Only for enumerated batches of a PUBLIC request; only item texts are
+        sent to the provider. Returns ``({task_id: block}, report)``.
+        """
+        ev_cfg = cfg.get("evidence") or {}
+        if not ev_cfg.get("enabled"):
+            return {}, None
+        if path != "enumerated":
+            return {}, {"skipped": "not an enumerated batch"}
+        if lane != "PUBLIC":
+            return {}, {"skipped": f"lane {lane}: nothing leaves for a public lookup"}
+        from . import evidence as ev
+        lang_ = lang if lang in ev.SUPPORTED_LANGS else "en"
+        provider = ev.WikipediaEvidence(lang=lang_,
+                                        timeout_s=float(ev_cfg.get("timeout_s", 4.0)),
+                                        max_chars=int(ev_cfg.get("max_chars", 220)))
+        items_by_task = {t.task_id: _item_texts(t.instruction) for t in plan.tasks}
+        all_items = {n: text for items in items_by_task.values() for n, text in items.items()}
+        started = time.monotonic()
+        found, report = ev.gather(all_items, provider, int(ev_cfg.get("max_items", 24)))
+        report["ms"] = int((time.monotonic() - started) * 1000)
+        blocks = {}
+        for task_id, items in items_by_task.items():
+            block = ev.render({n: found[n] for n in items if n in found}, lang_)
+            if block:
+                blocks[task_id] = block
+        return blocks, report
 
     def _local_fallback(self, task_id: str, message: dict[str, Any], max_tokens: int,
                         reason: str):
@@ -1248,6 +1283,18 @@ class _ItemCheck:
             # preview (P3h.1: "1. 5. sol - sun …" read as nothing).
             out += f"; raw {ascii((text or '')[:48])}"
         return out
+
+
+def _with_block(instruction: str, block: str) -> str:
+    """The fragment's items, then an evidence block (before the directive
+    that ``localise_instruction`` appends)."""
+    if not block:
+        return instruction
+    from .packets import UPSTREAM_INTEGRATION_SUFFIX
+    text = instruction
+    if text.endswith(UPSTREAM_INTEGRATION_SUFFIX):
+        text = text[: -len(UPSTREAM_INTEGRATION_SUFFIX)]
+    return f"{text.rstrip()}\n\n{block}"
 
 
 def _no_answer(n: int, item: str, lang: str | None) -> str:

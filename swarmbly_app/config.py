@@ -97,6 +97,15 @@ DEFAULTS: dict[str, Any] = {
         "learning_enabled": False,    # I8: nothing trains without permission
         "capsules_enabled": False,
     },
+    # P2 prototype: public evidence for batch items (only item texts are sent
+    # to the provider, only for PUBLIC requests). Off until the user enables it.
+    "evidence": {
+        "enabled": False,
+        "provider": "wikipedia",
+        "timeout_s": 4.0,
+        "max_chars": 220,
+        "max_items": 24,
+    },
     "permissions": {
         "lan_discovery": None,        # None = not asked yet; True/False = answer
         "internet": None,
@@ -237,6 +246,9 @@ _RANGES = {
     "swarm.composer_length_factor": (0.3, 1.5),
     "swarm.min_model_params_b": (0.0, 100.0),
     "swarm.min_items_per_fragment": (1, 50),
+    "evidence.timeout_s": (0.5, 30.0),
+    "evidence.max_chars": (60, 1000),
+    "evidence.max_items": (1, 100),
     "log_retention_days": (1, 3650),
 }
 # Never changeable from the browser: binding the admin API elsewhere is a

@@ -162,6 +162,22 @@ Windows, Debian; 0.5 B to 8 B models)
 - From P3l (23 October 2026): batch answers given as a Markdown table whose
   first cell is the item number ("| 7 | Pingüino | Ave |") are read.
 
+**Public evidence for batch items (P2 prototype, off by default)**
+- `evidence.enabled` (default off): for an enumerated batch of a PUBLIC
+  request, items that name something (several words, or capitalised) are
+  looked up on Wikipedia in the request's language; the first two sentences
+  of the lead are added to that item's fragment under "Contexto público
+  (Wikipedia)…; úsalo solo si es pertinente". Only item texts are sent to
+  the provider — never the request — and nothing is sent for SENSITIVE or
+  SANITISABLE requests.
+- A result is used only if its title or lead shares a word with the item
+  (titles are often scientific names); disambiguation pages are skipped.
+- `evidence` in the request metadata: items queried, sources used (title
+  and URL, for attribution), errors and time.
+- Motivation: several models agreed on the same wrong answer ("piquero →
+  pez", "pingüino → mamífero"), which no vote can correct. Whether the
+  evidence helps is measured in a preregistered round, not assumed.
+
 A single composition of a stated length (an essay, a speech, a report of N
 words) is no longer sent whole to one model or to whole-request replicas: the
 **local model plans it** and the swarm writes it section by section.
