@@ -167,3 +167,47 @@ def test_concurrency_refusal_marks_the_worker_busy(monkeypatch):
     out = asyncio.run(s.run_task("t0", lambda n, f, m=None: {"attempt_id": f"a{n}"}, 100))
     assert out[0].text == "ok" and speed.busy("a")
     assert [x.node_id for x in s.attempts] == ["a", "b"]      # not a, a, a, b
+
+
+def test_cancelled_slow_attempts_teach_a_floor_and_rank_the_node_lower(monkeypatch):
+    """P3f.1: the old Mac's attempts were always cancelled, never learned."""
+    import asyncio
+    import swarmbly_app.engine.scheduler as sched
+    monkeypatch.setattr(sched, "verify_result", lambda *x: "")
+    monkeypatch.setattr(sched, "MIN_HEDGE_S", 0.05)
+
+    class Nodes(_Nodes):
+        async def dispatch_async(self, node_id, message, timeout_s):
+            await asyncio.sleep(3 if node_id == "old" else 0.0)
+            return {"type": "result", "attempt_id": message["attempt_id"], "text": "ok",
+                    "profile": {}, "telemetry": {}}
+
+    old = _peer("old", [("phi3", "phi3.5:3.8b")])
+    new = _peer("new", [("gemma2", "gemma2:2b")])
+    speed = SpeedStats()
+    s = Scheduler(Nodes([old, new]), _Bus(), "r", k_min=1, k_max=2, max_concurrency=4,
+                  timeout_s=10, hedge_fallback_s=0.2, latency=LatencyStats(), speed=speed)
+    asyncio.run(s.run_task("t0", lambda n, f, m=None: {"attempt_id": f"a{n}"}, 100))
+    assert [a.status for a in s.attempts] == ["cancelled_slow", "accepted"]
+    key = LatencyStats.key("generate", 100)
+    assert speed.expected_elapsed("old", "phi3.5:3.8b", key) >= 0.2
+    assert speed.busy("old")
+    s2 = Scheduler(Nodes([old, new]), _Bus(), "r", k_min=1, k_max=2, max_concurrency=4,
+                   timeout_s=10, hedge_fallback_s=0.2, latency=LatencyStats(), speed=speed)
+    speed.record_busy("old", 0)
+    assert s2._select(set(), set(), set(), max_tokens=100)[0].node_id == "new"
+
+
+def test_a_worker_without_backend_is_a_last_resort():
+    """P3f.1: the old Mac had no reachable Ollama and was picked first anyway."""
+    a = _peer("a", [("phi3", "phi3.5:3.8b")])
+    b = _peer("b", [("gemma2", "gemma2:2b")])
+    speed = SpeedStats()
+    speed.record_unavailable("a")
+    s = Scheduler(_Nodes([a, b]), _Bus(), "r", k_min=2, k_max=3, max_concurrency=4,
+                  timeout_s=60, hedge_fallback_s=30, latency=LatencyStats(), speed=speed)
+    # even with "b" already used for this task, "a" stays last
+    assert s._select(set(), set(), set(), max_tokens=300)[0].node_id == "b"
+    assert s._select({("b", "gemma2")}, {"gemma2"}, {"b"}, max_tokens=300)[0].node_id == "a"
+    speed.record_success("a")
+    assert not speed.unavailable("a")

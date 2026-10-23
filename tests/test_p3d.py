@@ -192,3 +192,18 @@ def test_unrequested_table_is_removed_and_count_kept():
     assert [s.kind for s in o.sections] == ["prose"] * 5
     assert "costos" in o.sections[2].key_points
     assert any("table section removed" in a for a in o.adjustments)
+
+
+def test_outside_the_band_the_closest_length_wins(app_state):
+    """P3f.2: 195 and 83 words for a 144-word section; the 83 was chosen."""
+    from swarmbly_v0 import HashEmbedder
+    from swarmbly_app.engine.orchestrator import Orchestrator
+    from swarmbly_app.engine.scheduler import Replica
+    long_ = "El agua de los páramos andinos alimenta ríos y ciudades. " * 19   # ~190
+    short = "El agua de los páramos andinos alimenta ríos. " * 10              # ~80
+    orch = Orchestrator(app_state.nodes, app_state.bus, None, app_state.config.all)
+    out = orch._resolve("t0", [Replica(short, "n1", "qwen2", "q", 5),
+                               Replica(long_, "n2", "phi3", "p", 6)],
+                        build_contract(REPORT_ES).contract, HashEmbedder(),
+                        policy="whole", lang="es", target_words=144)
+    assert out["text"] == long_

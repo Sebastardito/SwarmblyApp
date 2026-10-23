@@ -86,6 +86,15 @@ Windows, Debian; 0.5 B to 8 B models)
     answer; …") is removed from the item list;
   - a table section the request did not ask for is removed from the
     outline.
+- From P3f (same network, 22 October 2026):
+  - a worker that answers "backend unavailable" (its Ollama is down) is a
+    last resort for a minute, before diversity of machines and families;
+  - an attempt cancelled as slow teaches a floor for its node and model and
+    marks the node busy for 8 s (a slow CPU may not stop mid-prompt); a
+    model whose learned time reaches the hedge fallback counts as too slow;
+  - composition: outside the ±30 % band the replica closest to the
+    section's target wins (195 and 83 words for 144: the 83 was chosen);
+    table sections have no word target.
 
 A single composition of a stated length (an essay, a speech, a report of N
 words) is no longer sent whole to one model or to whole-request replicas: the

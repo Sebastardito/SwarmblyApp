@@ -54,6 +54,7 @@ class SpeedStats:
 
     FAILURE_MEMORY_S = 300.0
     BUSY_BACKOFF_S = 15.0
+    UNAVAILABLE_S = 60.0
 
     def __init__(self, alpha: float = 0.5):
         self.alpha = alpha
@@ -61,6 +62,7 @@ class SpeedStats:
         self._elapsed: dict[tuple[str, str, str], float] = {}
         self._failed_at: dict[str, float] = {}
         self._busy_until: dict[str, float] = {}
+        self._unavailable_until: dict[str, float] = {}
 
     def observe_elapsed(self, node_id: str, model: str, key: str, seconds: float) -> None:
         """Time from sending an attempt to its result, per (node, model, task
@@ -72,6 +74,16 @@ class SpeedStats:
             old = self._elapsed.get(k)
             self._elapsed[k] = seconds if old is None else (
                 (1 - self.alpha) * old + self.alpha * seconds)
+
+    def observe_elapsed_floor(self, node_id: str, model: str, key: str,
+                              seconds: float) -> None:
+        """An attempt cancelled as slow after ``seconds``: it needs at least
+        that long. Without this a node that never finishes is never learned
+        (P3f.1, 22 Oct 2026: the old Mac's attempts were all cancelled, so
+        every new one waited for the 30 s fallback)."""
+        if seconds > 0:
+            k = (node_id, model, key)
+            self._elapsed[k] = max(self._elapsed.get(k, 0.0), seconds)
 
     def expected_elapsed(self, node_id: str, model: str, key: str) -> float | None:
         return self._elapsed.get((node_id, model, key))
@@ -85,6 +97,18 @@ class SpeedStats:
     def record_success(self, node_id: str) -> None:
         self._failed_at.pop(node_id, None)
         self._busy_until.pop(node_id, None)
+        self._unavailable_until.pop(node_id, None)
+
+    def record_unavailable(self, node_id: str) -> None:
+        """The worker answered that it has no inference backend (its Ollama
+        is down). It cannot answer anything, so for a minute it is chosen
+        only if no other worker is left (P3f.1, 22 Oct 2026: the old Mac
+        failed this way five times in one batch, each time picked first as
+        the "distinct machine")."""
+        self._unavailable_until[node_id] = time.monotonic() + self.UNAVAILABLE_S
+
+    def unavailable(self, node_id: str) -> bool:
+        return self._unavailable_until.get(node_id, 0.0) > time.monotonic()
 
     def record_busy(self, node_id: str, seconds: float | None = None) -> None:
         """The worker is still busy with work it was given and gave up on:
@@ -158,6 +182,7 @@ class LatencyStats:
 
 
 CANCEL_GRACE_S = 2.0   # seconds a worker keeps its slot after a timeout/cancel
+CANCEL_BUSY_S = 8.0    # a slow attempt cancelled: other requests avoid the node
 
 
 @dataclass
@@ -301,8 +326,14 @@ class Scheduler:
             from .capability import rank_params
             estimate = self.speed.estimate_s(
                 peer.node_id, model, max_tokens if max_tokens is not None else self._max_tokens)
-            too_slow = estimate is not None and estimate > 0.9 * self.timeout_s
-            key = (family in used_families,           # diversity first (MUST)
+            expected = self.speed.expected_elapsed(
+                peer.node_id, model, LatencyStats.key(self.kind, max_tokens
+                                                      if max_tokens is not None
+                                                      else self._max_tokens))
+            too_slow = ((estimate is not None and estimate > 0.9 * self.timeout_s)
+                        or (expected is not None and expected >= self.hedge_fallback_s))
+            key = (self.speed.unavailable(peer.node_id),   # no backend: last resort
+                   family in used_families,           # diversity first (MUST)
                    peer.node_id in used_nodes,         # then distinct machines
                    self._load[peer.node_id] + peer.tasks_inflight
                    + (self._capacity(peer) if busy else 0),
@@ -429,6 +460,14 @@ class Scheduler:
             self._load[attempt.node_id] -= 1
             self._pair_load[(attempt.node_id, attempt.family)] -= 1
             attempt.status = "cancelled_slow"   # slow, not dishonest (SPEC §11.4)
+            if attempt.started_at is not None:
+                ran = time.monotonic() - attempt.started_at
+                self.speed.observe_elapsed_floor(attempt.node_id, attempt.model,
+                                                 attempt.latency_key, ran)
+                if ran >= MIN_HEDGE_S:
+                    # It may keep its slot while it stops (a slow CPU cannot
+                    # stop mid prompt): P3f.1, refused 84 ms later.
+                    self.speed.record_busy(attempt.node_id, CANCEL_BUSY_S)
             self._event(attempt, "cancelled_slow")
         if not accepted and rejected:
             # Degraded, but an answer: the attempts say so ("degraded").
@@ -505,6 +544,8 @@ class Scheduler:
                 attempt.note = str(getattr(exc, "detail", "") or exc)[:160]
                 if attempt.code in ("E_EXECUTION", "E_DEADLINE", "E_TRANSPORT"):
                     self.speed.record_failure(node_id)
+                if "backend unavailable" in attempt.note.lower():
+                    self.speed.record_unavailable(node_id)
                 if attempt.code == "E_DEADLINE" or (
                         attempt.code == "E_POLICY" and "concurrency" in attempt.note):
                     self.speed.record_busy(node_id)

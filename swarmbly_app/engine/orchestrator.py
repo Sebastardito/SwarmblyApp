@@ -522,7 +522,9 @@ class Orchestrator:
                            if path == "enumerated" else None),
                     required=required_by_task.get(task_id),
                     target_words=(outline.sections[_order(task_id)].words
-                                  if outline is not None else None)))
+                                  if outline is not None
+                                  and outline.sections[_order(task_id)].kind != "table"
+                                  else None)))
             resolved[task_id] = outcome
             carries[task_id] = planner.summarize_fragment(outcome["text"], typed=True)
             return outcome
@@ -1015,8 +1017,9 @@ def _select_whole(replicas, meta, embedder, lang: str | None,
                   required: list[str] | None = None, target_words: int | None = None):
     """Pick one complete replica: request language, then the most section
     requirements met (composition: e.g. the presenter's name), then not
-    truncated, then within ±30 % of the section's word target, then the
-    document medoid (highest mean cosine to the others).
+    truncated, then within ±30 % of the section's word target (outside it,
+    the closest; tables have no word target), then the document medoid
+    (highest mean cosine to the others).
 
     The length term (P3d.2, 22 Oct 2026): with the medoid alone the
     Galápagos speech came out 25 % short and the water-cycle article 29 %
@@ -1035,10 +1038,14 @@ def _select_whole(replicas, meta, embedder, lang: str | None,
     lowered = [r.text.casefold() for r in replicas]
     met = [sum(1 for key in (required or []) if key in lowered[i]) for i in range(k)]
     words = [len(r.text.split()) for r in replicas]
-    fits = [(abs(words[i] - target_words) <= LENGTH_TOLERANCE * target_words)
-            if target_words else True for i in range(k)]
+    error = [abs(words[i] - target_words) / target_words if target_words else 0.0
+             for i in range(k)]
+    fits = [e <= LENGTH_TOLERANCE for e in error]
+    # Within the band length is not a criterion; outside it the closer wins
+    # (P3f.2: 195 and 83 words for a 144-word section, the 83 was chosen).
     keys = [((langs[i] == lang) if lang else True, met[i], not meta[i]["truncated"],
-             fits[i], centrality[i], -int(replicas[i].elapsed_ms or 0)) for i in range(k)]
+             -(0.0 if fits[i] else error[i]), centrality[i],
+             -int(replicas[i].elapsed_ms or 0)) for i in range(k)]
     chosen = max(range(k), key=lambda i: keys[i])
     ranking = sorted(range(k), key=lambda i: keys[i], reverse=True)
     return chosen, {
