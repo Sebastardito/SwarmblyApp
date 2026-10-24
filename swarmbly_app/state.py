@@ -153,7 +153,26 @@ class AppState:
         cfg = self.config.all().get("lce") or {}
         return self.lce.retrieve(query, k=int(cfg.get("retrieval_k", 4)),
                                  extra_dirs=cfg.get("sources_dirs") or [],
-                                 expansion=expansion)
+                                 expansion=expansion,
+                                 embed=self._embed if cfg.get("dense_retrieval", True) else None)
+
+    def _embed(self, texts: list[str], kind: str) -> list[list[float]]:
+        """Vectors from the local embedding model (Ollama /api/embed); local only."""
+        import json as _json
+        import urllib.request
+        model_cfg = self.config.all().get("model") or {}
+        name = model_cfg.get("embed_model") or "nomic-embed-text"
+        prefix = ""
+        if "nomic" in name:          # nomic-embed-text expects task prefixes
+            prefix = "search_query: " if kind == "query" else "search_document: "
+        url = (model_cfg.get("backend_url") or self._ollama_url()).rstrip("/")
+        url = url[:-3] if url.endswith("/v1") else url
+        req = urllib.request.Request(
+            url + "/api/embed",
+            data=_json.dumps({"model": name, "input": [prefix + t for t in texts]}).encode(),
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=120) as resp:   # noqa: S310 (local server)
+            return _json.loads(resp.read().decode())["embeddings"]
 
     # -- P2P lifecycle -----------------------------------------------------------
     def start_p2p(self) -> None:

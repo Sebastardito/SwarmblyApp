@@ -267,3 +267,31 @@ def test_fusion_model_writes_only_fused_answers_and_expansion_uses_the_default(a
 def test_reasoning_output_is_stripped_from_the_expansion():
     e = parse_expansion("<think>let me see</think>mockingbird, sample || San Cristobal mockingbird")
     assert e.keywords.startswith("mockingbird") and e.entities == ["San Cristobal mockingbird"]
+
+
+def test_hybrid_retrieval_brings_a_semantically_close_long_paragraph(app_state):
+    filler = " ".join(f"word{i}" for i in range(80))
+    _write(app_state, "a.md", f"Champion and Gardner came from a larger population. {filler}\n\n"
+           "Champion Gardner Champion Gardner Champion Gardner, notes listed here today.\n\n"
+           "Champion islet notes about weather and plants written by the field team.\n\n"
+           "Gardner islet notes about weather and rocks written by the field team.")
+    calls = []
+
+    def embed(texts, kind):
+        calls.append(kind)
+        # toy embedding: 1 on axis 0 if the text speaks of an ancestral/larger population
+        return [[1.0, 0.0] if ("larger population" in t or "ancestral" in t) else [0.0, 1.0]
+                for t in texts]
+    hits = app_state.lce.retrieve("Champion Gardner ancestral", k=2, embed=embed)
+    assert any(h["text"].startswith("Champion and Gardner came from") for h in hits)
+    assert "query" in calls
+    plain = app_state.lce.retrieve("Champion Gardner ancestral", k=2)
+    assert not any(h["text"].startswith("Champion and Gardner came from") for h in plain)
+
+
+def test_hybrid_falls_back_to_bm25_when_embedding_fails(app_state):
+    _write(app_state, "a.md", "The Supernova assembler built the reference genome of the species.")
+
+    def embed(texts, kind):
+        raise OSError("no model")
+    assert app_state.lce.retrieve("Supernova genome", embed=embed)[0]["source"] == "a.md"

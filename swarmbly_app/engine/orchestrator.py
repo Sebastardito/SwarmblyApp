@@ -990,11 +990,8 @@ class Orchestrator:
 
     @staticmethod
     def _lane(text: str) -> str:
-        try:
-            from swarmbly_lce.projection import HeuristicClassifier
-            return HeuristicClassifier().classify(text).name
-        except Exception:
-            return "SENSITIVE"  # cannot classify → never leave the device
+        from .lane import classify
+        return classify(text)
 
     @staticmethod
     def _route(text: str):

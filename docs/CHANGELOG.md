@@ -329,6 +329,18 @@ Windows, Debian; 0.5 B to 8 B models)
   A batch of years stayed local because the lane classifier marked it
   SENSITIVE ("death of Lonesome George"): a false positive upstream.
 
+- Hybrid retrieval (`lce.dense_retrieval`, on): BM25 is fused (reciprocal
+  ranks) with vectors from the local embedding model (`model.embed_model`,
+  Ollama `/api/embed`, cached per paragraph). In P2e the right paragraph was
+  often 6th–26th by BM25 (a long paragraph loses to short ones sharing a
+  name). Any failure falls back to BM25 for five minutes.
+- Lane refinement: "legal", "abogado", "salud", "médico" (and English) put a
+  request in the SENSITIVE lane only with a first-person marker in the same
+  clause ("mi abogado", "tengo un problema de salud"); strong terms
+  (password, card, IBAN, passport, diagnosis, salary, debt) stay SENSITIVE
+  anywhere. "Inicio de la protección legal del lobo peletero" kept a public
+  batch off the network (P2e round 8b).
+
 **LCE C1: retrieval over your sources, for local answers (P2b)**
 - With LCE enabled at C1, answers produced on this device get the most
   relevant paragraphs of the user's sources (LCE source folder plus

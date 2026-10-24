@@ -101,6 +101,9 @@ DEFAULTS: dict[str, Any] = {
         "query_expansion": True,
         "expansion_model": "",        # "" = the default model (model.model_name)
         "retrieval_k": 4,
+        # Hybrid retrieval: BM25 fused with vectors from model.embed_model
+        # (local Ollama); falls back to BM25 alone if the model is missing.
+        "dense_retrieval": True,
     },
     # P2 prototype: public evidence for batch items (only item texts are sent
     # to the provider, only for PUBLIC requests). Off until the user enables it.

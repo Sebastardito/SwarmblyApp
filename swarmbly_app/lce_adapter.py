@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .paths import DataDirs
 
@@ -141,7 +141,9 @@ class LCEAdapter:
     # -- C1: retrieval over raw sources (WP LCE v0.2 §11.7–11.8, R13) ---------
     def retrieve(self, query: str, k: int = 4,
                  extra_dirs: list[str] | tuple[str, ...] = (),
-                 expansion: str = "") -> list[dict[str, Any]]:
+                 expansion: str = "",
+                 embed: Callable[[list[str], str], list[list[float]]] | None = None
+                 ) -> list[dict[str, Any]]:
         """Top paragraphs of the user's sources for ``query`` (local only).
 
         Sources are the LCE source space plus ``lce.sources_dirs``; files are
@@ -168,6 +170,10 @@ class LCEAdapter:
         # Paragraphs that only share function words ("de", "es") score far
         # below a real match: keep those within 35 % of the best one.
         top = ranked[0][1] if ranked else 0.0
+        if embed is not None:
+            fused = self._hybrid(spans, ranked, f"{query} {extra}", embed)
+            if fused:
+                ranked, top = fused, 0.0      # RRF scores: no BM25 floor
         hits, seen = [], set()
         per_file: dict[str, int] = {}
         for i, score in ranked:
@@ -184,6 +190,55 @@ class LCEAdapter:
             hit["score"] = round(score, 3)
             hits.append(hit)
         return hits
+
+    # -- hybrid retrieval (P2e follow-up) ----------------------------------------
+    def _hybrid(self, spans: list[dict[str, Any]], bm25: list[tuple[int, float]],
+                query: str, embed) -> list[tuple[int, float]]:
+        """Reciprocal-rank fusion of BM25 and dense similarity.
+
+        In P2e the right paragraph was often 6th–26th by BM25 (a long paragraph
+        loses to short ones sharing a name). Dense vectors from the local
+        embedding model (``model.embed_model``, via Ollama) rank by meaning; the
+        query is the question plus the added English terms. Vectors are cached
+        per paragraph text; any failure falls back to BM25 alone.
+        """
+        import math
+        import time as _time
+        if getattr(self, "_dense_off_until", 0.0) > _time.monotonic():
+            return []                  # the embedding model failed recently
+        cache = getattr(self, "_vec_cache", None)
+        if cache is None:
+            cache = self._vec_cache = {}
+        try:
+            missing = [s["text"] for s in spans if s["text"] not in cache]
+            for i in range(0, len(missing), 64):
+                batch = missing[i:i + 64]
+                for text, vec in zip(batch, embed(batch, "document")):
+                    cache[text] = vec
+            qv = embed([query[:2000]], "query")[0]
+        except Exception:
+            self._dense_off_until = _time.monotonic() + 300.0
+            return []
+
+        def norm(v):
+            n = math.sqrt(sum(x * x for x in v)) or 1.0
+            return [x / n for x in v]
+        qv = norm(qv)
+        sims = []
+        for i, s in enumerate(spans):
+            v = cache.get(s["text"])
+            if v is None:
+                continue
+            if not isinstance(v, tuple):
+                v = cache[s["text"]] = tuple(norm(v))
+            sims.append((sum(a * b for a, b in zip(qv, v)), i))
+        sims.sort(reverse=True)
+        score: dict[int, float] = {}
+        for rank, (i, _) in enumerate(bm25):
+            score[i] = score.get(i, 0.0) + 1.0 / (RRF_K + rank + 1)
+        for rank, (_, i) in enumerate(sims[:DENSE_CANDIDATES]):
+            score[i] = score.get(i, 0.0) + 1.0 / (RRF_K + rank + 1)
+        return sorted(score.items(), key=lambda x: -x[1])
 
     # -- personal glossary (P2e) ------------------------------------------------
     def glossary_terms(self, text: str,
@@ -291,6 +346,8 @@ SPAN_MAX_CHARS = 600
 RELATIVE_FLOOR = 0.35
 SHORT_BLOCK_CHARS = 60   # shorter blocks are headings ("NRGene Canada Inc.", "Methods")
 EXTRA_WEIGHT = 0.5       # weight of added query terms (model keywords, glossary)
+RRF_K = 60               # reciprocal-rank fusion constant
+DENSE_CANDIDATES = 40    # dense ranks that enter the fusion
 MAX_PER_FILE = 3         # passages per file in one answer (2 cut a needed third, round 4)
 _GLOSS_LINE = re.compile(r"^\s*[-*]?\s*([^=→#<>|]{2,80}?)\s*(?:=|→|->)\s*([^=→]{2,200})$")
 
