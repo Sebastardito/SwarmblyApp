@@ -233,6 +233,22 @@ class ChatService:
                             timeout_s=float(ev_cfg.get("timeout_s", 4.0)))
                     public_hits, public_report = public_evidence(entities, expansion, provider,
                                                                  known, user_text)
+            # P2e: an enumerated PUBLIC batch answered here (too small to
+            # fragment, or no workers) gets the same item evidence as fragments.
+            batch_report = None
+            routing_info = (routing_meta.get("routing") or {}) if routing_meta else {}
+            # Only when the request itself could have left (PUBLIC lane, tier
+            # allowing egress): a LOCAL tier or a sensitive lane sends nothing.
+            if (routing_info.get("lane") == "PUBLIC" and routing_info.get("remote_allowed")
+                    and not public_hits):
+                from .engine.evidence import local_batch
+                from .lang import detect_language
+                try:
+                    block, batch_report = local_batch(user_text, cfg, detect_language(user_text))
+                except Exception:
+                    block, batch_report = "", None
+                if block:
+                    context = [{"role": "system", "content": block}, *context]
             answer_model = model
             if public_hits and ev_cfg.get("fusion_model"):
                 # P2e: a larger local model writes only the answers that fuse the
@@ -269,6 +285,8 @@ class ChatService:
                 extra.setdefault("lce", {})["expansion"] = expansion.to_dict()
             if public_report is not None:
                 extra["evidence"] = public_report
+            elif batch_report is not None:
+                extra["evidence"] = batch_report
             if answer_model != model:
                 extra["answer_model"] = answer_model
             self._finish(request, result, note=local_reason, stages=routing_stages,

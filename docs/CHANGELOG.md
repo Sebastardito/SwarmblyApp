@@ -305,6 +305,22 @@ Windows, Debian; 0.5 B to 8 B models)
   keywords in 90 tokens (round 6, aborted), and the retrieval lost the
   English passages. Reasoning blocks are stripped from the expansion.
 
+- Shared network (round 7, LAN, five machines): the 16 personal questions
+  all stayed on this device (the router does not fragment single questions;
+  one was classified SENSITIVE), so the network changed nothing and no local
+  passage left. The public half sent as a batch (current IUCN category of
+  eight Galápagos species) was distributed, but the evidence did not help:
+  the Spanish Wikipedia articles carry no IUCN status, and the network
+  answered "Critically Endangered" for almost every species.
+- Batch evidence falls back to English Wikipedia when the article in the
+  request's language lacks the asked fact: the focus terms are translated
+  (`EN_FOCUS`), and an IUCN status sentence must name its assessor (IUCN,
+  Red List, BirdLife), so "more vulnerable to disease" is not taken as a
+  status.
+- An enumerated PUBLIC batch answered on this device (too small to fragment,
+  or no workers) gets the same item evidence as fragments, when the request
+  could have left (PUBLIC lane, tier allowing egress).
+
 **LCE C1: retrieval over your sources, for local answers (P2b)**
 - With LCE enabled at C1, answers produced on this device get the most
   relevant paragraphs of the user's sources (LCE source folder plus

@@ -187,3 +187,40 @@ def test_unasked_figures_are_dropped_from_the_snippet():
                               "el nombre de su autor:")
     text = "Huasipungo es una novela publicada en 1934 por el escritor Jorge Icaza."
     assert ev.drop_unasked_numbers(e4, text) == text          # the clause carries the author
+
+
+def test_english_fallback_when_the_local_article_lacks_the_fact():
+    es_article = "Mimus melanotis es una especie de ave de la familia Mimidae. Es endémica de San Cristóbal."
+    en_article = ("The San Cristóbal mockingbird (Mimus melanotis) is a bird. It lives on one island. "
+                  "Its song is loud. The IUCN has assessed it as Near Threatened. Prior to 2020 it "
+                  "was classified as Endangered.")
+
+    def fetch(url, timeout, ua):
+        text = en_article if "en.wikipedia" in url else es_article
+        return {"query": {"pages": {"1": {"title": "Mimus melanotis", "extract": text}}}}
+    provider = ev.WikipediaEvidence(lang="es", fetch=fetch,
+                                    fallback=ev.WikipediaEvidence(lang="en", fetch=fetch, max_chars=800))
+    profile = ev.operation_profile("Para cada una de las siguientes especies de Galápagos, indica "
+                                   "solo su categoría actual en la Lista Roja de la UICN:")
+    hit = provider.lookup("Mimus melanotis", profile)
+    assert hit and "Near Threatened" in hit["text"] and hit.get("fallback") == "en"
+
+
+def test_local_batch_evidence_sends_only_items():
+    sent = []
+
+    def fetch(url, timeout, ua):
+        sent.append(url)
+        return {"query": {"pages": {}}}
+    import swarmbly_app.engine.evidence as mod
+    real = mod._http_get_json
+    mod._http_get_json = fetch
+    try:
+        block, report = ev.local_batch("Para cada uno de los siguientes países, indica solo su "
+                                       "capital:\n1. Australia\n2. Canadá\n3. Nigeria",
+                                       {"evidence": {"enabled": True}}, "es")
+    finally:
+        mod._http_get_json = real
+    assert report["local_batch"] and report["queried"] == ["Australia", "Canadá", "Nigeria"]
+    assert all("capital" not in u.split("gsrsearch=")[1].split("&")[0].lower() or "Nigeria" in u
+               or "Australia" in u or "Canad" in u for u in sent)

@@ -850,9 +850,7 @@ class Orchestrator:
             return {}, {"skipped": f"lane {lane}: nothing leaves for a public lookup"}
         from . import evidence as ev
         lang_ = lang if lang in ev.SUPPORTED_LANGS else "en"
-        provider = ev.WikipediaEvidence(lang=lang_,
-                                        timeout_s=float(ev_cfg.get("timeout_s", 4.0)),
-                                        max_chars=int(ev_cfg.get("max_chars", 220)))
+        provider = ev.batch_provider(lang_, ev_cfg)
         items_by_task = {t.task_id: _item_texts(t.instruction) for t in plan.tasks}
         all_items = {n: text for items in items_by_task.values() for n, text in items.items()}
         started = time.monotonic()

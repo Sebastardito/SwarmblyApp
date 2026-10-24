@@ -190,6 +190,21 @@ def _focus_sentence(profile: OperationProfile, sentence: str) -> bool:
     return profile.wants_author and bool(stems & {_stem(a) for a in _AUTHOR})
 
 
+# Operation focus terms (folded, singular) → English words to look for in an
+# English article when the local-language article lacks the fact.
+EN_FOCUS = {
+    "uicn": "iucn threatened endangered vulnerable concern assessed",
+    "iucn": "iucn threatened endangered vulnerable concern assessed",
+    "categoria": "status", "conservacion": "conservation",
+    "estado": "status", "amenaza": "threatened", "capital": "capital", "simbolo": "symbol",
+    "autor": "author", "autora": "author", "ano": "year", "fecha": "year",
+    "poblacion": "population", "habitante": "population", "altitud": "elevation",
+    "altura": "height", "pai": "country", "continente": "continent", "idioma": "language",
+    "moneda": "currency", "fundacion": "founded", "descubrimiento": "discovered",
+}
+
+_IUCN_ANCHOR = re.compile(r"\b(IUCN|UICN|Red List|Lista Roja|BirdLife)\b", re.I)
+
 _NUMERIC_FOCUS = frozenset(_stem(_fold(w)) for w in (
     "año años fecha fechas número números cantidad población habitantes altura altitud "
     "longitud distancia superficie área edad temperatura precio peso masa duración "
@@ -236,6 +251,10 @@ class WikipediaEvidence:
     max_chars: int = 220
     user_agent: str = "SwarmblyApp (https://github.com/Sebastardito/SwarmblyApp)"
     fetch: Callable[[str, float, str], Any] | None = None   # injectable for tests
+    # P2e: when the article in ``lang`` lacks the asked fact (Spanish articles on
+    # Galápagos species carry no IUCN status), an English provider is asked for
+    # the sentences with the focus terms, translated by ``EN_FOCUS``.
+    fallback: "WikipediaEvidence | None" = None
 
     def url_for(self, query: str, sentences: int | None = 2, intro: bool = True) -> str:
         params = {"action": "query", "format": "json", "utf8": "1",
@@ -292,9 +311,39 @@ class WikipediaEvidence:
                 snippet = f"{first} {focus}"
                 if len(snippet) > self.max_chars:
                     snippet = self._around_focus(profile, focus)   # the asked-for fact
+            if not focus and not _focus_sentence(profile, first) and self.fallback is not None:
+                hit = self._fallback(item, profile)
+                if hit:
+                    return hit
             snippet = drop_unasked_numbers(profile, snippet)
             return self._hit(item, query, title, self._cut(snippet))
+        if self.fallback is not None:
+            return self._fallback(item, profile)
         return None
+
+    def _fallback(self, item: str, profile: OperationProfile) -> dict[str, Any] | None:
+        focus = sorted({w for f in profile.focus if f in EN_FOCUS for w in EN_FOCUS[f].split()})
+        if not focus:
+            return None
+        try:
+            hit = self.fallback.passages(item, focus, max_sentences=2)
+        except Exception:
+            return None
+        if not hit:
+            return None
+        sentences = _sentences(hit["text"])
+        stems = {_stem(f) for f in focus}
+        chosen = [x for x in sentences[2:] if {_stem(_fold(w)) for w in _WORD.findall(x)} & stems]
+        if "iucn" in focus:
+            # "vulnerable to disease" is not a status: an assessment needs its author
+            chosen = [x for x in chosen if _IUCN_ANCHOR.search(x)]
+        if not chosen:
+            return None
+        text = drop_unasked_numbers(profile, " ".join(chosen[:2]))
+        hit["text"] = text if len(text) <= max(self.max_chars, 320) else \
+            text[:320][: text[:320].rfind(" ")] + " …"
+        hit["fallback"] = self.fallback.lang
+        return hit
 
     def _around_focus(self, profile: OperationProfile, sentence: str) -> str:
         """A long sentence is cut around its first focus term, so the cut
@@ -404,3 +453,35 @@ def render(evidence: dict[int, dict[str, Any]], lang: str) -> str:
     for n, hit in sorted(evidence.items()):
         lines.append(f"- {hit['item']}: {hit['text']}")
     return "\n".join(lines)
+
+
+def batch_provider(lang: str, ev_cfg: dict[str, Any]) -> WikipediaEvidence:
+    """The batch provider, with an English fallback for other languages."""
+    timeout = float(ev_cfg.get("timeout_s", 4.0))
+    max_chars = int(ev_cfg.get("max_chars", 220))
+    fallback = None if lang == "en" else WikipediaEvidence(lang="en", timeout_s=timeout,
+                                                           max_chars=800)
+    return WikipediaEvidence(lang=lang, timeout_s=timeout, max_chars=max_chars,
+                             fallback=fallback)
+
+
+_NUMBERED = re.compile(r"^\s*[\[(]?(\d{1,3})[\]).:]\s+(.+?)\s*$", re.M)
+
+
+def local_batch(text: str, cfg: dict[str, Any], lang: str
+                ) -> tuple[str, dict[str, Any] | None]:
+    """P2e: evidence for an enumerated batch answered on this device (too small
+    to fragment, or no workers). Same rules as for fragments: only item texts are
+    sent. Returns (system block, report)."""
+    ev_cfg = cfg.get("evidence") or {}
+    items = {int(m.group(1)): m.group(2) for m in _NUMBERED.finditer(text or "")}
+    if not ev_cfg.get("enabled") or len(items) < 3:
+        return "", None
+    lang_ = lang if lang in SUPPORTED_LANGS else "en"
+    preamble = _NUMBERED.split(text, maxsplit=1)[0]
+    profile = operation_profile(preamble) if ev_cfg.get("operation_aware", True) else None
+    found, report = gather(items, batch_provider(lang_, ev_cfg),
+                           int(ev_cfg.get("max_items", 24)), profile)
+    report["local_batch"] = True
+    return render(found, lang_), report
+
