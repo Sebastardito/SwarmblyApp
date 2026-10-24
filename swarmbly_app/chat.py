@@ -52,6 +52,7 @@ class ChatService:
         self.retrieval_active: Callable[[], bool] = lambda: self.retriever is not None
         # P2e: the public provider for local answers (injectable for tests).
         self.public_provider: Any = None
+        self.glossary: Callable[[str], str] | None = None
         self._lock = threading.Lock()
 
     # -- conversations -------------------------------------------------------
@@ -206,8 +207,14 @@ class ChatService:
             public_report: dict[str, Any] | None = None
             if want_public and expansion is not None:
                 from .local_context import public_entities, public_evidence
+                known = ""
+                if self.glossary is not None:
+                    try:
+                        known = self.glossary(f"{user_text} {expansion.keywords}")
+                    except Exception:
+                        known = ""
                 entities = public_entities(user_text, expansion, sources,
-                                           int(ev_cfg.get("local_max_entities", 3)))
+                                           int(ev_cfg.get("local_max_entities", 3)), known)
                 if entities:
                     provider = self.public_provider
                     if provider is None:

@@ -161,7 +161,10 @@ class LCEAdapter:
         if cached is None or cached[0] != key:
             cached = self._index_cache = (key, _BM25([s.get("index") or s["text"] for s in spans]))
         index = cached[1]
-        ranked = index.search(f"{query} {expansion}".strip(), k * 2)
+        extra = f"{expansion} {self.glossary_terms(f'{query} {expansion}', extra_dirs)}"
+        # The user's own words weigh fully; added terms (model keywords,
+        # glossary equivalents) weigh half, so they widen without taking over.
+        ranked = index.search(query, k * 2, extra=extra, extra_weight=EXTRA_WEIGHT)
         # Paragraphs that only share function words ("de", "es") score far
         # below a real match: keep those within 35 % of the best one.
         top = ranked[0][1] if ranked else 0.0
@@ -178,6 +181,61 @@ class LCEAdapter:
             hits.append(hit)
         return hits
 
+    # -- personal glossary (P2e) ------------------------------------------------
+    def glossary_terms(self, text: str,
+                       extra_dirs: list[str] | tuple[str, ...] = ()) -> str:
+        """Equivalents from the user's glossary for terms present in ``text``.
+
+        A glossary is any source file named ``glosario*`` / ``glossary*`` with
+        lines ``term = equivalent, equivalent`` (also ``→`` or ``->``). It is the
+        user's own vocabulary ("cucuve = mockingbird, Mimus"), applied in both
+        directions; it bridges languages and local names that a small model does
+        not know. Glossary files are not retrieved as passages.
+        """
+        roots = [self.dirs.sources, *[Path(d).expanduser() for d in extra_dirs or ()]]
+        entries = self._glossary(roots)
+        if not entries:
+            return ""
+        have = set(_tokens(text))
+
+        def present(tok: str) -> bool:
+            # single long terms also match inflections: "muestrear" ~ "muestrearon"
+            return tok in have or (len(tok) >= 6 and any(h.startswith(tok) for h in have))
+        added: list[str] = []
+        for side_a, side_b in entries:
+            for left, right in ((side_a, side_b), (side_b, side_a)):
+                toks = _tokens(left)
+                if toks and all(present(t) for t in toks) and right not in added:
+                    added.append(right)
+        return " ".join(added)
+
+    def _glossary(self, roots: list[Path]) -> list[tuple[str, str]]:
+        import hashlib
+        cache = getattr(self, "_glossary_cache", None)
+        if cache is None:
+            cache = self._glossary_cache = {}
+        out: list[tuple[str, str]] = []
+        for root in roots:
+            if not root.is_dir():
+                continue
+            for path in sorted(root.rglob("*")):
+                if not (path.is_file() and _is_glossary(path)):
+                    continue
+                try:
+                    data = path.read_bytes()
+                except OSError:
+                    continue
+                key = (str(path), hashlib.sha256(data).hexdigest())
+                if key not in cache:
+                    pairs = []
+                    for line in data.decode("utf-8", "replace").splitlines():
+                        m = _GLOSS_LINE.match(line)
+                        if m:
+                            pairs.append((m.group(1).strip(), m.group(2).strip()))
+                    cache[key] = pairs
+                out.extend(cache[key])
+        return out
+
     def _spans(self, roots: list[Path]) -> list[dict[str, Any]]:
         import hashlib
         cache = getattr(self, "_span_cache", None)
@@ -189,6 +247,7 @@ class LCEAdapter:
                 continue
             for path in sorted(root.rglob("*")):
                 if (not path.is_file() or path.suffix.lower() not in SOURCE_SUFFIXES
+                        or _is_glossary(path)
                         or path.name == "README.md" and path.parent == self.dirs.sources
                         or any(p.startswith(".") for p in path.relative_to(root).parts)):
                     continue
@@ -218,6 +277,13 @@ SOURCE_SUFFIXES = frozenset({".md", ".txt", ".markdown", ".rst", ".org", ".csv"}
 SPAN_MAX_CHARS = 600
 RELATIVE_FLOOR = 0.35
 SHORT_BLOCK_CHARS = 60   # shorter blocks without a final period are headings
+EXTRA_WEIGHT = 0.5       # weight of added query terms (model keywords, glossary)
+_GLOSS_LINE = re.compile(r"^\s*[-*]?\s*([^=→#<>|]{2,80}?)\s*(?:=|→|->)\s*([^=→]{2,200})$")
+
+
+def _is_glossary(path: Path) -> bool:
+    return (path.suffix.lower() in SOURCE_SUFFIXES
+            and path.stem.lower().startswith(("glosario", "glossary", "glossaire", "glossário")))
 
 
 _SENTENCE_END = re.compile(r"(?<=[.!?;])\s+")
@@ -314,17 +380,20 @@ class _BM25:
             self.df.update(tf.keys())
         self.avg = sum(sum(tf.values()) for tf in self.tf) / max(1, len(self.tf))
 
-    def search(self, query: str, k: int) -> list[tuple[int, float]]:
-        q = list(dict.fromkeys(self._tok(query)))
+    def search(self, query: str, k: int, extra: str = "",
+               extra_weight: float = 0.5) -> list[tuple[int, float]]:
+        weights = {t: 1.0 for t in self._tok(query)}
+        for t in self._tok(extra):
+            weights.setdefault(t, extra_weight)
         n = len(self.tf)
         scored = []
         for i, tf in enumerate(self.tf):
             dl = sum(tf.values()) or 1
             s = 0.0
-            for t in q:
+            for t, w in weights.items():
                 if t in tf:
                     idf = self._log(1 + (n - self.df[t] + 0.5) / (self.df[t] + 0.5))
-                    s += idf * tf[t] * (self.k1 + 1) / (
+                    s += w * idf * tf[t] * (self.k1 + 1) / (
                         tf[t] + self.k1 * (1 - self.b + self.b * dl / (self.avg or 1)))
             if s > 0:
                 scored.append((i, s))

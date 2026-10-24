@@ -125,6 +125,10 @@ class AppState:
         self.chat.report_sink = self._auto_report
         self.chat.retriever = self._lce_retrieve
         self.chat.retrieval_active = self._lce_active
+        self.chat.glossary = lambda text: (
+            self.lce.glossary_terms(text, (self.config.all().get("lce") or {})
+                                    .get("sources_dirs") or [])
+            if self._lce_active() else "")
         from .doctor import Installer
         from .model_manager import OllamaModels
         self.installer = Installer(self.bus)

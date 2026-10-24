@@ -221,6 +221,17 @@ Windows, Debian; 0.5 B to 8 B models)
 - Query expansion (`lce.query_expansion`, on): the local model turns the
   question into English keywords and the public names it mentions (one short
   generation on this device); the keywords join the retrieval query.
+- Personal glossary: any source file named `glosario*` / `glossary*` with
+  lines `término = equivalent, equivalent` adds the equivalents of the terms
+  present in the question (both directions; long single terms also match
+  inflections, "muestrear" ~ "muestrearon"). It carries the user's own
+  vocabulary across languages ("cucuve = mockingbird, Mimus") where a 3B
+  model fails (it rendered "cucuve" as "cuckoo" and "rascón" as "rat" in a
+  trial). Glossary files are not retrieved as passages.
+- Added terms (model keywords, glossary equivalents) weigh half of the
+  question's own words in BM25, so they widen the search without taking it
+  over. The expansion prompt carries one worked example (a 3B model ignored
+  the format without it).
 - The index folds accents, drops function words (es/en/pt/fr) and plurals,
   and indexes each paragraph with its file path words, document title and
   nearest heading ("mi artículo de 2024 sobre el rascón" reaches that file);
@@ -231,7 +242,9 @@ Windows, Debian; 0.5 B to 8 B models)
   public evidence is on): up to `evidence.local_max_entities` (3) names are
   looked up on Wikipedia (`evidence.local_lang`, en): scientific names and
   the names the local model listed from the question, and as a bridge one
-  scientific name from the retrieved passages. Only names are sent, never the
+  scientific name from the retrieved passages; names listed by the model are
+  sent only when each of their words appears in the question, the passages
+  or the glossary equivalents. Only names are sent, never the
   question or a passage; the metadata lists each name and where it came
   from. The whole article is read and reduced to its first sentence plus the
   sentences carrying the question's terms (status sections sit outside the

@@ -64,8 +64,8 @@ def test_public_entities_come_from_the_question_or_species_names_in_passages():
                          "AcmeLabs."}]
     picked = public_entities("¿Qué parásito estudié en mi artículo de 2021?", exp, passages)
     names = [p["name"] for p in picked]
-    assert names == ["Galapagos", "Philornis downsi"]
-    assert picked[1]["from"].startswith("local passage")
+    assert names == ["Philornis downsi"]          # "Galapagos" is not in the question
+    assert picked[0]["from"].startswith("local passage")
     assert not any("AcmeLabs" in n or "AB1" in n for n in names)   # only scientific names cross
 
 
@@ -89,8 +89,8 @@ def test_passages_keep_first_sentence_and_focus_sentences_outside_the_intro():
 
 def test_local_answer_with_public_evidence_sends_only_names(app_state, fake_chat):
     chat, fake = fake_chat
-    _write(app_state, "tesis.md", "M. melanotis (IUCN: endangered) lives on San Cristobal; "
-           "Mimus melanotis was sequenced from sample AB1.")
+    _write(app_state, "tesis.md", "M. melanotis (IUCN: endangered), the San Cristobal "
+           "mockingbird; Mimus melanotis was sequenced from sample AB1.")
     app_state.config.update({"lce": {"enabled": True, "level": "C1"},
                              "evidence": {"enabled": True}})
     fake.reply = "IUCN, endangered, Mimus melanotis, mockingbird || San Cristobal mockingbird"
@@ -107,13 +107,13 @@ def test_local_answer_with_public_evidence_sends_only_names(app_state, fake_chat
     conv = chat.create_conversation(mode="local")
     q = "¿Qué categoría UICN da mi tesis a Mimus melanotis y cuál es la actual?"
     chat.send(conv["id"], q, mode="local", run_async=False)
-    assert asked == ["Mimus melanotis", "San Cristobal mockingbird"]
+    assert sorted(asked) == ["Mimus melanotis", "San Cristobal mockingbird"]
     assert all(q not in a for a in asked)
     system = [m["content"] for m in fake.calls[-1]["messages"] if m["role"] == "system"]
     assert any("[1] (tesis.md)" in s for s in system)
     assert any("[W1] (San Cristóbal mockingbird)" in s and "solo se enviaron" in s for s in system)
     meta = chat.get_messages(conv["id"])[-1]["meta"]
-    assert meta["evidence"]["queried"] == asked and meta["evidence"]["local_answer"]
+    assert sorted(meta["evidence"]["queried"]) == sorted(asked) and meta["evidence"]["local_answer"]
     assert meta["lce"]["expansion"]["entities"] == ["San Cristobal mockingbird"]
 
 
@@ -135,3 +135,23 @@ def test_no_public_lookup_when_evidence_is_off(app_state, fake_chat):
 def test_render_public_lists_what_was_sent():
     out = render_public([{"sent": "Mimus melanotis", "title": "T", "text": "x"}], "es")
     assert "solo se enviaron estos nombres: Mimus melanotis" in out and "[W1] (T) x" in out
+
+
+def test_model_names_are_sent_only_when_their_words_are_known():
+    exp = Expansion(keywords="", entities=["Galapagos rat", "Project Isabela"])
+    q = "¿Qué encontramos sobre el rascón de Galápagos y el Proyecto Isabela?"
+    passages = [{"text": "Goat eradication on Isabela helped the Galapagos rail; the project ended."}]
+    names = [p["name"] for p in public_entities(q, exp, passages)]
+    assert names == ["Project Isabela"]           # a 3B model's "rat" for "rascón" stays home
+
+
+def test_glossary_bridges_terms_and_is_not_a_passage(app_state):
+    _write(app_state, "glosario.md", "# Glosario\n\n- cucuve = mockingbird, Mimus\n"
+           "- tamaño poblacional efectivo = effective population size, Ne\n")
+    _write(app_state, "thesis.md", "The Champion mockingbird population has an effective "
+           "population size near 30.")
+    assert app_state.lce.glossary_terms("¿Qué tamaño poblacional efectivo tiene el cucuve?") == \
+        "mockingbird, Mimus effective population size, Ne"
+    hits = app_state.lce.retrieve("¿Qué tamaño poblacional efectivo tiene el cucuve de Champion?")
+    assert hits and hits[0]["source"] == "thesis.md"
+    assert all(h["source"] != "glosario.md" for h in hits)

@@ -29,6 +29,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 BINOMIAL = re.compile(r"\b([A-Z][a-z]{3,})\s([a-z]{4,})\b")
+# Latin epithets end like these; "Goat eradication" or "Según tu" do not.
+_LATIN_END = re.compile(r"(?:us|um|a|ae|is|es|i|ii|ei|er|ix|ax|ex|ensis|oides|otis|atus|ata|ens|ans)$")
 # Capitalised words that start a binomial-looking pair but are not genera.
 _NOT_GENUS = frozenset("""Para Como Cual Cuando Donde Desde Hasta Entre Sobre Segun Según Mientras
 Esta Este Estos Estas Esto Aquel Dime Dame Escribe Explica Relaciona Indica Compara Cuantos Cuántos
@@ -38,14 +40,19 @@ Since Until Then Than Thus Hence Here Each Every Both Many Most Some Such Only E
 _NOT_EPITHET = frozenset("""species genus individuals population populations genome genomes support
 lineage lineages samples sample clade data results analysis analyses mockingbirds islands island""".split())
 
-EXPAND_SYSTEM = ("You turn a question into search terms. Reply with exactly one line and "
-                 "nothing else.")
-EXPAND_USER = ("Question: {q}\n\n"
-               "Write 8 to 15 English search keywords for finding documents that answer it "
-               "(translate the question's terms; add scientific names and synonyms). Then "
-               "write ' || ' and up to 3 public named things the question mentions "
-               "(species, places, programmes, organisations), in English, separated by ';'.\n"
-               "Format: keyword, keyword, ... || name; name")
+EXPAND_SYSTEM = ("You turn a question into English search keywords. Reply with one line "
+                 "only, in the format of the example.")
+# One worked example: small local models (3B) follow the format far more
+# reliably with it than with instructions alone (P2e trial, 24 Oct 2026).
+EXPAND_USER = ("Translate the question into English search keywords. Keep scientific names, "
+               "place names and numbers. Then, after \" || \", copy the names of species, "
+               "places or programmes that the question itself mentions, translated to "
+               "English. One line only.\n\n"
+               "Question: ¿Qué edad tienen las tortugas gigantes de la isla Santa Cruz según "
+               "mi informe de campo?\n"
+               "Answer: giant tortoises, age, Santa Cruz Island, field report, Chelonoidis, "
+               "Galapagos tortoise || Galapagos giant tortoise; Santa Cruz Island\n\n"
+               "Question: {q}\nAnswer:")
 
 
 @dataclass
@@ -62,14 +69,18 @@ class Expansion:
 
 def parse_expansion(text: str) -> Expansion:
     line = " ".join((text or "").strip().split())
-    line = re.sub(r"^(keywords?|format)\s*:\s*", "", line, flags=re.I)
+    line = re.sub(r"^(keywords?|format|answer)\s*:\s*", "", line, flags=re.I)
     if "||" in line:
         kw, ents = line.split("||", 1)
     else:
         kw, ents = line, ""
-    kw = re.sub(r"\s*,\s*", ", ", kw.strip(" .|"))[:400]
+    words = []
+    for w in re.split(r"\s*[,;]\s*", kw.strip(" .|")):
+        if w and w.lower() not in (x.lower() for x in words):   # small models loop
+            words.append(w)
+    kw = ", ".join(words)[:400]
     names = []
-    for n in re.split(r"[;\n]", ents):
+    for n in re.split(r"[;,\n]" if ";" not in ents else r"[;\n]", ents):
         n = n.strip(" .,'\"*-")
         n = re.sub(r"^(name|names)\s*:\s*", "", n, flags=re.I)
         if 3 <= len(n) <= 60 and n.lower() not in {"none", "n/a", "name"}:
@@ -94,7 +105,7 @@ def binomials(text: str) -> list[str]:
     out = []
     for m in BINOMIAL.finditer(text or ""):
         genus, epithet = m.group(1), m.group(2)
-        if genus in _NOT_GENUS or epithet in _NOT_EPITHET:
+        if genus in _NOT_GENUS or epithet in _NOT_EPITHET or not _LATIN_END.search(epithet):
             continue
         name = f"{genus} {epithet}"
         if name not in out:
@@ -107,11 +118,30 @@ def _fold(text: str) -> str:
                    if not unicodedata.combining(c))
 
 
+def _words(text: str) -> set[str]:
+    out = set()
+    for w in re.findall(r"[^\W\d_]{3,}", text or ""):
+        f = _fold(w)
+        out.add(f[:-1] if f.endswith("s") and len(f) > 4 else f)
+    return out
+
+
 def public_entities(question: str, expansion: Expansion,
-                    sources: list[dict[str, Any]], max_n: int = 3) -> list[dict[str, str]]:
-    """Names that may be sent to the public provider, with where each came from."""
+                    sources: list[dict[str, Any]], max_n: int = 3,
+                    known: str = "") -> list[dict[str, str]]:
+    """Names that may be sent to the public provider, with where each came from.
+
+    Scientific names in the question come first, then one from the passages
+    (bridge), then the names the local model listed — those only when every
+    word of the name appears in the question, the retrieved passages or the
+    glossary equivalents (``known``): a 3B model renders "rascón" as "rat",
+    and "Galapagos rat" must not be sent.
+    """
     picked: list[dict[str, str]] = []
     seen: set[str] = set()
+    vocabulary = _words(question) | _words(known)
+    for s in sources:
+        vocabulary |= _words(s.get("text", ""))
 
     def add(name: str, origin: str) -> None:
         key = _fold(name)
@@ -124,12 +154,14 @@ def public_entities(question: str, expansion: Expansion,
 
     for b in binomials(question):
         add(b, "question")
-    for e in expansion.entities:
-        add(e, "question (local model)")
     for s in sources:                                   # bridge: species names only
-        for b in binomials(s.get("text", "")):
-            add(b, "local passage (scientific name)")
+        names = binomials(s.get("text", ""))
+        if names:
+            add(names[0], "local passage (scientific name)")
             break
+    for e in expansion.entities:
+        if _words(e) and _words(e) <= vocabulary:
+            add(e, "question (local model)")
     return picked
 
 
