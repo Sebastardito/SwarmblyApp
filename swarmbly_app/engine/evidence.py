@@ -190,6 +190,38 @@ def _focus_sentence(profile: OperationProfile, sentence: str) -> bool:
     return profile.wants_author and bool(stems & {_stem(a) for a in _AUTHOR})
 
 
+_NUMERIC_FOCUS = frozenset(_stem(_fold(w)) for w in (
+    "año años fecha fechas número números cantidad población habitantes altura altitud "
+    "longitud distancia superficie área edad temperatura precio peso masa duración "
+    "kilómetros metros porcentaje cifra year date number population height length "
+    "area age temperature price weight").split())
+_CLAUSE = re.compile(r"\s*(?:[,;]|\s+y\s+|\s+e\s+|\s+and\s+)\s*")
+
+
+def drop_unasked_numbers(profile: OperationProfile, text: str) -> str:
+    """Remove clauses that carry figures the operation does not ask for.
+
+    P2d (24 Oct 2026): "cuyo símbolo es Pb … y su número atómico es 82" made a
+    fragment answer 82, 80 and 50 instead of Pb, Hg and Sn. When the focus is
+    not numeric, a clause with digits and no focus term is dropped; clauses
+    that carry the asked fact are kept whole.
+    """
+    if profile.wants_year or set(profile.focus) & _NUMERIC_FOCUS or not re.search(r"\d", text):
+        return text
+    out = []
+    for sentence in _sentences(text):
+        clauses = [re.sub(r"^(?:y|e|and)\s+", "", c) for c in _CLAUSE.split(sentence) if c]
+        kept = [c for c in clauses
+                if not re.search(r"\d", c) or _focus_sentence(profile, c)]
+        if not kept:
+            continue
+        joined = ", ".join(kept).rstrip(" ,")
+        if not joined.endswith((".", "!", "?", "…")):
+            joined += "."
+        out.append(joined)
+    return " ".join(out) if out else text
+
+
 def _http_get_json(url: str, timeout_s: float, user_agent: str) -> Any:
     req = urllib.request.Request(url, headers={"User-Agent": user_agent,
                                                "Accept": "application/json"})
@@ -258,6 +290,7 @@ class WikipediaEvidence:
                 snippet = f"{first} {focus}"
                 if len(snippet) > self.max_chars:
                     snippet = self._around_focus(profile, focus)   # the asked-for fact
+            snippet = drop_unasked_numbers(profile, snippet)
             return self._hit(item, query, title, self._cut(snippet))
         return None
 

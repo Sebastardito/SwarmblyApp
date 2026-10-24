@@ -166,3 +166,24 @@ def test_implicit_disambiguation_and_translation_are_skipped():
                                                    "en español, da solo su traducción al "
                                                    "inglés:"))
     assert found == {} and report["skipped"].startswith("translation")
+
+
+def test_unasked_figures_are_dropped_from_the_snippet():
+    """P2d: 'cuyo símbolo es Pb … y su número atómico es 82' → answers 82, 80, 50."""
+    e3 = ev.operation_profile("Para cada uno de los siguientes elementos químicos, indica "
+                              "solo su símbolo químico:")
+    assert ev.drop_unasked_numbers(
+        e3, "El mercurio es un elemento químico con el símbolo Hg y número atómico 80."
+    ) == "El mercurio es un elemento químico con el símbolo Hg."
+    e2 = ev.operation_profile("Para cada uno de los siguientes países, indica solo el "
+                              "nombre de su capital:")
+    assert ev.drop_unasked_numbers(e2, "Nigeria tiene 220 millones de habitantes. Su capital "
+                                       "es Abuya, y Lagos tiene 15 millones.") == "Su capital es Abuya."
+    e5 = ev.operation_profile("Para cada uno de los siguientes acontecimientos históricos, "
+                              "indica solo el año en que ocurrió:")
+    text = "La batalla ocurrió el 24 de mayo de 1822."
+    assert ev.drop_unasked_numbers(e5, text) == text          # a year is what is asked
+    e4 = ev.operation_profile("Para cada una de las siguientes obras literarias, indica solo "
+                              "el nombre de su autor:")
+    text = "Huasipungo es una novela publicada en 1934 por el escritor Jorge Icaza."
+    assert ev.drop_unasked_numbers(e4, text) == text          # the clause carries the author

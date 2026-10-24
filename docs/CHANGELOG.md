@@ -195,6 +195,15 @@ Windows, Debian; 0.5 B to 8 B models)
   capital es Abuya"), cut around that fact when long. Implicit
   disambiguation pages ("puede hacer referencia a") are skipped, and
   translation batches are not looked up.
+  Measured (3 repetitions): total 55/59/56 against 54/56/51 without
+  evidence; the chemical-symbol battery still dropped (7/10/7) because the
+  atomic number sits in the same sentence as the symbol.
+- Unasked figures are dropped from the snippet: when the operation asks for
+  neither a year nor a quantity, clauses with digits that do not carry the
+  asked fact are removed ("…con el símbolo Hg y número atómico 80" → "…con
+  el símbolo Hg"; "Nigeria tiene 220 millones de habitantes. Su capital es
+  Abuya" → "Su capital es Abuya"). Years and quantities stay when they are
+  what is asked, or when the clause carries the fact (the author).
 - Settings → Privacy → "Public evidence (Wikipedia)": the switch, with what
   is sent and what was measured; timeout, length and number of lookups in
   the Advanced profile.
