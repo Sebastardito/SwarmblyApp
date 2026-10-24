@@ -174,6 +174,10 @@ class LCEAdapter:
             fused = self._hybrid(spans, ranked, f"{query} {extra}", embed)
             if fused:
                 ranked, top = fused, 0.0      # RRF scores: no BM25 floor
+        # Ranked candidates before the per-file cap and dedup, for auditing why
+        # a paragraph did not make it (read from the answer's metadata).
+        self.last_candidates = [{"source": spans[i]["source"], "start": spans[i]["start"],
+                                 "score": round(sc, 4)} for i, sc in ranked[:CANDIDATES_KEPT]]
         hits, seen = [], set()
         per_file: dict[str, int] = {}
         for i, score in ranked:
@@ -348,6 +352,7 @@ SHORT_BLOCK_CHARS = 60   # shorter blocks are headings ("NRGene Canada Inc.", "M
 EXTRA_WEIGHT = 0.5       # weight of added query terms (model keywords, glossary)
 RRF_K = 60               # reciprocal-rank fusion constant
 DENSE_CANDIDATES = 40    # dense ranks that enter the fusion
+CANDIDATES_KEPT = 15     # ranked candidates kept for the metadata
 MAX_PER_FILE = 3         # passages per file in one answer (2 cut a needed third, round 4)
 _GLOSS_LINE = re.compile(r"^\s*[-*]?\s*([^=→#<>|]{2,80}?)\s*(?:=|→|->)\s*([^=→]{2,200})$")
 

@@ -54,6 +54,7 @@ class ChatService:
         self.public_provider: Any = None
         self.glossary: Callable[[str], str] | None = None
         self.glossary_entries: Callable[[], list] | None = None
+        self.retrieval_candidates: Callable[[], list] | None = None
         self._lock = threading.Lock()
 
     # -- conversations -------------------------------------------------------
@@ -292,6 +293,11 @@ class ChatService:
                 extra["lce"] = {"level": "C1", "sources": [
                     {"n": i, "source": s["source"], "start": s["start"], "end": s["end"],
                      "score": s.get("score")} for i, s in enumerate(sources, 1)]}
+                if self.retrieval_candidates is not None:
+                    try:
+                        extra["lce"]["candidates"] = self.retrieval_candidates()
+                    except Exception:
+                        pass
             if expansion is not None:
                 extra.setdefault("lce", {})["expansion"] = expansion.to_dict()
             if public_report is not None:
