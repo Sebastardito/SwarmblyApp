@@ -67,6 +67,10 @@ const Settings = (() => {
       { key: "evidence.local_answers", type: "bool", group: "evidence" },
       { key: "evidence.local_max_entities", type: "number", min: 1, max: 6, group: "evidence", advanced: true },
       { key: "evidence.fusion_model", type: "model", allowEmpty: true, group: "evidence", advanced: true },
+      { key: "evidence.providers", type: "list", group: "evidence", advanced: true },
+      { key: "evidence.searxng_url", type: "text", group: "evidence", advanced: true },
+      { key: "evidence.google_cse_key", type: "password", group: "evidence", advanced: true },
+      { key: "evidence.google_cse_cx", type: "text", group: "evidence", advanced: true },
     ],
     results: [
       { key: "results.export_format", type: "select", options: [["markdown", "Markdown"], ["json", "JSON"], ["html", "HTML"]] },

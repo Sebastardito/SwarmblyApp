@@ -362,6 +362,25 @@ Windows, Debian; 0.5 B to 8 B models)
   died/death, inicio → began/initiated…), so an article full of dates does
   not answer with the wrong one; without an event word nothing is added.
 
+- More public sources (`evidence.providers`, default wikidata, wikipedia,
+  pubmed): Wikidata gives structured facts in one sentence (IUCN status P141;
+  dates of death, birth, inception, start, end, discovery, publication — the
+  property chosen by the operation and the event word: "muerte" → date of
+  death); PubMed (NCBI E-utilities) gives abstract sentences with the asked
+  terms or a year; `web` uses the user's SearXNG instance (`searxng_url`,
+  which queries DuckDuckGo, Google, Bing or Google Scholar) or Google Custom
+  Search (`google_cse_key`, `google_cse_cx`). Batches take the Wikidata fact
+  when the operation asks for a status or a date and fall back to Wikipedia;
+  local answers get every provider that has something, labelled. Only names
+  (and generic English focus words for PubMed and web search) are sent. In a
+  dry run Wikidata had the right IUCN status for 7 of 8 Galápagos species.
+  Google Scholar has no API (scraping breaks its terms), so it is reachable
+  only through SearXNG.
+- Round 10b: years of events with Wikipedia only, 1/1/1 of 5 (wrong years
+  from articles about the island and the archipelago); IUCN statuses 4/4/3
+  of 8. Round 10c: the effective-size paragraph was dropped by the per-file
+  cap.
+
 **LCE C1: retrieval over your sources, for local answers (P2b)**
 - With LCE enabled at C1, answers produced on this device get the most
   relevant paragraphs of the user's sources (LCE source folder plus

@@ -229,9 +229,12 @@ class ChatService:
                     provider = self.public_provider
                     if provider is None:
                         from .engine.evidence import WikipediaEvidence
-                        provider = WikipediaEvidence(
+                        from .engine.providers import build
+                        from .lang import detect_language
+                        wiki = WikipediaEvidence(
                             lang=str(ev_cfg.get("local_lang", "en")),
                             timeout_s=float(ev_cfg.get("timeout_s", 4.0)))
+                        provider = build(detect_language(user_text), ev_cfg, wiki)
                     public_hits, public_report = public_evidence(entities, expansion, provider,
                                                                  known, user_text)
             # P2e: an enumerated PUBLIC batch answered here (too small to

@@ -479,10 +479,12 @@ def gather(items: dict[int, str], provider: WikipediaEvidence,
                     found[n] = hit
                 if err:
                     errors.append(err)
-    report = {"provider": "wikipedia", "lang": provider.lang,
+    report = {"provider": "+".join(getattr(provider, "names", ["wikipedia"])),
+              "lang": provider.lang,
               "queried": [t for _, t in wanted], "used": len(found),
               "sources": [{"item": h["item"], "title": h["title"], "url": h["url"],
-                           "query": h.get("query", h["item"])}
+                           "query": h.get("query", h["item"]),
+                           "provider": h.get("provider", "wikipedia")}
                           for _, h in sorted(found.items())],
               "errors": sorted(set(errors))}
     if profile is not None:
@@ -502,14 +504,17 @@ def render(evidence: dict[int, dict[str, Any]], lang: str) -> str:
     return "\n".join(lines)
 
 
-def batch_provider(lang: str, ev_cfg: dict[str, Any]) -> WikipediaEvidence:
-    """The batch provider, with an English fallback for other languages."""
+def batch_provider(lang: str, ev_cfg: dict[str, Any]):
+    """The batch provider: Wikipedia (with an English fallback for other
+    languages) behind Wikidata and the other enabled providers."""
     timeout = float(ev_cfg.get("timeout_s", 4.0))
     max_chars = int(ev_cfg.get("max_chars", 220))
     fallback = None if lang == "en" else WikipediaEvidence(lang="en", timeout_s=timeout,
                                                            max_chars=800)
-    return WikipediaEvidence(lang=lang, timeout_s=timeout, max_chars=max_chars,
+    wiki = WikipediaEvidence(lang=lang, timeout_s=timeout, max_chars=max_chars,
                              fallback=fallback)
+    from .providers import build
+    return build(lang, ev_cfg, wiki)
 
 
 _NUMBERED = re.compile(r"^\s*[\[(]?(\d{1,3})[\]).:]\s+(.+?)\s*$", re.M)

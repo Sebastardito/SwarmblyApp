@@ -125,6 +125,13 @@ DEFAULTS: dict[str, Any] = {
         # P2e: model that writes the answers fusing local sources and public
         # evidence ("" = the conversation's model).
         "fusion_model": "",
+        # Providers asked, in this order of trust: wikidata (structured facts),
+        # wikipedia (prose), pubmed (abstracts), web (SearXNG or Google CSE,
+        # only with the URL or the key below).
+        "providers": ["wikidata", "wikipedia", "pubmed"],
+        "searxng_url": "",
+        "google_cse_key": "",
+        "google_cse_cx": "",
     },
     "permissions": {
         "lan_discovery": None,        # None = not asked yet; True/False = answer
@@ -325,4 +332,9 @@ def validate_changes(changes: dict[str, Any]) -> dict[str, Any]:
             raise ConfigError(f"{key} must be true or false")
         elif isinstance(default, list) and not isinstance(value, list):
             raise ConfigError(f"{key} must be a list")
+        if key == "evidence.providers" and not set(value) <= _PROVIDERS:
+            raise ConfigError(f"{key} items must be among {sorted(_PROVIDERS)}")
     return flat
+
+
+_PROVIDERS = frozenset({"wikidata", "wikipedia", "pubmed", "web"})

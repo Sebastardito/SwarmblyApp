@@ -34,22 +34,22 @@ BINOMIAL = re.compile(r"\b([A-Z][a-z]{3,})\s([a-z]{4,})\b")
 FUSION = {
     "es": {"local": "MIS DOCUMENTOS (privados, en este equipo):",
            "none": "(ningún pasaje)",
-           "public": "WIKIPEDIA (pública, consultada hoy; solo se enviaron estos nombres: {names}):",
+           "public": "FUENTES PÚBLICAS (Wikidata, Wikipedia, PubMed…, consultadas hoy; solo se enviaron estos nombres: {names}):",
            "question": "PREGUNTA:",
            "ask": ("Responde en tres partes:\n"
                    "1. Mis documentos: qué dicen [1], [2]… sobre la pregunta (si no dicen nada, dilo). "
-                   "No cites aquí nada de Wikipedia.\n"
-                   "2. Wikipedia: qué dicen [W1], [W2]….\n"
-                   "3. Comparación: si difieren, da las dos versiones; la de Wikipedia es la actual.")},
+                   "No cites aquí nada de las fuentes públicas.\n"
+                   "2. Fuentes públicas: qué dicen [W1], [W2]… (di de cuál viene cada dato).\n"
+                   "3. Comparación: si difieren, da las dos versiones; la de las fuentes públicas es la actual.")},
     "en": {"local": "MY DOCUMENTS (private, on this device):",
            "none": "(no passage)",
-           "public": "WIKIPEDIA (public, fetched today; only these names were sent: {names}):",
+           "public": "PUBLIC SOURCES (Wikidata, Wikipedia, PubMed…, fetched today; only these names were sent: {names}):",
            "question": "QUESTION:",
            "ask": ("Answer in three parts:\n"
                    "1. My documents: what [1], [2]… say about the question (say so if nothing). "
-                   "Do not cite Wikipedia here.\n"
-                   "2. Wikipedia: what [W1], [W2]… say.\n"
-                   "3. Comparison: if they differ, give both versions; Wikipedia's is the current one.")},
+                   "Do not cite the public sources here.\n"
+                   "2. Public sources: what [W1], [W2]… say (name the source of each fact).\n"
+                   "3. Comparison: if they differ, give both versions; the public one is the current one.")},
 }
 
 
@@ -270,23 +270,25 @@ def public_evidence(entities: list[dict[str, str]], expansion: Expansion, provid
     if entities:
         with ThreadPoolExecutor(max_workers=min(3, len(entities))) as pool:
             titles: set[str] = set()
-            for ent, (hit, err) in zip(entities, pool.map(one, entities)):
-                if hit and hit["title"] in titles:      # two names, one article
-                    continue
-                if hit:
+            for ent, (got, err) in zip(entities, pool.map(one, entities)):
+                for hit in (got if isinstance(got, list) else [got] if got else []):
+                    if hit["title"] in titles:          # two names, one article
+                        continue
                     titles.add(hit["title"])
                     hit["sent"] = ent["name"]
                     hit["from"] = ent["from"]
                     hits.append(hit)
                 if err:
                     errors.append(err)
-    report = {"provider": "wikipedia", "lang": getattr(provider, "lang", ""),
+    report = {"provider": "+".join(getattr(provider, "names", ["wikipedia"])),
+              "lang": getattr(provider, "lang", ""),
               "local_answer": True,
               "queried": [e["name"] for e in entities],
               "queried_from": entities,
               "used": len(hits),
               "sources": [{"item": h["sent"], "title": h["title"], "url": h["url"],
-                           "query": h["sent"]} for h in hits],
+                           "query": h["sent"], "provider": h.get("provider", "wikipedia")}
+                          for h in hits],
               "errors": sorted(set(errors))}
     return hits, report
 

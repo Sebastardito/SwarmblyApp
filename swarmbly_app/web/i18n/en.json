@@ -151,7 +151,7 @@
    "tierLocal": "Your privacy tier is LOCAL, so nothing will be sent. Change it in Settings → Privacy to use the swarm."
   },
   "replicas": "{n} replicas",
-  "evidenceChip": "Wikipedia · {n}",
+  "evidenceChip": "Public sources · {n}",
   "evidenceTitle": "Public context from Wikipedia was added to {n} items; only those items' texts were sent.",
   "lceChip": "Local sources · {n}",
   "lceTitle": "The answer used passages from your sources (LCE C1); they did not leave this device."
@@ -221,7 +221,7 @@
    "LOW": "low"
   },
   "sources": "Sources",
-  "evidenceNote": "Public context from Wikipedia (CC BY-SA 4.0) added to the fragments. Only these items' texts were sent to Wikipedia:",
+  "evidenceNote": "Public context (Wikidata, Wikipedia CC BY-SA 4.0, PubMed…) added. Only these names were sent:",
   "evidenceErrors": "Failed lookups:",
   "evidenceSkipped": "Public evidence not applied:",
   "lceNote": "Passages from your sources used in this answer (they did not leave this device):"
@@ -578,6 +578,22 @@
   "evidence__fusion_model": {
    "label": "Model for answers with evidence",
    "help": "When an answer made on this device combines your local sources with public evidence, a larger local model can write it (slower, better attribution). Other answers keep the conversation's model."
+  },
+  "evidence__providers": {
+   "label": "Public sources",
+   "help": "One per line, in order of trust: wikidata (structured facts: IUCN status, dates), wikipedia, pubmed (NCBI abstracts of scientific papers) and web (your SearXNG or Google, if you set the URL or the key below). Only names are sent to any of them, never your question or your documents."
+  },
+  "evidence__searxng_url": {
+   "label": "Your SearXNG URL",
+   "help": "A free metasearch engine you install (for example http://localhost:8888). It queries DuckDuckGo, Google, Bing or Google Scholar on your behalf. Add \"web\" to the sources."
+  },
+  "evidence__google_cse_key": {
+   "label": "Google Custom Search key",
+   "help": "Optional: key for the Google Custom Search JSON API (100 queries/day free). Also needs the engine id and \"web\" in the sources."
+  },
+  "evidence__google_cse_cx": {
+   "label": "Google engine id",
+   "help": "The \"cx\" of your Programmable Search Engine."
   }
  },
  "models": {

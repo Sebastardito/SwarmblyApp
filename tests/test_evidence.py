@@ -218,7 +218,7 @@ def test_local_batch_evidence_sends_only_items():
     try:
         block, report = ev.local_batch("Para cada uno de los siguientes países, indica solo su "
                                        "capital:\n1. Australia\n2. Canadá\n3. Nigeria",
-                                       {"evidence": {"enabled": True}}, "es")
+                                       {"evidence": {"enabled": True, "providers": ["wikipedia"]}}, "es")
     finally:
         mod._http_get_json = real
     assert report["local_batch"] and report["queried"] == ["Australia", "Canadá", "Nigeria"]

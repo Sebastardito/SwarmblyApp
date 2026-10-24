@@ -235,7 +235,7 @@ def test_fusion_prompt_labels_both_kinds_and_acronyms_are_not_sent():
     out = fusion_prompt([{"source": "tesis.md", "text": "M. melanotis (IUCN: endangered)"}],
                         [{"sent": "Mimus melanotis", "title": "San Cristóbal mockingbird",
                           "text": "Near Threatened."}], "¿Coincide?", "es")
-    assert out.index("MIS DOCUMENTOS") < out.index("[1] (tesis.md)") < out.index("WIKIPEDIA") \
+    assert out.index("MIS DOCUMENTOS") < out.index("[1] (tesis.md)") < out.index("FUENTES PÚBLICAS") \
         < out.index("[W1]") < out.index("PREGUNTA: ¿Coincide?") < out.index("Responde en tres partes")
     assert translated_names("¿Qué dice la UICN?", [("UICN", "IUCN")]) == []
 

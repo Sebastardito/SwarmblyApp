@@ -151,7 +151,7 @@
    "tierLocal": "Tu tier de privacidad es LOCAL, así que no se enviará nada. Cámbialo en Ajustes → Privacidad para usar el enjambre."
   },
   "replicas": "{n} réplicas",
-  "evidenceChip": "Wikipedia · {n}",
+  "evidenceChip": "Fuentes públicas · {n}",
   "evidenceTitle": "Se añadió contexto público de Wikipedia a {n} elementos; solo se enviaron los textos de esos elementos.",
   "lceChip": "Fuentes locales · {n}",
   "lceTitle": "La respuesta usó pasajes de tus fuentes (LCE C1); no salieron del equipo."
@@ -221,7 +221,7 @@
    "LOW": "bajo"
   },
   "sources": "Fuentes",
-  "evidenceNote": "Contexto público de Wikipedia (CC BY-SA 4.0) añadido a los fragmentos. A Wikipedia solo se enviaron los textos de estos elementos:",
+  "evidenceNote": "Contexto público (Wikidata, Wikipedia CC BY-SA 4.0, PubMed…) añadido. Solo se enviaron estos nombres:",
   "evidenceErrors": "Consultas fallidas:",
   "evidenceSkipped": "Evidencia pública no aplicada:",
   "lceNote": "Pasajes de tus fuentes usados en esta respuesta (no salieron del equipo):"
@@ -578,6 +578,22 @@
   "evidence__fusion_model": {
    "label": "Modelo para respuestas con evidencia",
    "help": "Cuando una respuesta de este equipo combina tus fuentes locales con evidencia pública, puede redactarla un modelo local más grande (más lento, mejor atribución). Las demás respuestas siguen con el modelo de la conversación."
+  },
+  "evidence__providers": {
+   "label": "Fuentes públicas",
+   "help": "Una por línea, en orden de confianza: wikidata (datos estructurados: estado UICN, fechas), wikipedia, pubmed (resúmenes de artículos científicos de NCBI) y web (tu SearXNG o Google, si configuras abajo la URL o la clave). A todas se envían solo nombres, nunca tu pregunta ni tus documentos."
+  },
+  "evidence__searxng_url": {
+   "label": "URL de tu SearXNG",
+   "help": "Metabuscador libre instalado por ti (por ejemplo http://localhost:8888). Consulta DuckDuckGo, Google, Bing o Google Scholar en tu nombre. Requiere añadir «web» a las fuentes."
+  },
+  "evidence__google_cse_key": {
+   "label": "Clave de Google Custom Search",
+   "help": "Opcional: clave de la API JSON de Google Custom Search (100 consultas/día gratis). Requiere también el identificador del buscador y «web» en las fuentes."
+  },
+  "evidence__google_cse_cx": {
+   "label": "Identificador del buscador de Google",
+   "help": "El «cx» de tu Programmable Search Engine."
   }
  },
  "models": {
