@@ -321,6 +321,14 @@ Windows, Debian; 0.5 B to 8 B models)
   or no workers) gets the same item evidence as fragments, when the request
   could have left (PUBLIC lane, tier allowing egress).
 
+- Round 8: with `evidence.fusion_model` set to a 27B local model (the 3B
+  writes everything else), 30/32/30 of 44; the "thesis then, status now"
+  contrast was right in 6 of 6 answers, no attribution error in the 15 fused
+  answers, 52 s per fused answer against 1.8 s for the rest. On the network,
+  the IUCN batch with the English fallback rose from 3/2/1 to 4/6/4 of 8.
+  A batch of years stayed local because the lane classifier marked it
+  SENSITIVE ("death of Lonesome George"): a false positive upstream.
+
 **LCE C1: retrieval over your sources, for local answers (P2b)**
 - With LCE enabled at C1, answers produced on this device get the most
   relevant paragraphs of the user's sources (LCE source folder plus
