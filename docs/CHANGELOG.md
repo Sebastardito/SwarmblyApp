@@ -341,6 +341,17 @@ Windows, Debian; 0.5 B to 8 B models)
   anywhere. "Inicio de la protección legal del lobo peletero" kept a public
   batch off the network (P2e round 8b).
 
+- Round 9: the hybrid retrieval found the paragraph with the asked fact in
+  11 of 16 questions in every repetition (BM25 alone: 9), and the key score
+  rose from 28/28/27 to 30/33/29 of 44 with the 3B model; the parasite of the
+  2021 paper is now found, so its public history is looked up. The batch of
+  years now counts as PUBLIC and is distributed, but its items are event
+  descriptions with no article to match (0 of 5 either way). With the
+  fusion model as well: 30/29/35, and one fused answer came back empty.
+- A fused answer gets twice the token budget (a reasoning model thinks
+  first); if it is still empty, the conversation's model answers the same
+  prompt (`fusion_fallback` in the metadata).
+
 **LCE C1: retrieval over your sources, for local answers (P2b)**
 - With LCE enabled at C1, answers produced on this device get the most
   relevant paragraphs of the user's sources (LCE source folder plus

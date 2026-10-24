@@ -295,3 +295,32 @@ def test_hybrid_falls_back_to_bm25_when_embedding_fails(app_state):
     def embed(texts, kind):
         raise OSError("no model")
     assert app_state.lce.retrieve("Supernova genome", embed=embed)[0]["source"] == "a.md"
+
+
+def test_empty_fused_answer_falls_back_to_the_conversation_model(app_state, fake_chat):
+    chat, fake = fake_chat
+    _write(app_state, "tesis.md", "M. melanotis (IUCN: endangered), the San Cristobal mockingbird.")
+    app_state.config.update({"lce": {"enabled": True, "level": "C1", "dense_retrieval": False},
+                             "model": {"model_name": "small:3b"},
+                             "evidence": {"enabled": True, "fusion_model": "big:27b"}})
+
+    class Provider:
+        lang = "en"
+
+        def passages(self, entity, focus):
+            return {"title": "San Cristóbal mockingbird", "url": "u", "text": "Near Threatened."}
+    chat.public_provider = Provider()
+    real = fake.stream_chat
+
+    def stream(messages, *, model, **kw):
+        out = real(messages, model=model, **kw)
+        if model == "big:27b":
+            out.text = ""
+        return out
+    fake.stream_chat = stream
+    conv = chat.create_conversation(mode="local", model="small:3b")
+    chat.send(conv["id"], "¿Cuál es el estado actual de Mimus melanotis?", mode="local",
+              run_async=False)
+    final = chat.get_messages(conv["id"])[-1]
+    assert final["content"] and final["meta"]["fusion_fallback"].startswith("big:27b")
+    assert [c["model"] for c in fake.calls][-2:] == ["big:27b", "small:3b"]

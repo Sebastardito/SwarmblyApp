@@ -266,13 +266,24 @@ class ChatService:
             elif sources:
                 context = [{"role": "system", "content": _sources_block(sources, user_text)},
                            *context]
+            budget = answer_budget(user_text, int(self.config()["model"].get("max_tokens", 1024)))
+            if answer_model != model:
+                budget *= 2          # a reasoning model spends tokens before it answers
             result = backend.stream_chat(
-                context, model=answer_model,
-                max_tokens=answer_budget(
-                    user_text, int(self.config()["model"].get("max_tokens", 1024))),
+                context, model=answer_model, max_tokens=budget,
                 temperature=float(self.config()["model"].get("temperature", 0.2)),
                 on_delta=on_delta,
                 interrupt=request.stop_event.is_set)
+            fusion_fallback = ""
+            if answer_model != model and not (getattr(result, "text", "") or "").strip():
+                # The fusion model returned nothing (P2e round 9c: one empty answer
+                # out of 18): the conversation's model answers the same prompt.
+                fusion_fallback = f"{answer_model} returned an empty answer"
+                answer_model = model
+                result = backend.stream_chat(
+                    context, model=model, max_tokens=budget // 2,
+                    temperature=float(self.config()["model"].get("temperature", 0.2)),
+                    on_delta=on_delta, interrupt=request.stop_event.is_set)
             extra = {}
             if local_reason:
                 extra = {"executed": "local", "local_reason": local_reason,
@@ -289,6 +300,8 @@ class ChatService:
                 extra["evidence"] = batch_report
             if answer_model != model:
                 extra["answer_model"] = answer_model
+            if fusion_fallback:
+                extra["fusion_fallback"] = fusion_fallback
             self._finish(request, result, note=local_reason, stages=routing_stages,
                          extra=extra)
         except Interrupted:
