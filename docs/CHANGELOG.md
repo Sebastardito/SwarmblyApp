@@ -211,6 +211,33 @@ Windows, Debian; 0.5 B to 8 B models)
   Wikipedia sources used (attribution, CC BY-SA 4.0); answers that used LCE
   C1 passages show "Local sources · n" and list the files.
 
+**LCE C1 across languages, and public evidence for local answers (P2e)**
+- Measured first (24 October 2026, local `qwen2.5:3b`, 16 questions about a
+  local knowledge base of a PhD thesis and papers in English plus profiles
+  and notes in Spanish, 44 key elements, 3 repetitions): without sources
+  0/1/0, with P2b C1 7/7/7. Every point came from Spanish files: the BM25
+  index never returned a paragraph of the English thesis or papers for a
+  Spanish question.
+- Query expansion (`lce.query_expansion`, on): the local model turns the
+  question into English keywords and the public names it mentions (one short
+  generation on this device); the keywords join the retrieval query.
+- The index folds accents, drops function words (es/en/pt/fr) and plurals,
+  and indexes each paragraph with its file path words, document title and
+  nearest heading ("mi artículo de 2024 sobre el rascón" reaches that file);
+  headings are no longer retrieved on their own, long paragraphs are cut at
+  sentence ends, identical paragraphs are returned once, and the number of
+  passages is `lce.retrieval_k` (4).
+- Public evidence for local answers (`evidence.local_answers`, on when
+  public evidence is on): up to `evidence.local_max_entities` (3) names are
+  looked up on Wikipedia (`evidence.local_lang`, en): scientific names and
+  the names the local model listed from the question, and as a bridge one
+  scientific name from the retrieved passages. Only names are sent, never the
+  question or a passage; the metadata lists each name and where it came
+  from. The whole article is read and reduced to its first sentence plus the
+  sentences carrying the question's terms (status sections sit outside the
+  intro). The answer gets the local sources as [1], [2] and the public
+  evidence as [W1], [W2], with the instruction to give both when they differ.
+
 **LCE C1: retrieval over your sources, for local answers (P2b)**
 - With LCE enabled at C1, answers produced on this device get the most
   relevant paragraphs of the user's sources (LCE source folder plus

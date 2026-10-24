@@ -96,6 +96,10 @@ DEFAULTS: dict[str, Any] = {
         "sources_dirs": [],           # extra source folders
         "learning_enabled": False,    # I8: nothing trains without permission
         "capsules_enabled": False,
+        # P2e: the local model adds English keywords to the retrieval query,
+        # so a Spanish question reaches English sources (local only).
+        "query_expansion": True,
+        "retrieval_k": 4,
     },
     # P2 prototype: public evidence for batch items (only item texts are sent
     # to the provider, only for PUBLIC requests). Off until the user enables it.
@@ -108,6 +112,12 @@ DEFAULTS: dict[str, Any] = {
         # P2d: topic/focus of the batch operation guide the lookup and the
         # snippet; translation batches are skipped. False = P2a/P2c behaviour.
         "operation_aware": True,
+        # P2e: answers made on this device may also get public evidence; only
+        # entity names (from the question, or scientific names in the local
+        # passages) are sent, never the question or a passage.
+        "local_answers": True,
+        "local_max_entities": 3,
+        "local_lang": "en",
     },
     "permissions": {
         "lan_discovery": None,        # None = not asked yet; True/False = answer
@@ -223,6 +233,7 @@ _ENUMS = {
     "privacy.tier": {"GLOBAL", "TRUSTED", "LOCAL"},
     "privacy.manual_tier": {None, "GLOBAL", "TRUSTED", "LOCAL"},
     "lce.level": {"C0", "C1", "C2", "C3", "C4"},
+    "evidence.local_lang": {"es", "en", "pt", "fr"},
     "results.export_format": {"markdown", "json", "html"},
     "results.report_detail": {"minimal", "standard", "full"},
 }
@@ -252,6 +263,8 @@ _RANGES = {
     "evidence.timeout_s": (0.5, 30.0),
     "evidence.max_chars": (60, 1000),
     "evidence.max_items": (1, 100),
+    "evidence.local_max_entities": (1, 6),
+    "lce.retrieval_k": (1, 10),
     "log_retention_days": (1, 3650),
 }
 # Never changeable from the browser: binding the admin API elsewhere is a

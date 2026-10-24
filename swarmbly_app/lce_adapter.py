@@ -12,6 +12,7 @@ prepared/experimental, never as done.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -138,28 +139,41 @@ class LCEAdapter:
         return out
 
     # -- C1: retrieval over raw sources (WP LCE v0.2 §11.7–11.8, R13) ---------
-    def retrieve(self, query: str, k: int = 3,
-                 extra_dirs: list[str] | tuple[str, ...] = ()) -> list[dict[str, Any]]:
+    def retrieve(self, query: str, k: int = 4,
+                 extra_dirs: list[str] | tuple[str, ...] = (),
+                 expansion: str = "") -> list[dict[str, Any]]:
         """Top paragraphs of the user's sources for ``query`` (local only).
 
         Sources are the LCE source space plus ``lce.sources_dirs``; files are
         read, never written. The index is rebuilt for a file only when its
-        content hash changes.
+        content hash changes. ``expansion`` holds extra query terms (P2e: the
+        local model's keywords in another language, so a Spanish question
+        reaches an English thesis); it is produced and used on this device.
+        Each paragraph is indexed with its file name and document title, so
+        "mi artículo de 2024 sobre el rascón" reaches that file's paragraphs.
         """
         roots = [self.dirs.sources, *[Path(d).expanduser() for d in extra_dirs or ()]]
         spans = self._spans(roots)
         if not spans or not (query or "").strip():
             return []
-        index = _BM25([s["text"] for s in spans])
-        ranked = index.search(query, k)
+        key = tuple(id(s) for s in spans)
+        cached = getattr(self, "_index_cache", None)
+        if cached is None or cached[0] != key:
+            cached = self._index_cache = (key, _BM25([s.get("index") or s["text"] for s in spans]))
+        index = cached[1]
+        ranked = index.search(f"{query} {expansion}".strip(), k * 2)
         # Paragraphs that only share function words ("de", "es") score far
         # below a real match: keep those within 35 % of the best one.
         top = ranked[0][1] if ranked else 0.0
-        hits = []
+        hits, seen = [], set()
         for i, score in ranked:
-            if score < RELATIVE_FLOOR * top:
+            if score < RELATIVE_FLOOR * top or len(hits) >= k:
                 continue
-            hit = dict(spans[i])
+            same = " ".join(_tokens(spans[i]["text"]))[:200]
+            if same in seen:          # the same paragraph in two files (ES/EN copies)
+                continue
+            seen.add(same)
+            hit = {key: v for key, v in spans[i].items() if key != "index"}
             hit["score"] = round(score, 3)
             hits.append(hit)
         return hits
@@ -184,7 +198,8 @@ class LCEAdapter:
                     continue
                 key = (str(path), hashlib.sha256(data).hexdigest())
                 if key not in cache:
-                    cache[key] = _paragraphs(path.name, data.decode("utf-8", "replace"))
+                    cache[key] = _paragraphs(path.name, data.decode("utf-8", "replace"),
+                                             label=str(path.relative_to(root)))
                 out.extend(cache[key])
         return out
 
@@ -202,32 +217,96 @@ class LCEAdapter:
 SOURCE_SUFFIXES = frozenset({".md", ".txt", ".markdown", ".rst", ".org", ".csv"})
 SPAN_MAX_CHARS = 600
 RELATIVE_FLOOR = 0.35
+SHORT_BLOCK_CHARS = 60   # shorter blocks without a final period are headings
 
 
-def _paragraphs(name: str, text: str) -> list[dict[str, Any]]:
-    """Paragraph spans (≤ 600 characters, as SwarmblyLCE's SourceSpace.spans)."""
+_SENTENCE_END = re.compile(r"(?<=[.!?;])\s+")
+
+
+def _paragraphs(name: str, text: str, label: str = "") -> list[dict[str, Any]]:
+    """Paragraph spans (≤ 600 characters, as SwarmblyLCE's SourceSpace.spans).
+
+    Long paragraphs are cut at sentence ends rather than mid-word. Each span
+    carries an ``index`` text: the file's path words and its title (first
+    Markdown heading) followed by the paragraph, so a question that names the
+    document ("mi tesis", "artículo de 2024 sobre el rascón") finds it.
+    """
+    title = next((ln.lstrip("# ").strip() for ln in text.splitlines()
+                  if ln.startswith("# ")), "")
+    header = " ".join(re.split(r"[\W_]+", re.sub(r"\.\w+$", "", label or name)) + [title])
     out: list[dict[str, Any]] = []
     pos = 0
+    heading = ""
     for block in text.split("\n\n"):
         start = text.find(block, pos)
         start = pos if start < 0 else start
         pos = start + len(block)
         body = " ".join(block.split())
+        if not body or body.startswith("<!--"):
+            continue
+        if len(body) < SHORT_BLOCK_CHARS and not body.endswith((".", "?", "!")):
+            heading = body.lstrip("#").strip()     # a heading: context for what follows
+            continue
         while body:
-            piece, body = body[:SPAN_MAX_CHARS], body[SPAN_MAX_CHARS:]
-            out.append({"source": name, "start": start, "end": pos, "text": piece})
+            if len(body) <= SPAN_MAX_CHARS:
+                piece, body = body, ""
+            else:
+                cuts = [m.start() for m in _SENTENCE_END.finditer(body, 0, SPAN_MAX_CHARS)]
+                cut = cuts[-1] if cuts and cuts[-1] > SPAN_MAX_CHARS // 3 else body.rfind(" ", 0, SPAN_MAX_CHARS)
+                cut = cut if cut > 0 else SPAN_MAX_CHARS
+                piece, body = body[:cut].rstrip(), body[cut:].lstrip()
+            out.append({"source": name, "start": start, "end": pos, "text": piece,
+                        "index": f"{header} {heading} {piece}"})
+    return out
+
+
+# Function words (es/en/pt/fr) carry no topic; folded, as the tokens are.
+_STOPWORDS = frozenset("""
+a al algo ante antes asi aun cada como con contra cual cuales cuando cuanto cuantos de del desde donde
+dos durante e el ella ellas ellos en entre era eran es esa ese eso esta estaba este esto estos fue fueron
+ha han hasta hay la las le les lo los mas me mi mis muy ni no nos o os otra otro para pero poco por porque
+que quien se segun ser si sin sobre son su sus tambien tan tanto te tiene tienen todo todos tu un una uno
+unos y ya yo usted cual
+an and are as at be been but by can could did do does for from had has have how i if in into is it its
+may more most my no not of on or our she should so such than that the their them then there these they
+this those to was we were what when where which while who why will with would you your
+um uma os as ao aos da das do dos em na nas no nos pelo pela ou
+au aux ce ces dans des du est et il ils je la le les leur mais ne nous ou par pas pour qu que qui sa se ses son sur un une vous
+""".split())
+
+
+def _fold(word: str) -> str:
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFKD", word.lower())
+                   if not unicodedata.combining(c))
+
+
+def _stem(word: str) -> str:
+    """Light plural folding shared by Spanish and English ("cucuves" → "cucuve")."""
+    if len(word) > 4 and word.endswith("es") and word[-3] in "lnrdzj":
+        return word[:-2]
+    if len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+        return word[:-1]
+    return word
+
+
+def _tokens(text: str) -> list[str]:
+    out = []
+    for w in re.findall(r"[^\W_]+(?:[+-][^\W_]+)*", text):
+        f = _fold(w)
+        if len(f) > 1 and f not in _STOPWORDS:
+            out.append(_stem(f))
     return out
 
 
 class _BM25:
-    """BM25 (k1 1.5, b 0.75), the same scoring as SwarmblyLCE's retriever."""
+    """BM25 (k1 1.5, b 0.75), the same scoring as SwarmblyLCE's retriever,
+    over folded, stop-word-free, plural-folded tokens."""
 
     def __init__(self, docs: list[str], k1: float = 1.5, b: float = 0.75):
         import math
-        import re
         from collections import Counter
-        self._tok = lambda t: [w.lower() for w in re.findall(r"[\wáéíóúñü]+", t, re.I)
-                               if len(w) > 1]
+        self._tok = _tokens
         self.k1, self.b, self._log = k1, b, math.log
         self.tf = [Counter(self._tok(d)) for d in docs]
         self.df: Counter = Counter()
@@ -236,7 +315,7 @@ class _BM25:
         self.avg = sum(sum(tf.values()) for tf in self.tf) / max(1, len(self.tf))
 
     def search(self, query: str, k: int) -> list[tuple[int, float]]:
-        q = self._tok(query)
+        q = list(dict.fromkeys(self._tok(query)))
         n = len(self.tf)
         scored = []
         for i, tf in enumerate(self.tf):

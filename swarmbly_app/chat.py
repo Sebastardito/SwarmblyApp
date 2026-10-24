@@ -48,7 +48,10 @@ class ChatService:
         self.report_sink: Callable[[str], None] | None = None  # set by AppState
         # LCE C1: local retrieval over the user's sources (set by AppState);
         # used only for answers produced on this device.
-        self.retriever: Callable[[str], list[dict[str, Any]]] | None = None
+        self.retriever: Callable[..., list[dict[str, Any]]] | None = None
+        self.retrieval_active: Callable[[], bool] = lambda: self.retriever is not None
+        # P2e: the public provider for local answers (injectable for tests).
+        self.public_provider: Any = None
         self._lock = threading.Lock()
 
     # -- conversations -------------------------------------------------------
@@ -184,12 +187,41 @@ class ChatService:
                                  message_id=request.message_id, delta=delta)
 
             from .engine.contract import answer_budget
+            cfg = self.config()
             sources: list[dict[str, Any]] = []
-            if self.retriever is not None:
+            expansion = None
+            ev_cfg = cfg.get("evidence") or {}
+            want_public = bool(ev_cfg.get("enabled")) and bool(ev_cfg.get("local_answers", True))
+            lce_on = self.retriever is not None and self.retrieval_active()
+            if (lce_on and (cfg.get("lce") or {}).get("query_expansion", True)) or want_public:
+                from .local_context import expand_query
+                expansion = expand_query(backend, model, user_text)
+            if lce_on:
                 try:
-                    sources = self.retriever(user_text) or []
+                    sources = self.retriever(
+                        user_text, expansion.keywords if expansion else "") or []
                 except Exception:
                     sources = []
+            public_hits: list[dict[str, Any]] = []
+            public_report: dict[str, Any] | None = None
+            if want_public and expansion is not None:
+                from .local_context import public_entities, public_evidence
+                entities = public_entities(user_text, expansion, sources,
+                                           int(ev_cfg.get("local_max_entities", 3)))
+                if entities:
+                    provider = self.public_provider
+                    if provider is None:
+                        from .engine.evidence import WikipediaEvidence
+                        provider = WikipediaEvidence(
+                            lang=str(ev_cfg.get("local_lang", "en")),
+                            timeout_s=float(ev_cfg.get("timeout_s", 4.0)))
+                    public_hits, public_report = public_evidence(entities, expansion, provider)
+            if public_hits:
+                from .lang import detect_language
+                from .local_context import render_public
+                context = [{"role": "system",
+                            "content": render_public(public_hits, detect_language(user_text))},
+                           *context]
             if sources:
                 context = [{"role": "system", "content": _sources_block(sources, user_text)},
                            *context]
@@ -208,6 +240,10 @@ class ChatService:
                 extra["lce"] = {"level": "C1", "sources": [
                     {"n": i, "source": s["source"], "start": s["start"], "end": s["end"],
                      "score": s.get("score")} for i, s in enumerate(sources, 1)]}
+            if expansion is not None:
+                extra.setdefault("lce", {})["expansion"] = expansion.to_dict()
+            if public_report is not None:
+                extra["evidence"] = public_report
             self._finish(request, result, note=local_reason, stages=routing_stages,
                          extra=extra)
         except Interrupted:

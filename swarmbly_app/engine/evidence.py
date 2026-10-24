@@ -237,17 +237,19 @@ class WikipediaEvidence:
     user_agent: str = "SwarmblyApp (https://github.com/Sebastardito/SwarmblyApp)"
     fetch: Callable[[str, float, str], Any] | None = None   # injectable for tests
 
-    def url_for(self, query: str, sentences: int | None = 2) -> str:
+    def url_for(self, query: str, sentences: int | None = 2, intro: bool = True) -> str:
         params = {"action": "query", "format": "json", "utf8": "1",
                   "generator": "search", "gsrsearch": query, "gsrlimit": "1",
-                  "prop": "extracts", "exintro": "1", "explaintext": "1",
+                  "prop": "extracts", "explaintext": "1",
                   "redirects": "1"}
+        if intro:
+            params["exintro"] = "1"
         if sentences:
             params["exsentences"] = str(sentences)
         return WIKI_API.format(lang=self.lang) + "?" + urllib.parse.urlencode(params)
 
-    def _page(self, query: str, sentences: int | None):
-        data = (self.fetch or _http_get_json)(self.url_for(query, sentences),
+    def _page(self, query: str, sentences: int | None, intro: bool = True):
+        data = (self.fetch or _http_get_json)(self.url_for(query, sentences, intro),
                                               self.timeout_s, self.user_agent)
         pages = ((data or {}).get("query") or {}).get("pages") or {}
         for page in pages.values():
@@ -312,6 +314,36 @@ class WikipediaEvidence:
             return sentence
         start = sentence.rfind(" ", 0, max(0, pos - self.max_chars // 3)) + 1
         return "… " + sentence[start:]
+
+    def passages(self, entity: str, focus: list[str], max_sentences: int = 3,
+                 max_chars: int = 650) -> dict[str, Any] | None:
+        """P2e (local answers): the whole article of the best match for ``entity``,
+        reduced to its first sentence plus the sentences that carry the focus
+        terms (e.g. "IUCN", "status"), which often sit outside the intro."""
+        page = self._page(entity, None, intro=False)
+        if not page or not relevant(entity, f"{page[0]} {page[1][:400]}"):
+            return None
+        title, text = page
+        text = re.sub(r"\s*={2,}[^=]{1,80}={2,}\s*", " ", text)   # "== Status ==" headings
+        sentences = _sentences(text)
+        if not sentences:
+            return None
+        stems = {_stem(_fold(f)) for f in focus if len(f) >= 3}
+        chosen = [sentences[0]]
+        if stems:
+            scored = []
+            for i, sent in enumerate(sentences[1:], 1):
+                words = {_stem(w) for w in (_fold(x) for x in _WORD.findall(sent))}
+                score = len(words & stems)
+                if score:
+                    scored.append((-score, i, sent))
+            for _, _, sent in sorted(scored)[: max_sentences - 1]:
+                chosen.append(sent)
+        out = " ".join(dict.fromkeys(chosen))
+        if len(out) > max_chars:
+            cut = out[:max_chars]
+            out = cut[: cut.rfind(" ")] + " …"
+        return self._hit(entity, entity, title, out)
 
     def _hit(self, item: str, query: str, title: str, text: str) -> dict[str, Any]:
         return {"item": item, "query": query, "title": title, "text": text,

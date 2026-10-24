@@ -124,6 +124,7 @@ class AppState:
                                 self.config.all, self.get_orchestrator)
         self.chat.report_sink = self._auto_report
         self.chat.retriever = self._lce_retrieve
+        self.chat.retrieval_active = self._lce_active
         from .doctor import Installer
         from .model_manager import OllamaModels
         self.installer = Installer(self.bus)
@@ -133,12 +134,18 @@ class AppState:
                            if e["type"] == "models.pull"
                            and e["payload"].get("status") == "done" else None)
 
-    def _lce_retrieve(self, query: str) -> list:
-        """LCE C1 retrieval for local answers, when the user enabled C1."""
+    def _lce_active(self) -> bool:
         cfg = self.config.all().get("lce") or {}
-        if not cfg.get("enabled") or cfg.get("level") not in ("C1", "C2", "C3", "C4"):
+        return bool(cfg.get("enabled")) and cfg.get("level") in ("C1", "C2", "C3", "C4")
+
+    def _lce_retrieve(self, query: str, expansion: str = "") -> list:
+        """LCE C1 retrieval for local answers, when the user enabled C1."""
+        if not self._lce_active():
             return []
-        return self.lce.retrieve(query, k=3, extra_dirs=cfg.get("sources_dirs") or [])
+        cfg = self.config.all().get("lce") or {}
+        return self.lce.retrieve(query, k=int(cfg.get("retrieval_k", 4)),
+                                 extra_dirs=cfg.get("sources_dirs") or [],
+                                 expansion=expansion)
 
     # -- P2P lifecycle -----------------------------------------------------------
     def start_p2p(self) -> None:
