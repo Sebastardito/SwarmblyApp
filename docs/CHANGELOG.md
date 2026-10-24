@@ -251,6 +251,28 @@ Windows, Debian; 0.5 B to 8 B models)
   intro). The answer gets the local sources as [1], [2] and the public
   evidence as [W1], [W2], with the instruction to give both when they differ.
 
+- Round 2 (same 16 questions, 3 repetitions): C1 with expansion and
+  glossary 21/17/20 of 44 (the P2b C1 had 7/7/7); with public evidence
+  22/18/19, but no public fact was gained: the 3B model's names were wrong
+  ("Galapagos Cuckoo", "Canis", "Panthera"), the passage bridge sent
+  unrelated species (a guppy from a paper's introduction, "Supernova
+  assembler" → an unrelated article) and the model ignored the evidence block.
+- Public names for local answers are now chosen without the model: scientific
+  names in the question, common names "<term> de <Place>" rendered through the
+  glossary ("cucuve de Floreana" → "Floreana mockingbird"), proper names the
+  user listed in the glossary ("Proyecto Isabela = Project Isabela"), and only
+  when the question names none of these, a scientific name repeated in the
+  retrieved passages. The model's names are never sent (an employer named in
+  a question must not leave the device). Public evidence is fetched only when
+  the question asks for something public or current ("actual", "fuentes
+  públicas", "current"); questions about the user's own documents send
+  nothing. Two names that resolve to the same article are used once; the
+  passage keeps the article's first two sentences, the focus sentences and the
+  sentence after each; and the turn asks for local facts [1], public facts
+  [W1] and both versions when they differ.
+- Short blocks of up to four words ("Acme Labs Inc.") are headings, not
+  passages; the glossary also matches Spanish gender ("extinto" ~ "extinta").
+
 **LCE C1: retrieval over your sources, for local answers (P2b)**
 - With LCE enabled at C1, answers produced on this device get the most
   relevant paragraphs of the user's sources (LCE source folder plus

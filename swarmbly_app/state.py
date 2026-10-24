@@ -129,6 +129,10 @@ class AppState:
             self.lce.glossary_terms(text, (self.config.all().get("lce") or {})
                                     .get("sources_dirs") or [])
             if self._lce_active() else "")
+        self.chat.glossary_entries = lambda: (
+            self.lce.glossary_entries((self.config.all().get("lce") or {})
+                                      .get("sources_dirs") or [])
+            if self._lce_active() else [])
         from .doctor import Installer
         from .model_manager import OllamaModels
         self.installer = Installer(self.bus)

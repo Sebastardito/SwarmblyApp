@@ -316,7 +316,7 @@ class WikipediaEvidence:
         return "… " + sentence[start:]
 
     def passages(self, entity: str, focus: list[str], max_sentences: int = 3,
-                 max_chars: int = 650) -> dict[str, Any] | None:
+                 max_chars: int = 800) -> dict[str, Any] | None:
         """P2e (local answers): the whole article of the best match for ``entity``,
         reduced to its first sentence plus the sentences that carry the focus
         terms (e.g. "IUCN", "status"), which often sit outside the intro."""
@@ -329,16 +329,20 @@ class WikipediaEvidence:
         if not sentences:
             return None
         stems = {_stem(_fold(f)) for f in focus if len(f) >= 3}
-        chosen = [sentences[0]]
+        chosen = sentences[:2]           # the lead usually states what the thing is
         if stems:
             scored = []
-            for i, sent in enumerate(sentences[1:], 1):
+            for i, sent in enumerate(sentences[2:], 2):
                 words = {_stem(w) for w in (_fold(x) for x in _WORD.findall(sent))}
                 score = len(words & stems)
                 if score:
                     scored.append((-score, i, sent))
-            for _, _, sent in sorted(scored)[: max_sentences - 1]:
+            for _, i, sent in sorted(scored)[: max_sentences - 1]:
                 chosen.append(sent)
+                # the next sentence often finishes the fact ("In 1994 … Endangered.
+                # In 2008 … then in 2017 returned to Endangered status.")
+                if i + 1 < len(sentences):
+                    chosen.append(sentences[i + 1])
         out = " ".join(dict.fromkeys(chosen))
         if len(out) > max_chars:
             cut = out[:max_chars]

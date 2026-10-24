@@ -29,8 +29,18 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 BINOMIAL = re.compile(r"\b([A-Z][a-z]{3,})\s([a-z]{4,})\b")
+# Applied to the last user message when public evidence is present (P2e): small
+# models ignore system blocks with two kinds of sources unless asked in the turn.
+FUSION_ASK = {
+    "es": ("\n\n(Responde en este orden: 1) lo que dicen mis fuentes locales, citando [1], [2]…; "
+           "2) lo que dice la evidencia pública, citando [W1], [W2]…; 3) si difieren, di ambas "
+           "versiones y cuál es la más reciente.)"),
+    "en": ("\n\n(Answer in this order: 1) what my local sources say, citing [1], [2]…; 2) what "
+           "the public evidence says, citing [W1], [W2]…; 3) if they differ, give both and say "
+           "which is more recent.)"),
+}
 # Latin epithets end like these; "Goat eradication" or "Según tu" do not.
-_LATIN_END = re.compile(r"(?:us|um|a|ae|is|es|i|ii|ei|er|ix|ax|ex|ensis|oides|otis|atus|ata|ens|ans)$")
+_LATIN_END = re.compile(r"(?:us|um|a|ae|is|i|ii|ei|er|ix|ax|ex|ensis|oides|otis|atus|ata|ens|ans)$")
 # Capitalised words that start a binomial-looking pair but are not genera.
 _NOT_GENUS = frozenset("""Para Como Cual Cuando Donde Desde Hasta Entre Sobre Segun Según Mientras
 Esta Este Estos Estas Esto Aquel Dime Dame Escribe Explica Relaciona Indica Compara Cuantos Cuántos
@@ -126,49 +136,87 @@ def _words(text: str) -> set[str]:
     return out
 
 
+_PUBLIC_ASK = re.compile(
+    r"\b(actual(?:es|mente)?|hoy|hoy en d[ií]a|p[uú]blic[oa]s?|p[uú]blicamente|reciente(?:s|mente)?|"
+    r"current(?:ly)?|today|now|public(?:ly)?|recent(?:ly)?|atual(?:mente)?|actuel(?:le)?s?|publique)\b",
+    re.I)
+
+
+def wants_public(question: str) -> bool:
+    """Public evidence is fetched for a local answer only when the question asks
+    for something public or current ("estado actual", "según fuentes públicas");
+    a question about the user's own documents alone sends nothing."""
+    return bool(_PUBLIC_ASK.search(question or ""))
+
+
+_PROPER = r"((?:[A-ZÁÉÍÓÚÑ][\wáéíóúñ'-]+)(?:\s+(?:de\s+)?[A-ZÁÉÍÓÚÑ][\wáéíóúñ'-]+)*)"
+
+
+def translated_names(question: str, glossary: list[tuple[str, str]]) -> list[str]:
+    """Common names written "<término> de <Lugar>" rendered with the user's
+    glossary: "cucuve de Floreana" + "cucuve = mockingbird, Mimus" →
+    "Floreana mockingbird"; "lobo peletero de Galápagos" → "Galápagos fur seal"."""
+    out: list[str] = []
+    for term, equivalents in glossary:
+        first = equivalents.split(",")[0].strip()
+        if term[:1].isupper() and first and re.search(r"\b" + re.escape(term) + r"\b", question):
+            out.append(first)          # a proper name the user listed: "Proyecto Isabela"
+            continue
+        english = next((e.strip() for e in equivalents.split(",")
+                        if e.strip() and e.strip()[0].islower()), "")
+        if not english or len(term) < 3:
+            continue
+        pattern = (r"(?i:\b" + re.escape(term) + r"(?:e?s)?\s+de(?:l|\s+la|\s+las|\s+los)?\s+"
+                   r"(?:(?:la\s+)?isla\s+|islote\s+)?)" + _PROPER)   # the place: capitalised
+        for m in re.finditer(pattern, question):
+            name = f"{m.group(1)} {english}"
+            if name not in out:
+                out.append(name)
+    return out
+
+
 def public_entities(question: str, expansion: Expansion,
                     sources: list[dict[str, Any]], max_n: int = 3,
-                    known: str = "") -> list[dict[str, str]]:
+                    glossary: list[tuple[str, str]] | None = None) -> list[dict[str, str]]:
     """Names that may be sent to the public provider, with where each came from.
 
-    Scientific names in the question come first, then one from the passages
-    (bridge), then the names the local model listed — those only when every
-    word of the name appears in the question, the retrieved passages or the
-    glossary equivalents (``known``): a 3B model renders "rascón" as "rat",
-    and "Galapagos rat" must not be sent.
+    Only names that cannot carry personal data are sent: scientific names in the
+    question, common names of the question rendered through the user's glossary
+    ("cucuve de Floreana" → "Floreana mockingbird") and, when the question names
+    no species at all, a scientific name repeated in the retrieved passages
+    (bridge). Names listed by the local model are not sent: a 3B model offered
+    "Galapagos Cuckoo", "Canis" and "Panthera" for these questions (P2e round
+    2), and an organisation named in the question (an employer) must not leave.
     """
     picked: list[dict[str, str]] = []
     seen: set[str] = set()
-    vocabulary = _words(question) | _words(known)
-    for s in sources:
-        vocabulary |= _words(s.get("text", ""))
 
     def add(name: str, origin: str) -> None:
         key = _fold(name)
         if len(picked) >= max_n or key in seen or len(name) < 3:
-            return
-        if any(key in s or s in key for s in seen):     # "Galapagos rail" ~ "rail"
             return
         seen.add(key)
         picked.append({"name": name, "from": origin})
 
     for b in binomials(question):
         add(b, "question")
-    for s in sources:                                   # bridge: species names only
-        names = binomials(s.get("text", ""))
-        if names:
-            add(names[0], "local passage (scientific name)")
-            break
-    for e in expansion.entities:
-        if _words(e) and _words(e) <= vocabulary:
-            add(e, "question (local model)")
+    for t in translated_names(question, glossary or []):
+        add(t, "question (glossary)")
+    if not picked:
+        counts: dict[str, int] = {}
+        for s in sources:
+            for b in binomials(s.get("text", "")):
+                counts[b] = counts.get(b, 0) + s.get("text", "").count(b)
+        repeated = [b for b, c in sorted(counts.items(), key=lambda x: -x[1]) if c >= 2]
+        if repeated:
+            add(repeated[0], "local passages (repeated scientific name)")
     return picked
 
 
-def focus_terms(expansion: Expansion, entity: str) -> list[str]:
+def focus_terms(expansion: Expansion, entity: str, known: str = "") -> list[str]:
     ent = {_fold(w) for w in re.findall(r"\w+", entity)}
     terms = []
-    for w in re.findall(r"[A-Za-z][A-Za-z-]{3,}", expansion.keywords):
+    for w in re.findall(r"[A-Za-z][A-Za-z-]{3,}", f"{known} {expansion.keywords}"):
         f = _fold(w)
         if f not in ent and f not in terms and f not in {"galapagos", "thesis", "article",
                                                         "paper", "study", "island", "islands"}:
@@ -176,21 +224,25 @@ def focus_terms(expansion: Expansion, entity: str) -> list[str]:
     return terms[:12]
 
 
-def public_evidence(entities: list[dict[str, str]], expansion: Expansion, provider: Any
-                    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def public_evidence(entities: list[dict[str, str]], expansion: Expansion, provider: Any,
+                    known: str = "") -> tuple[list[dict[str, Any]], dict[str, Any]]:
     hits: list[dict[str, Any]] = []
     errors: list[str] = []
 
     def one(ent):
         try:
-            return provider.passages(ent["name"], focus_terms(expansion, ent["name"])), None
+            return provider.passages(ent["name"], focus_terms(expansion, ent["name"], known)), None
         except Exception as exc:
             return None, type(exc).__name__
 
     if entities:
         with ThreadPoolExecutor(max_workers=min(3, len(entities))) as pool:
+            titles: set[str] = set()
             for ent, (hit, err) in zip(entities, pool.map(one, entities)):
+                if hit and hit["title"] in titles:      # two names, one article
+                    continue
                 if hit:
+                    titles.add(hit["title"])
                     hit["sent"] = ent["name"]
                     hit["from"] = ent["from"]
                     hits.append(hit)

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from swarmbly_app.lce_adapter import _paragraphs, _tokens
 from swarmbly_app.local_context import (Expansion, binomials, parse_expansion,
-                                        public_entities, render_public)
+                                        public_entities, render_public, translated_names,
+                                        wants_public)
 from swarmbly_app.engine.evidence import WikipediaEvidence
 
 
@@ -19,7 +20,7 @@ def test_tokens_fold_accents_drop_function_words_and_plurals():
 
 
 def test_paragraphs_index_file_name_title_and_heading_not_as_spans():
-    text = "# Chapter 2: genome assembly\n\nMethods\n\nWe used Supernova to assemble the genome."
+    text = "# Chapter 2: genome assembly\n\nMethods.\n\nWe used Supernova to assemble the genome."
     spans = _paragraphs("02_tesis_genoma.md", text, label="tesis/02_tesis_genoma.md")
     assert [s["text"] for s in spans] == ["We used Supernova to assemble the genome."]
     assert "tesis" in spans[0]["index"] and "Chapter 2" in spans[0]["index"] \
@@ -59,14 +60,33 @@ def test_parse_expansion_and_binomials():
 
 
 def test_public_entities_come_from_the_question_or_species_names_in_passages():
-    exp = Expansion(keywords="parasite epigenetics", entities=["Galapagos"])
+    exp = Expansion(keywords="parasite epigenetics", entities=["Galapagos", "NRGene Canada"])
     passages = [{"text": "We studied the invasive Philornis downsi in nests of AB1 owners at "
-                         "AcmeLabs."}]
+                         "AcmeLabs. Philornis downsi larvae feed on nestlings."},
+                {"text": "Guppies (Poecilia reticulata) were studied elsewhere."}]
     picked = public_entities("¿Qué parásito estudié en mi artículo de 2021?", exp, passages)
-    names = [p["name"] for p in picked]
-    assert names == ["Philornis downsi"]          # "Galapagos" is not in the question
-    assert picked[0]["from"].startswith("local passage")
-    assert not any("AcmeLabs" in n or "AB1" in n for n in names)   # only scientific names cross
+    assert [p["name"] for p in picked] == ["Philornis downsi"]   # repeated, so it is the topic
+    assert picked[0]["from"].startswith("local passages")
+
+
+def test_model_names_are_never_sent_glossary_names_are():
+    exp = Expansion(keywords="", entities=["Galapagos rat", "Canis", "AcmeLabs"])
+    glossary = [("rascón", "rail, crake, Laterallus spilonota"),
+                ("cucuve", "mockingbird, Mimus"), ("lobo peletero", "fur seal, Arctocephalus")]
+    q = "¿Qué se sabe hoy del rascón de Galápagos y del cucuve de la isla Floreana?"
+    names = [p["name"] for p in public_entities(q, exp, [], glossary=glossary)]
+    assert names == ["Galápagos rail", "Floreana mockingbird"]
+    assert translated_names("Los cucuves de Española y el lobo peletero de Galápagos",
+                            glossary) == ["Española mockingbird", "Galápagos fur seal"]
+    assert translated_names("¿Qué logró el Proyecto Isabela?",
+                            [("Proyecto Isabela", "Project Isabela, goat eradication")]) == \
+        ["Project Isabela"]
+
+
+def test_public_evidence_only_when_the_question_asks_for_public_or_current_facts():
+    assert wants_public("¿Cuál es su estado de conservación actual?")
+    assert wants_public("¿Qué dicen las fuentes públicas?")
+    assert not wants_public("¿Qué programa usé en el capítulo 2 de mi tesis?")
 
 
 def test_passages_keep_first_sentence_and_focus_sentences_outside_the_intro():
@@ -107,14 +127,32 @@ def test_local_answer_with_public_evidence_sends_only_names(app_state, fake_chat
     conv = chat.create_conversation(mode="local")
     q = "¿Qué categoría UICN da mi tesis a Mimus melanotis y cuál es la actual?"
     chat.send(conv["id"], q, mode="local", run_async=False)
-    assert sorted(asked) == ["Mimus melanotis", "San Cristobal mockingbird"]
+    assert asked == ["Mimus melanotis"]            # the model's names are not sent
     assert all(q not in a for a in asked)
     system = [m["content"] for m in fake.calls[-1]["messages"] if m["role"] == "system"]
     assert any("[1] (tesis.md)" in s for s in system)
     assert any("[W1] (San Cristóbal mockingbird)" in s and "solo se enviaron" in s for s in system)
     meta = chat.get_messages(conv["id"])[-1]["meta"]
-    assert sorted(meta["evidence"]["queried"]) == sorted(asked) and meta["evidence"]["local_answer"]
+    assert meta["evidence"]["queried"] == asked and meta["evidence"]["local_answer"]
+    assert "[W1]" in fake.calls[-1]["messages"][-1]["content"]     # fusion request in the turn
     assert meta["lce"]["expansion"]["entities"] == ["San Cristobal mockingbird"]
+
+
+def test_no_public_lookup_for_a_question_about_own_documents(app_state, fake_chat):
+    chat, fake = fake_chat
+    app_state.config.update({"lce": {"enabled": True, "level": "C1"},
+                             "evidence": {"enabled": True}})
+
+    class Provider:
+        lang = "en"
+
+        def passages(self, entity, focus):
+            raise AssertionError("must not be called")
+    chat.public_provider = Provider()
+    conv = chat.create_conversation(mode="local")
+    chat.send(conv["id"], "¿Qué muestra de Mimus melanotis usé en mi tesis?", mode="local",
+              run_async=False)
+    assert "evidence" not in chat.get_messages(conv["id"])[-1]["meta"]
 
 
 def test_no_public_lookup_when_evidence_is_off(app_state, fake_chat):
@@ -137,14 +175,6 @@ def test_render_public_lists_what_was_sent():
     assert "solo se enviaron estos nombres: Mimus melanotis" in out and "[W1] (T) x" in out
 
 
-def test_model_names_are_sent_only_when_their_words_are_known():
-    exp = Expansion(keywords="", entities=["Galapagos rat", "Project Isabela"])
-    q = "¿Qué encontramos sobre el rascón de Galápagos y el Proyecto Isabela?"
-    passages = [{"text": "Goat eradication on Isabela helped the Galapagos rail; the project ended."}]
-    names = [p["name"] for p in public_entities(q, exp, passages)]
-    assert names == ["Project Isabela"]           # a 3B model's "rat" for "rascón" stays home
-
-
 def test_glossary_bridges_terms_and_is_not_a_passage(app_state):
     _write(app_state, "glosario.md", "# Glosario\n\n- cucuve = mockingbird, Mimus\n"
            "- tamaño poblacional efectivo = effective population size, Ne\n")
@@ -155,3 +185,19 @@ def test_glossary_bridges_terms_and_is_not_a_passage(app_state):
     hits = app_state.lce.retrieve("¿Qué tamaño poblacional efectivo tiene el cucuve de Champion?")
     assert hits and hits[0]["source"] == "thesis.md"
     assert all(h["source"] != "glosario.md" for h in hits)
+
+
+def test_glossary_matches_spanish_gender_and_one_article_is_used_once(app_state):
+    _write(app_state, "glosario.md", "- extinto = extinct, extirpated\n")
+    assert app_state.lce.glossary_terms("la población extinta de Floreana") == "extinct, extirpated"
+    from swarmbly_app.local_context import public_evidence
+
+    class Provider:
+        lang = "en"
+
+        def passages(self, entity, focus):
+            return {"title": "Floreana mockingbird", "url": "u", "text": "t"}
+    hits, report = public_evidence([{"name": "Mimus trifasciatus", "from": "question"},
+                                    {"name": "Floreana mockingbird", "from": "question (glossary)"}],
+                                   Expansion(), Provider())
+    assert len(hits) == 1 and report["used"] == 1

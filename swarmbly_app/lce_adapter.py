@@ -200,7 +200,11 @@ class LCEAdapter:
 
         def present(tok: str) -> bool:
             # single long terms also match inflections: "muestrear" ~ "muestrearon"
-            return tok in have or (len(tok) >= 6 and any(h.startswith(tok) for h in have))
+            if tok in have or (len(tok) >= 6 and any(h.startswith(tok) for h in have)):
+                return True
+            # Spanish gender: "extinto" ~ "extinta", "público" ~ "pública"
+            return len(tok) >= 5 and tok[-1] in "oa" and any(
+                len(h) == len(tok) and h[:-1] == tok[:-1] and h[-1] in "oa" for h in have)
         added: list[str] = []
         for side_a, side_b in entries:
             for left, right in ((side_a, side_b), (side_b, side_a)):
@@ -208,6 +212,11 @@ class LCEAdapter:
                 if toks and all(present(t) for t in toks) and right not in added:
                     added.append(right)
         return " ".join(added)
+
+    def glossary_entries(self, extra_dirs: list[str] | tuple[str, ...] = ()
+                         ) -> list[tuple[str, str]]:
+        roots = [self.dirs.sources, *[Path(d).expanduser() for d in extra_dirs or ()]]
+        return self._glossary(roots)
 
     def _glossary(self, roots: list[Path]) -> list[tuple[str, str]]:
         import hashlib
@@ -276,7 +285,7 @@ class LCEAdapter:
 SOURCE_SUFFIXES = frozenset({".md", ".txt", ".markdown", ".rst", ".org", ".csv"})
 SPAN_MAX_CHARS = 600
 RELATIVE_FLOOR = 0.35
-SHORT_BLOCK_CHARS = 60   # shorter blocks without a final period are headings
+SHORT_BLOCK_CHARS = 60   # shorter blocks are headings ("NRGene Canada Inc.", "Methods")
 EXTRA_WEIGHT = 0.5       # weight of added query terms (model keywords, glossary)
 _GLOSS_LINE = re.compile(r"^\s*[-*]?\s*([^=→#<>|]{2,80}?)\s*(?:=|→|->)\s*([^=→]{2,200})$")
 
@@ -310,7 +319,8 @@ def _paragraphs(name: str, text: str, label: str = "") -> list[dict[str, Any]]:
         body = " ".join(block.split())
         if not body or body.startswith("<!--"):
             continue
-        if len(body) < SHORT_BLOCK_CHARS and not body.endswith((".", "?", "!")):
+        if len(body) < SHORT_BLOCK_CHARS and (not body.endswith((".", "?", "!"))
+                                              or len(body.split()) <= 4):
             heading = body.lstrip("#").strip()     # a heading: context for what follows
             continue
         while body:

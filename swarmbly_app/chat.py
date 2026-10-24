@@ -53,6 +53,7 @@ class ChatService:
         # P2e: the public provider for local answers (injectable for tests).
         self.public_provider: Any = None
         self.glossary: Callable[[str], str] | None = None
+        self.glossary_entries: Callable[[], list] | None = None
         self._lock = threading.Lock()
 
     # -- conversations -------------------------------------------------------
@@ -192,7 +193,9 @@ class ChatService:
             sources: list[dict[str, Any]] = []
             expansion = None
             ev_cfg = cfg.get("evidence") or {}
-            want_public = bool(ev_cfg.get("enabled")) and bool(ev_cfg.get("local_answers", True))
+            from .local_context import wants_public
+            want_public = (bool(ev_cfg.get("enabled")) and bool(ev_cfg.get("local_answers", True))
+                           and wants_public(user_text))
             lce_on = self.retriever is not None and self.retrieval_active()
             if (lce_on and (cfg.get("lce") or {}).get("query_expansion", True)) or want_public:
                 from .local_context import expand_query
@@ -207,14 +210,15 @@ class ChatService:
             public_report: dict[str, Any] | None = None
             if want_public and expansion is not None:
                 from .local_context import public_entities, public_evidence
-                known = ""
+                known, pairs = "", []
                 if self.glossary is not None:
                     try:
                         known = self.glossary(f"{user_text} {expansion.keywords}")
+                        pairs = self.glossary_entries() if self.glossary_entries else []
                     except Exception:
-                        known = ""
+                        known, pairs = "", []
                 entities = public_entities(user_text, expansion, sources,
-                                           int(ev_cfg.get("local_max_entities", 3)), known)
+                                           int(ev_cfg.get("local_max_entities", 3)), pairs)
                 if entities:
                     provider = self.public_provider
                     if provider is None:
@@ -222,13 +226,16 @@ class ChatService:
                         provider = WikipediaEvidence(
                             lang=str(ev_cfg.get("local_lang", "en")),
                             timeout_s=float(ev_cfg.get("timeout_s", 4.0)))
-                    public_hits, public_report = public_evidence(entities, expansion, provider)
+                    public_hits, public_report = public_evidence(entities, expansion, provider,
+                                                                 known)
             if public_hits:
                 from .lang import detect_language
-                from .local_context import render_public
-                context = [{"role": "system",
-                            "content": render_public(public_hits, detect_language(user_text))},
-                           *context]
+                from .local_context import FUSION_ASK, render_public
+                lang = detect_language(user_text)
+                context = [{"role": "system", "content": render_public(public_hits, lang)},
+                           *context[:-1],
+                           {"role": "user",
+                            "content": context[-1]["content"] + FUSION_ASK.get(lang, FUSION_ASK["en"])}]
             if sources:
                 context = [{"role": "system", "content": _sources_block(sources, user_text)},
                            *context]
