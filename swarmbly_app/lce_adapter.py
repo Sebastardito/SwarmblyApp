@@ -183,7 +183,7 @@ class LCEAdapter:
         for i, score in ranked:
             if score < RELATIVE_FLOOR * top or len(hits) >= k:
                 continue
-            if per_file.get(spans[i]["source"], 0) >= MAX_PER_FILE:
+            if per_file.get(spans[i]["source"], 0) >= max(MAX_PER_FILE, (2 * k) // 3):
                 continue          # one long file (a thesis chapter) must not fill every slot
             same = " ".join(_tokens(spans[i]["text"]))[:200]
             if same in seen:          # the same paragraph in two files (ES/EN copies)
@@ -353,7 +353,9 @@ EXTRA_WEIGHT = 0.5       # weight of added query terms (model keywords, glossary
 RRF_K = 60               # reciprocal-rank fusion constant
 DENSE_CANDIDATES = 40    # dense ranks that enter the fusion
 CANDIDATES_KEPT = 15     # ranked candidates kept for the metadata
-MAX_PER_FILE = 3         # passages per file in one answer (2 cut a needed third, round 4)
+MAX_PER_FILE = 3         # passages per file, at least (2 cut a needed third, round 4);
+#                          two thirds of k when larger (round 10c: the Ne paragraph was
+#                          5th of its chapter with k = 6 and a cap of 3)
 _GLOSS_LINE = re.compile(r"^\s*[-*]?\s*([^=→#<>|]{2,80}?)\s*(?:=|→|->)\s*([^=→]{2,200})$")
 
 
