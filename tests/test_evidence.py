@@ -224,3 +224,22 @@ def test_local_batch_evidence_sends_only_items():
     assert report["local_batch"] and report["queried"] == ["Australia", "Canadá", "Nigeria"]
     assert all("capital" not in u.split("gsrsearch=")[1].split("&")[0].lower() or "Nigeria" in u
                or "Australia" in u or "Canad" in u for u in sent)
+
+
+def test_event_items_get_year_sentences_from_the_english_article():
+    en = ("Project Isabela was an environmental restoration project in the Galápagos Islands. "
+          "It aimed at goats. It was initiated by the Charles Darwin Foundation. "
+          "The initiative began in 1997, and by 2006, 150,000 goats were eradicated. "
+          "In 1835 Darwin visited the islands.")
+
+    def fetch(url, timeout, ua):
+        if "en.wikipedia" in url:
+            return {"query": {"pages": {"1": {"title": "Project Isabela", "extract": en}}}}
+        return {"query": {"pages": {}}}
+    provider = ev.WikipediaEvidence(lang="es", fetch=fetch,
+                                    fallback=ev.WikipediaEvidence(lang="en", fetch=fetch, max_chars=800))
+    profile = ev.operation_profile("Para cada uno de los siguientes acontecimientos de Galápagos, "
+                                   "indica solo el año en que ocurrió:")
+    hit = provider.lookup("Inicio del Proyecto Isabela", profile)
+    assert hit and "1997" in hit["text"] and "1835" not in hit["text"] and hit["fallback"] == "en"
+    assert provider.lookup("Proyecto Isabela", profile) is None     # no event word: no guess

@@ -151,7 +151,7 @@ class AppState:
         if not self._lce_active():
             return []
         cfg = self.config.all().get("lce") or {}
-        return self.lce.retrieve(query, k=int(cfg.get("retrieval_k", 4)),
+        return self.lce.retrieve(query, k=int(cfg.get("retrieval_k", 6)),
                                  extra_dirs=cfg.get("sources_dirs") or [],
                                  expansion=expansion,
                                  embed=self._embed if cfg.get("dense_retrieval", True) else None)

@@ -352,6 +352,16 @@ Windows, Debian; 0.5 B to 8 B models)
   first); if it is still empty, the conversation's model answers the same
   prompt (`fusion_fallback` in the metadata).
 
+- Round 10a (one repetition each; the hit is deterministic): with the hybrid
+  retrieval, 6 passages found the asked fact in 12 of 16 questions, 4 in 11
+  and 8 in 12; the score was 33/44 with 6. `lce.retrieval_k` is now 6.
+- Batch evidence for events ("Inicio del Proyecto Isabela", "Muerte del
+  Solitario George"): the English fallback is searched with the item's proper
+  names only (Project Isabela, Lonesome George), and a sentence counts only
+  with a year and the event's verb in English (`EN_EVENT`: muerte →
+  died/death, inicio → began/initiated…), so an article full of dates does
+  not answer with the wrong one; without an event word nothing is added.
+
 **LCE C1: retrieval over your sources, for local answers (P2b)**
 - With LCE enabled at C1, answers produced on this device get the most
   relevant paragraphs of the user's sources (LCE source folder plus

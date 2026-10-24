@@ -100,7 +100,7 @@ DEFAULTS: dict[str, Any] = {
         # so a Spanish question reaches English sources (local only).
         "query_expansion": True,
         "expansion_model": "",        # "" = the default model (model.model_name)
-        "retrieval_k": 4,
+        "retrieval_k": 6,            # P2e round 10a: 12/16 against 11 with 4
         # Hybrid retrieval: BM25 fused with vectors from model.embed_model
         # (local Ollama); falls back to BM25 alone if the model is missing.
         "dense_retrieval": True,

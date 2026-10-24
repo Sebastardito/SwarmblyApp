@@ -203,6 +203,18 @@ EN_FOCUS = {
     "moneda": "currency", "fundacion": "founded", "descubrimiento": "discovered",
 }
 
+# Spanish event words (folded prefixes) → English stems a dated sentence uses.
+EN_EVENT = {
+    "muerte": "died death", "fallec": "died death", "murio": "died death",
+    "inicio": "began begin start initiat launch", "comienzo": "began begin start",
+    "fundacion": "found establish", "creacion": "creat establish found",
+    "extirpacion": "extirpat extinct", "extincion": "extinct extirpat",
+    "desaparicion": "extinct extirpat disappear",
+    "proteccion": "protect", "declaracion": "declar", "descubrimiento": "discover",
+    "llegada": "arriv", "erupcion": "erupt", "registro": "record report detect",
+    "nacimiento": "born", "publicacion": "publish", "erradicacion": "eradicat",
+}
+
 _IUCN_ANCHOR = re.compile(r"\b(IUCN|UICN|Red List|Lista Roja|BirdLife)\b", re.I)
 
 _NUMERIC_FOCUS = frozenset(_stem(_fold(w)) for w in (
@@ -322,6 +334,8 @@ class WikipediaEvidence:
         return None
 
     def _fallback(self, item: str, profile: OperationProfile) -> dict[str, Any] | None:
+        if profile.wants_year:
+            return self._fallback_year(item, profile)
         focus = sorted({w for f in profile.focus if f in EN_FOCUS for w in EN_FOCUS[f].split()})
         if not focus:
             return None
@@ -340,6 +354,39 @@ class WikipediaEvidence:
         if not chosen:
             return None
         text = drop_unasked_numbers(profile, " ".join(chosen[:2]))
+        hit["text"] = text if len(text) <= max(self.max_chars, 320) else \
+            text[:320][: text[:320].rfind(" ")] + " …"
+        hit["fallback"] = self.fallback.lang
+        return hit
+
+    def _fallback_year(self, item: str, profile: OperationProfile) -> dict[str, Any] | None:
+        """Events ("Inicio del Proyecto Isabela") have no article of their own in
+        the request's language (P2e round 9b). The English provider is asked for
+        the item's proper names only ("Proyecto Isabela" → Project Isabela;
+        "Solitario George" → Lonesome George), and a sentence counts only if it
+        has a year and the event's verb in English ("muerte" → died/death,
+        "inicio" → began/initiated): an article full of years must not answer
+        with the wrong one."""
+        words = _WORD.findall(item)
+        names = [w for i, w in enumerate(words)
+                 if i > 0 and len(w) >= 4 and w[:1].isupper()]
+        events = {e for w in words for k, v in EN_EVENT.items()
+                  if _fold(w).startswith(k) for e in v.split()}
+        if not names or not events:
+            return None
+        try:
+            hit = self.fallback.passages(" ".join(names), ["__year__", *sorted(events)],
+                                         max_sentences=3)
+        except Exception:
+            return None
+        if not hit:
+            return None
+        chosen = [x for x in _sentences(hit["text"]) if _YEAR.search(x)
+                  and any(_fold(w).startswith(e) for w in _WORD.findall(x) for e in events)]
+        if not chosen:
+            return None
+        text = " ".join(chosen[:2])
+        hit["item"] = item
         hit["text"] = text if len(text) <= max(self.max_chars, 320) else \
             text[:320][: text[:320].rfind(" ")] + " …"
         hit["fallback"] = self.fallback.lang
