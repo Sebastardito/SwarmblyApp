@@ -29,16 +29,39 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 BINOMIAL = re.compile(r"\b([A-Z][a-z]{3,})\s([a-z]{4,})\b")
-# Applied to the last user message when public evidence is present (P2e): small
-# models ignore system blocks with two kinds of sources unless asked in the turn.
-FUSION_ASK = {
-    "es": ("\n\n(Responde en este orden: 1) lo que dicen mis fuentes locales, citando [1], [2]…; "
-           "2) lo que dice la evidencia pública, citando [W1], [W2]…; 3) si difieren, di ambas "
-           "versiones y cuál es la más reciente.)"),
-    "en": ("\n\n(Answer in this order: 1) what my local sources say, citing [1], [2]…; 2) what "
-           "the public evidence says, citing [W1], [W2]…; 3) if they differ, give both and say "
-           "which is more recent.)"),
+# The fusion template (P2e round 4): local passages and public evidence in the
+# user's turn, under explicit labels, with a three-part answer.
+FUSION = {
+    "es": {"local": "MIS DOCUMENTOS (privados, en este equipo):",
+           "none": "(ningún pasaje)",
+           "public": "WIKIPEDIA (pública, consultada hoy; solo se enviaron estos nombres: {names}):",
+           "question": "PREGUNTA:",
+           "ask": ("Responde en tres partes:\n"
+                   "1. Mis documentos: qué dicen [1], [2]… sobre la pregunta (si no dicen nada, dilo). "
+                   "No cites aquí nada de Wikipedia.\n"
+                   "2. Wikipedia: qué dicen [W1], [W2]….\n"
+                   "3. Comparación: si difieren, da las dos versiones; la de Wikipedia es la actual.")},
+    "en": {"local": "MY DOCUMENTS (private, on this device):",
+           "none": "(no passage)",
+           "public": "WIKIPEDIA (public, fetched today; only these names were sent: {names}):",
+           "question": "QUESTION:",
+           "ask": ("Answer in three parts:\n"
+                   "1. My documents: what [1], [2]… say about the question (say so if nothing). "
+                   "Do not cite Wikipedia here.\n"
+                   "2. Wikipedia: what [W1], [W2]… say.\n"
+                   "3. Comparison: if they differ, give both versions; Wikipedia's is the current one.")},
 }
+
+
+def fusion_prompt(sources: list[dict[str, Any]], hits: list[dict[str, Any]],
+                  question: str, lang: str) -> str:
+    t = FUSION.get(lang, FUSION["en"])
+    lines = [t["local"]]
+    lines += [f"[{i}] ({s['source']}) {s['text']}" for i, s in enumerate(sources, 1)] or [t["none"]]
+    lines += ["", t["public"].format(names=", ".join(h["sent"] for h in hits))]
+    lines += [f"[W{i}] ({h['title']}) {h['text']}" for i, h in enumerate(hits, 1)]
+    lines += ["", f"{t['question']} {question.strip()}", "", t["ask"]]
+    return "\n".join(lines)
 # Latin epithets end like these; "Goat eradication" or "Según tu" do not.
 _LATIN_END = re.compile(r"(?:us|um|a|ae|is|i|ii|ei|er|ix|ax|ex|ensis|oides|otis|atus|ata|ens|ans)$")
 # Capitalised words that start a binomial-looking pair but are not genera.
@@ -159,7 +182,8 @@ def translated_names(question: str, glossary: list[tuple[str, str]]) -> list[str
     out: list[str] = []
     for term, equivalents in glossary:
         first = equivalents.split(",")[0].strip()
-        if term[:1].isupper() and first and re.search(r"\b" + re.escape(term) + r"\b", question):
+        if (term[:1].isupper() and not term.isupper() and first
+                and re.search(r"\b" + re.escape(term) + r"\b", question)):
             out.append(first)          # a proper name the user listed: "Proyecto Isabela"
             continue
         english = next((e.strip() for e in equivalents.split(",")
@@ -204,18 +228,24 @@ def public_entities(question: str, expansion: Expansion,
         add(t, "question (glossary)")
     if not picked:
         counts: dict[str, int] = {}
-        for s in sources:
-            for b in binomials(s.get("text", "")):
-                counts[b] = counts.get(b, 0) + s.get("text", "").count(b)
+        joined = " ".join(s.get("text", "") for s in sources)
+        for b in binomials(joined):
+            genus, epithet = b.split(" ", 1)
+            counts[b] = joined.count(b) + joined.count(f"{genus[0]}. {epithet}")  # "P. downsi"
         repeated = [b for b, c in sorted(counts.items(), key=lambda x: -x[1]) if c >= 2]
         if repeated:
             add(repeated[0], "local passages (repeated scientific name)")
     return picked
 
 
-def focus_terms(expansion: Expansion, entity: str, known: str = "") -> list[str]:
+_ASKS_YEAR = re.compile(r"\b(año|años|cu[aá]ndo|fecha|year|when|ano|quand|ann[ée]e)\b", re.I)
+YEAR_FOCUS = "__year__"
+
+
+def focus_terms(expansion: Expansion, entity: str, known: str = "",
+                question: str = "") -> list[str]:
     ent = {_fold(w) for w in re.findall(r"\w+", entity)}
-    terms = []
+    terms = [YEAR_FOCUS] if _ASKS_YEAR.search(question) else []
     for w in re.findall(r"[A-Za-z][A-Za-z-]{3,}", f"{known} {expansion.keywords}"):
         f = _fold(w)
         if f not in ent and f not in terms and f not in {"galapagos", "thesis", "article",
@@ -225,13 +255,14 @@ def focus_terms(expansion: Expansion, entity: str, known: str = "") -> list[str]
 
 
 def public_evidence(entities: list[dict[str, str]], expansion: Expansion, provider: Any,
-                    known: str = "") -> tuple[list[dict[str, Any]], dict[str, Any]]:
+                    known: str = "", question: str = ""
+                    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     hits: list[dict[str, Any]] = []
     errors: list[str] = []
 
     def one(ent):
         try:
-            return provider.passages(ent["name"], focus_terms(expansion, ent["name"], known)), None
+            return provider.passages(ent["name"], focus_terms(expansion, ent["name"], known, question)), None
         except Exception as exc:
             return None, type(exc).__name__
 

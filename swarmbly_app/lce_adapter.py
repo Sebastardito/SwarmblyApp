@@ -164,18 +164,22 @@ class LCEAdapter:
         extra = f"{expansion} {self.glossary_terms(f'{query} {expansion}', extra_dirs)}"
         # The user's own words weigh fully; added terms (model keywords,
         # glossary equivalents) weigh half, so they widen without taking over.
-        ranked = index.search(query, k * 2, extra=extra, extra_weight=EXTRA_WEIGHT)
+        ranked = index.search(query, k * 4, extra=extra, extra_weight=EXTRA_WEIGHT)
         # Paragraphs that only share function words ("de", "es") score far
         # below a real match: keep those within 35 % of the best one.
         top = ranked[0][1] if ranked else 0.0
         hits, seen = [], set()
+        per_file: dict[str, int] = {}
         for i, score in ranked:
             if score < RELATIVE_FLOOR * top or len(hits) >= k:
                 continue
+            if per_file.get(spans[i]["source"], 0) >= MAX_PER_FILE:
+                continue          # one long file (a thesis chapter) must not fill every slot
             same = " ".join(_tokens(spans[i]["text"]))[:200]
             if same in seen:          # the same paragraph in two files (ES/EN copies)
                 continue
             seen.add(same)
+            per_file[spans[i]["source"]] = per_file.get(spans[i]["source"], 0) + 1
             hit = {key: v for key, v in spans[i].items() if key != "index"}
             hit["score"] = round(score, 3)
             hits.append(hit)
@@ -287,6 +291,7 @@ SPAN_MAX_CHARS = 600
 RELATIVE_FLOOR = 0.35
 SHORT_BLOCK_CHARS = 60   # shorter blocks are headings ("NRGene Canada Inc.", "Methods")
 EXTRA_WEIGHT = 0.5       # weight of added query terms (model keywords, glossary)
+MAX_PER_FILE = 2         # passages per file in one answer
 _GLOSS_LINE = re.compile(r"^\s*[-*]?\s*([^=→#<>|]{2,80}?)\s*(?:=|→|->)\s*([^=→]{2,200})$")
 
 
@@ -309,6 +314,16 @@ def _paragraphs(name: str, text: str, label: str = "") -> list[dict[str, Any]]:
     title = next((ln.lstrip("# ").strip() for ln in text.splitlines()
                   if ln.startswith("# ")), "")
     header = " ".join(re.split(r"[\W_]+", re.sub(r"\.\w+$", "", label or name)) + [title])
+    # "M. melanotis" is indexed as "Mimus melanotis" when the file spells the
+    # genus out somewhere, so a question with the full name finds it.
+    genus_of = {}
+    for g, e in re.findall(r"\b([A-Z][a-z]{3,})\s([a-z]{4,})\b", text):
+        genus_of.setdefault((g[0], e), g)
+
+    def unabbreviate(piece: str) -> str:
+        return re.sub(r"\b([A-Z])\.\s([a-z]{4,})\b",
+                      lambda m: f"{genus_of.get((m.group(1), m.group(2)), m.group(1))} {m.group(2)}",
+                      piece)
     out: list[dict[str, Any]] = []
     pos = 0
     heading = ""
@@ -332,7 +347,7 @@ def _paragraphs(name: str, text: str, label: str = "") -> list[dict[str, Any]]:
                 cut = cut if cut > 0 else SPAN_MAX_CHARS
                 piece, body = body[:cut].rstrip(), body[cut:].lstrip()
             out.append({"source": name, "start": start, "end": pos, "text": piece,
-                        "index": f"{header} {heading} {piece}"})
+                        "index": f"{header} {heading} {unabbreviate(piece)}"})
     return out
 
 

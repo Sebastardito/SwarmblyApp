@@ -273,6 +273,21 @@ Windows, Debian; 0.5 B to 8 B models)
 - Short blocks of up to four words ("Acme Labs Inc.") are headings, not
   passages; the glossary also matches Spanish gender ("extinto" ~ "extinta").
 
+- Round 3: C1 21/20/20 of 44, with public evidence 25/25/25; public facts
+  gained in 3 of the 6 questions that ask for them (current IUCN status of
+  two mockingbirds; the fur seal's size and legal protection since 1934). The
+  3B model cited the public evidence as "my local sources".
+- Fusion template: when public evidence is present, the local passages and
+  the evidence go into the user's turn under labels ("MIS DOCUMENTOS",
+  "WIKIPEDIA"), followed by the question and a three-part answer (my
+  documents, Wikipedia, comparison).
+- Retrieval: abbreviated species names are indexed in full when the file
+  spells the genus out ("M. melanotis" → "Mimus melanotis"); one file fills at
+  most two of the passages; the passage bridge also counts abbreviated forms.
+- Public passages: a question that asks for a year or a date ("¿en qué
+  año…?") brings the article's sentences with years; glossary acronyms
+  ("UICN = IUCN") are not sent as names.
+
 **LCE C1: retrieval over your sources, for local answers (P2b)**
 - With LCE enabled at C1, answers produced on this device get the most
   relevant paragraphs of the user's sources (LCE source folder plus

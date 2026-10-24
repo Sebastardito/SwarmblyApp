@@ -227,16 +227,17 @@ class ChatService:
                             lang=str(ev_cfg.get("local_lang", "en")),
                             timeout_s=float(ev_cfg.get("timeout_s", 4.0)))
                     public_hits, public_report = public_evidence(entities, expansion, provider,
-                                                                 known)
+                                                                 known, user_text)
             if public_hits:
+                # P2e fusion template: both kinds of source in the user's turn,
+                # labelled, with the answer's structure; a 3B model mixed them up
+                # when they came as system blocks (round 3).
                 from .lang import detect_language
-                from .local_context import FUSION_ASK, render_public
-                lang = detect_language(user_text)
-                context = [{"role": "system", "content": render_public(public_hits, lang)},
-                           *context[:-1],
-                           {"role": "user",
-                            "content": context[-1]["content"] + FUSION_ASK.get(lang, FUSION_ASK["en"])}]
-            if sources:
+                from .local_context import fusion_prompt
+                context = [*context[:-1],
+                           {"role": "user", "content": fusion_prompt(
+                               sources, public_hits, user_text, detect_language(user_text))}]
+            elif sources:
                 context = [{"role": "system", "content": _sources_block(sources, user_text)},
                            *context]
             result = backend.stream_chat(

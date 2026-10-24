@@ -130,11 +130,11 @@ def test_local_answer_with_public_evidence_sends_only_names(app_state, fake_chat
     assert asked == ["Mimus melanotis"]            # the model's names are not sent
     assert all(q not in a for a in asked)
     system = [m["content"] for m in fake.calls[-1]["messages"] if m["role"] == "system"]
-    assert any("[1] (tesis.md)" in s for s in system)
-    assert any("[W1] (San Cristóbal mockingbird)" in s and "solo se enviaron" in s for s in system)
+    assert not any("[1] (tesis.md)" in s for s in system)      # all in the user's turn now
     meta = chat.get_messages(conv["id"])[-1]["meta"]
     assert meta["evidence"]["queried"] == asked and meta["evidence"]["local_answer"]
-    assert "[W1]" in fake.calls[-1]["messages"][-1]["content"]     # fusion request in the turn
+    last = fake.calls[-1]["messages"][-1]["content"]
+    assert "MIS DOCUMENTOS" in last and "[1] (tesis.md)" in last and "[W1]" in last
     assert meta["lce"]["expansion"]["entities"] == ["San Cristobal mockingbird"]
 
 
@@ -201,3 +201,40 @@ def test_glossary_matches_spanish_gender_and_one_article_is_used_once(app_state)
                                     {"name": "Floreana mockingbird", "from": "question (glossary)"}],
                                    Expansion(), Provider())
     assert len(hits) == 1 and report["used"] == 1
+
+
+def test_abbreviated_species_names_are_indexed_in_full(app_state):
+    _write(app_state, "cap1.md", "Mimus melanotis lives on one island.\n\n"
+           "Its status: M. melanotis (IUCN: endangered) and others.")
+    hits = app_state.lce.retrieve("Mimus melanotis IUCN endangered")
+    assert hits[0]["text"].startswith("Its status: M. melanotis")    # text shown unchanged
+
+
+def test_one_file_fills_at_most_two_slots(app_state):
+    _write(app_state, "big.md", "\n\n".join(f"Supernova assembly note about {w}." for w in
+                                            ("alpha", "beta", "gamma", "delta", "omega")))
+    _write(app_state, "other.md", "Supernova assembly in another file.")
+    hits = app_state.lce.retrieve("Supernova assembly", k=4)
+    assert sum(h["source"] == "big.md" for h in hits) == 2 and any(h["source"] == "other.md" for h in hits)
+
+
+def test_year_questions_bring_the_sentence_with_the_year():
+    article = ("The Floreana mockingbird is a bird. It is endemic to Galápagos. Its song is loud. "
+               "It was extirpated from Floreana by 1888. It now lives on two islets.")
+
+    def fetch(url, timeout, ua):
+        return {"query": {"pages": {"1": {"title": "Floreana mockingbird", "extract": article}}}}
+    hit = WikipediaEvidence(lang="en", fetch=fetch).passages("Floreana mockingbird", ["__year__"])
+    assert "1888" in hit["text"]
+    from swarmbly_app.local_context import focus_terms
+    assert focus_terms(Expansion(), "x", "", "¿En qué año desapareció?")[0] == "__year__"
+
+
+def test_fusion_prompt_labels_both_kinds_and_acronyms_are_not_sent():
+    from swarmbly_app.local_context import fusion_prompt
+    out = fusion_prompt([{"source": "tesis.md", "text": "M. melanotis (IUCN: endangered)"}],
+                        [{"sent": "Mimus melanotis", "title": "San Cristóbal mockingbird",
+                          "text": "Near Threatened."}], "¿Coincide?", "es")
+    assert out.index("MIS DOCUMENTOS") < out.index("[1] (tesis.md)") < out.index("WIKIPEDIA") \
+        < out.index("[W1]") < out.index("PREGUNTA: ¿Coincide?") < out.index("Responde en tres partes")
+    assert translated_names("¿Qué dice la UICN?", [("UICN", "IUCN")]) == []

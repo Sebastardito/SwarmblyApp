@@ -328,13 +328,14 @@ class WikipediaEvidence:
         sentences = _sentences(text)
         if not sentences:
             return None
-        stems = {_stem(_fold(f)) for f in focus if len(f) >= 3}
+        want_year = "__year__" in focus
+        stems = {_stem(_fold(f)) for f in focus if len(f) >= 3 and f != "__year__"}
         chosen = sentences[:2]           # the lead usually states what the thing is
-        if stems:
+        if stems or want_year:
             scored = []
             for i, sent in enumerate(sentences[2:], 2):
                 words = {_stem(w) for w in (_fold(x) for x in _WORD.findall(sent))}
-                score = len(words & stems)
+                score = len(words & stems) + (2 if want_year and _YEAR.search(sent) else 0)
                 if score:
                     scored.append((-score, i, sent))
             for _, i, sent in sorted(scored)[: max_sentences - 1]:
