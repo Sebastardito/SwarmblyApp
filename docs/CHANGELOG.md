@@ -295,6 +295,16 @@ Windows, Debian; 0.5 B to 8 B models)
   passages shown to the model spell abbreviated genera out ("M. trifasciatus"
   → "Mimus trifasciatus"), which the 3B model otherwise skipped.
 
+- Round 5: C1 23/21/23 of 44, with public evidence 27/26/31; the contrast
+  "your thesis said X, today it is Y" appeared in 2 of 3 repetitions.
+- `evidence.fusion_model` (Settings → Privacy → advanced): a larger local
+  model writes only the answers that fuse local sources with public
+  evidence; other answers keep the conversation's model. Query keywords now
+  come from the default model (`lce.expansion_model`, "" = `model.model_name`)
+  even when the conversation uses a large one: a reasoning model returned no
+  keywords in 90 tokens (round 6, aborted), and the retrieval lost the
+  English passages. Reasoning blocks are stripped from the expansion.
+
 **LCE C1: retrieval over your sources, for local answers (P2b)**
 - With LCE enabled at C1, answers produced on this device get the most
   relevant paragraphs of the user's sources (LCE source folder plus

@@ -238,3 +238,32 @@ def test_fusion_prompt_labels_both_kinds_and_acronyms_are_not_sent():
     assert out.index("MIS DOCUMENTOS") < out.index("[1] (tesis.md)") < out.index("WIKIPEDIA") \
         < out.index("[W1]") < out.index("PREGUNTA: ¿Coincide?") < out.index("Responde en tres partes")
     assert translated_names("¿Qué dice la UICN?", [("UICN", "IUCN")]) == []
+
+
+def test_fusion_model_writes_only_fused_answers_and_expansion_uses_the_default(app_state, fake_chat):
+    chat, fake = fake_chat
+    _write(app_state, "tesis.md", "M. melanotis (IUCN: endangered), the San Cristobal mockingbird.")
+    app_state.config.update({"lce": {"enabled": True, "level": "C1"},
+                             "model": {"model_name": "small:3b"},
+                             "evidence": {"enabled": True, "fusion_model": "big:27b"}})
+
+    class Provider:
+        lang = "en"
+
+        def passages(self, entity, focus):
+            return {"title": "San Cristóbal mockingbird", "url": "u", "text": "Near Threatened."}
+    chat.public_provider = Provider()
+    conv = chat.create_conversation(mode="local", model="big:27b")
+    chat.send(conv["id"], "¿Cuál es el estado actual de Mimus melanotis?", mode="local",
+              run_async=False)
+    assert fake.calls[0]["model"] == "small:3b"          # expansion
+    assert fake.calls[-1]["model"] == "big:27b"           # fused answer
+    conv2 = chat.create_conversation(mode="local", model="small:3b")
+    chat.send(conv2["id"], "¿Qué muestra de Mimus melanotis usé en mi tesis?", mode="local",
+              run_async=False)
+    assert fake.calls[-1]["model"] == "small:3b"          # not fused: no public question
+
+
+def test_reasoning_output_is_stripped_from_the_expansion():
+    e = parse_expansion("<think>let me see</think>mockingbird, sample || San Cristobal mockingbird")
+    assert e.keywords.startswith("mockingbird") and e.entities == ["San Cristobal mockingbird"]

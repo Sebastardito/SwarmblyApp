@@ -199,7 +199,12 @@ class ChatService:
             lce_on = self.retriever is not None and self.retrieval_active()
             if (lce_on and (cfg.get("lce") or {}).get("query_expansion", True)) or want_public:
                 from .local_context import expand_query
-                expansion = expand_query(backend, model, user_text)
+                # Keywords come from the small default model even when the
+                # conversation uses a large one: fast, and a reasoning model
+                # returned nothing in 90 tokens (P2e round 6).
+                exp_model = ((cfg.get("lce") or {}).get("expansion_model")
+                             or (cfg.get("model") or {}).get("model_name") or model)
+                expansion = expand_query(backend, exp_model, user_text)
             if lce_on:
                 try:
                     sources = self.retriever(
@@ -228,6 +233,11 @@ class ChatService:
                             timeout_s=float(ev_cfg.get("timeout_s", 4.0)))
                     public_hits, public_report = public_evidence(entities, expansion, provider,
                                                                  known, user_text)
+            answer_model = model
+            if public_hits and ev_cfg.get("fusion_model"):
+                # P2e: a larger local model writes only the answers that fuse the
+                # user's sources with public evidence (few, and quality matters).
+                answer_model = str(ev_cfg["fusion_model"])
             if public_hits:
                 # P2e fusion template: both kinds of source in the user's turn,
                 # labelled, with the answer's structure; a 3B model mixed them up
@@ -241,7 +251,7 @@ class ChatService:
                 context = [{"role": "system", "content": _sources_block(sources, user_text)},
                            *context]
             result = backend.stream_chat(
-                context, model=model,
+                context, model=answer_model,
                 max_tokens=answer_budget(
                     user_text, int(self.config()["model"].get("max_tokens", 1024))),
                 temperature=float(self.config()["model"].get("temperature", 0.2)),
@@ -259,6 +269,8 @@ class ChatService:
                 extra.setdefault("lce", {})["expansion"] = expansion.to_dict()
             if public_report is not None:
                 extra["evidence"] = public_report
+            if answer_model != model:
+                extra["answer_model"] = answer_model
             self._finish(request, result, note=local_reason, stages=routing_stages,
                          extra=extra)
         except Interrupted:

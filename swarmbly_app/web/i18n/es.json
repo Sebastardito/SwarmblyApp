@@ -348,7 +348,8 @@
    "results": "Resultados",
    "permissions": "Permisos",
    "system": "Sistema"
-  }
+  },
+  "sameModel": "Igual que la conversación"
  },
  "profile": {
   "automatic": "Automático",
@@ -573,6 +574,10 @@
   "evidence__local_max_entities": {
    "label": "Nombres consultados por respuesta local",
    "help": "Máximo de nombres enviados a Wikipedia por respuesta generada en este equipo."
+  },
+  "evidence__fusion_model": {
+   "label": "Modelo para respuestas con evidencia",
+   "help": "Cuando una respuesta de este equipo combina tus fuentes locales con evidencia pública, puede redactarla un modelo local más grande (más lento, mejor atribución). Las demás respuestas siguen con el modelo de la conversación."
   }
  },
  "models": {

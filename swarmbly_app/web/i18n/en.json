@@ -348,7 +348,8 @@
    "results": "Results",
    "permissions": "Permissions",
    "system": "System"
-  }
+  },
+  "sameModel": "Same as the conversation"
  },
  "profile": {
   "automatic": "Automatic",
@@ -573,6 +574,10 @@
   "evidence__local_max_entities": {
    "label": "Names looked up per local answer",
    "help": "Maximum names sent to Wikipedia per answer generated on this device."
+  },
+  "evidence__fusion_model": {
+   "label": "Model for answers with evidence",
+   "help": "When an answer made on this device combines your local sources with public evidence, a larger local model can write it (slower, better attribution). Other answers keep the conversation's model."
   }
  },
  "models": {

@@ -66,6 +66,7 @@ const Settings = (() => {
       { key: "evidence.max_items", type: "number", min: 1, max: 100, group: "evidence", advanced: true },
       { key: "evidence.local_answers", type: "bool", group: "evidence" },
       { key: "evidence.local_max_entities", type: "number", min: 1, max: 6, group: "evidence", advanced: true },
+      { key: "evidence.fusion_model", type: "model", allowEmpty: true, group: "evidence", advanced: true },
     ],
     results: [
       { key: "results.export_format", type: "select", options: [["markdown", "Markdown"], ["json", "JSON"], ["html", "HTML"]] },
@@ -163,6 +164,7 @@ const Settings = (() => {
     } else if (f.type === "model") {
       const chat = installed.filter((m) => m.kind !== "embedding").map((m) => ({ value: m.name, label: m.name }));
       if (value && !chat.some((o) => o.value === value)) chat.unshift({ value, label: `${value} (${t("settings.notInstalled")})` });
+      if (f.allowEmpty) chat.unshift({ value: "", label: t("settings.sameModel") });
       control = select(chat.length ? chat : [{ value: "", label: t("chat.noModel") }], value, save,
         { "aria-label": label });
     } else if (f.type === "models") {

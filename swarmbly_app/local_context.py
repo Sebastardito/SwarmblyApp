@@ -101,7 +101,8 @@ class Expansion:
 
 
 def parse_expansion(text: str) -> Expansion:
-    line = " ".join((text or "").strip().split())
+    text = re.sub(r"(?s)<think>.*?(</think>|$)", " ", text or "")   # reasoning models
+    line = " ".join(text.strip().split())
     line = re.sub(r"^(keywords?|format|answer)\s*:\s*", "", line, flags=re.I)
     if "||" in line:
         kw, ents = line.split("||", 1)

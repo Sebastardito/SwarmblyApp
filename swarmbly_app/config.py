@@ -99,6 +99,7 @@ DEFAULTS: dict[str, Any] = {
         # P2e: the local model adds English keywords to the retrieval query,
         # so a Spanish question reaches English sources (local only).
         "query_expansion": True,
+        "expansion_model": "",        # "" = the default model (model.model_name)
         "retrieval_k": 4,
     },
     # P2 prototype: public evidence for batch items (only item texts are sent
@@ -118,6 +119,9 @@ DEFAULTS: dict[str, Any] = {
         "local_answers": True,
         "local_max_entities": 3,
         "local_lang": "en",
+        # P2e: model that writes the answers fusing local sources and public
+        # evidence ("" = the conversation's model).
+        "fusion_model": "",
     },
     "permissions": {
         "lan_discovery": None,        # None = not asked yet; True/False = answer
