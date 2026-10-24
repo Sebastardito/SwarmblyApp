@@ -511,7 +511,7 @@ const Doctor = (() => {
         h("tbody", d.packages.map((p) => h("tr",
           h("td", h("code", p.name)), h("td", p.purpose),
           h("td", `${p.version || "—"}${p.installed_commit ? ` @${p.installed_commit}` : ""}`),
-          h("td", chip(t(`doctor.state.${p.status}`, p.status), ok(p.status))))))))));
+          h("td", chip(t(`doctor.state.${p.status}`, p.status).replace("{pin}", p.pinned_commit || ""), ok(p.status))))))))));
     if (d.installable?.length) {
       box.appendChild(button(t("doctor.install").replace("{n}", d.installable.length), async () => {
         const yes = await UI.modal(t("doctor.installTitle"), h("div",

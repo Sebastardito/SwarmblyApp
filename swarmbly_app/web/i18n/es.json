@@ -690,7 +690,7 @@
    "ok": "ok",
    "missing": "falta",
    "outdated": "desactualizado",
-   "pin_mismatch": "versión distinta de la auditada",
+   "pin_mismatch": "versión distinta de la fijada ({pin}); «Instalar» la actualiza",
    "not_running": "instalado, sin ejecutarse",
    "too_old": "demasiado antiguo"
   },
