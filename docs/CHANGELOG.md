@@ -396,6 +396,11 @@ Windows, Debian; 0.5 B to 8 B models)
   and Google Scholar are reached through SearXNG; an existing key still works
   until then. Tested end to end on Linux (download, environment, start, stop,
   restart).
+- Round 11 (measured with `0a88555`): on the LAN, IUCN statuses went from
+  4/4/3 (Wikipedia only) to 8/8/8 of 8 with Wikidata; event years 2/2/2 of 5
+  (Lonesome George from Wikidata), historical years unchanged at 10/10.
+  Locally (hybrid, k = 6, evidence, 27B fusion) 37 and 36 of 44, with every
+  public fact labelled by its source. PubMed rarely added anything here.
 
 **LCE C1: retrieval over your sources, for local answers (P2b)**
 - With LCE enabled at C1, answers produced on this device get the most
