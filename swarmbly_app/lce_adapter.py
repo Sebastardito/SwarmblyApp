@@ -291,7 +291,7 @@ SPAN_MAX_CHARS = 600
 RELATIVE_FLOOR = 0.35
 SHORT_BLOCK_CHARS = 60   # shorter blocks are headings ("NRGene Canada Inc.", "Methods")
 EXTRA_WEIGHT = 0.5       # weight of added query terms (model keywords, glossary)
-MAX_PER_FILE = 2         # passages per file in one answer
+MAX_PER_FILE = 3         # passages per file in one answer (2 cut a needed third, round 4)
 _GLOSS_LINE = re.compile(r"^\s*[-*]?\s*([^=→#<>|]{2,80}?)\s*(?:=|→|->)\s*([^=→]{2,200})$")
 
 
@@ -346,8 +346,12 @@ def _paragraphs(name: str, text: str, label: str = "") -> list[dict[str, Any]]:
                 cut = cuts[-1] if cuts and cuts[-1] > SPAN_MAX_CHARS // 3 else body.rfind(" ", 0, SPAN_MAX_CHARS)
                 cut = cut if cut > 0 else SPAN_MAX_CHARS
                 piece, body = body[:cut].rstrip(), body[cut:].lstrip()
-            out.append({"source": name, "start": start, "end": pos, "text": piece,
-                        "index": f"{header} {heading} {unabbreviate(piece)}"})
+            full = unabbreviate(piece)
+            # The passage shown to the model also spells the genus out: a 3B
+            # model read "M. trifasciatus (IUCN: Critical Endangered)" as saying
+            # nothing about Mimus trifasciatus (round 4).
+            out.append({"source": name, "start": start, "end": pos, "text": full,
+                        "index": f"{header} {heading} {full}"})
     return out
 
 

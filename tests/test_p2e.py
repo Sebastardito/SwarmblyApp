@@ -207,15 +207,15 @@ def test_abbreviated_species_names_are_indexed_in_full(app_state):
     _write(app_state, "cap1.md", "Mimus melanotis lives on one island.\n\n"
            "Its status: M. melanotis (IUCN: endangered) and others.")
     hits = app_state.lce.retrieve("Mimus melanotis IUCN endangered")
-    assert hits[0]["text"].startswith("Its status: M. melanotis")    # text shown unchanged
+    assert hits[0]["text"].startswith("Its status: Mimus melanotis (IUCN")   # genus spelled out
 
 
-def test_one_file_fills_at_most_two_slots(app_state):
+def test_one_file_fills_at_most_three_slots(app_state):
     _write(app_state, "big.md", "\n\n".join(f"Supernova assembly note about {w}." for w in
                                             ("alpha", "beta", "gamma", "delta", "omega")))
     _write(app_state, "other.md", "Supernova assembly in another file.")
     hits = app_state.lce.retrieve("Supernova assembly", k=4)
-    assert sum(h["source"] == "big.md" for h in hits) == 2 and any(h["source"] == "other.md" for h in hits)
+    assert sum(h["source"] == "big.md" for h in hits) == 3 and any(h["source"] == "other.md" for h in hits)
 
 
 def test_year_questions_bring_the_sentence_with_the_year():

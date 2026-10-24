@@ -288,6 +288,13 @@ Windows, Debian; 0.5 B to 8 B models)
   año…?") brings the article's sentences with years; glossary acronyms
   ("UICN = IUCN") are not sent as names.
 
+- Round 4: C1 20/19/19, with public evidence 27/27/25 of 44; public facts in
+  5 of the 6 questions that ask for them (with the fusion template the
+  attribution was mostly right). Two passages per file cut a needed third
+  passage (a course list, a paper's conclusion): the cap is now three. The
+  passages shown to the model spell abbreviated genera out ("M. trifasciatus"
+  → "Mimus trifasciatus"), which the 3B model otherwise skipped.
+
 **LCE C1: retrieval over your sources, for local answers (P2b)**
 - With LCE enabled at C1, answers produced on this device get the most
   relevant paragraphs of the user's sources (LCE source folder plus
