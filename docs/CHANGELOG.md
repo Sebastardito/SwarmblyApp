@@ -185,6 +185,16 @@ Windows, Debian; 0.5 B to 8 B models)
   first name) and neighbouring facts (atomic number instead of symbol,
   largest city instead of capital) misled answers the network already got
   right. The setting's help text says so; it stays off by default.
+- Operation-aware lookups (P2d; `evidence.operation_aware`, on; off gives
+  the P2a/P2c behaviour): the batch operation gives a topic ("animal",
+  "país", "elemento químico") and focus terms ("anfibio", "capital",
+  "símbolo", "autor", "año"). A result must mention one of them (or a year /
+  a writer when that is what is asked); a homonym fails and the search is
+  repeated with the topic ("Cecilia" → "Cecilia animal" → Gymnophiona). The
+  snippet is the first sentence plus the one carrying the asked fact ("…su
+  capital es Abuya"), cut around that fact when long. Implicit
+  disambiguation pages ("puede hacer referencia a") are skipped, and
+  translation batches are not looked up.
 - Settings → Privacy → "Public evidence (Wikipedia)": the switch, with what
   is sent and what was measured; timeout, length and number of lookups in
   the Advanced profile.

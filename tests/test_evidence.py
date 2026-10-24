@@ -90,3 +90,79 @@ def test_orchestrator_adds_evidence_only_when_enabled_and_public(tmp_path, monke
     finally:
         worker.stop()
         client.stop()
+
+
+# -- operation-aware lookups (P2d) ----------------------------------------------------
+ANIMALS = ("Para cada uno de los siguientes animales, indica en una sola palabra si es "
+           "mamífero, ave, reptil, anfibio o pez:")
+
+
+def _pages(mapping):
+    """Fake fetch: the search query (gsrsearch) → (title, lead)."""
+    import urllib.parse
+
+    def fetch(url, t, ua):
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["gsrsearch"][0]
+        title, lead = mapping.get(q, ("", ""))
+        return _page(title, lead) if title else {}
+    return fetch
+
+
+def test_profile_of_a_batch_operation():
+    p = ev.operation_profile(ANIMALS)
+    assert p.query_topic == "animal" and "anfibio" in p.focus and "ave" in p.focus
+    p = ev.operation_profile("Para cada uno de los siguientes elementos químicos, indica "
+                             "solo su símbolo químico:")
+    assert p.focus == ["simbolo"] and p.query_topic == "elemento químico"
+    p = ev.operation_profile("Para cada uno de los siguientes países, indica solo el "
+                             "nombre de su capital:")
+    assert p.query_topic == "país" and p.focus == ["capital"]
+    assert ev.operation_profile("Para cada una de las siguientes frases en español, da "
+                                "solo su traducción al inglés:").translation
+
+
+def test_homonym_is_rejected_and_the_search_retried_with_the_topic():
+    fetch = _pages({
+        "Cecilia": ("Cecilia", "Cecilia es un nombre propio femenino de origen latino."),
+        "Cecilia animal": ("Gymnophiona", "Los gimnofiones o cecilias son anfibios grandes "
+                                          "sin patas, con forma de lombriz."),
+    })
+    hit = ev.WikipediaEvidence(fetch=fetch).lookup("Cecilia", ev.operation_profile(ANIMALS))
+    assert hit["title"] == "Gymnophiona" and hit["query"] == "Cecilia animal"
+    assert "anfibios" in hit["text"]
+
+
+def test_snippet_takes_the_sentence_with_the_asked_fact():
+    profile = ev.operation_profile("Para cada uno de los siguientes países, indica solo el "
+                                   "nombre de su capital:")
+    fetch = _pages({"Nigeria": ("Nigeria", "Nigeria es un país de África occidental. Lagos "
+                                           "es su ciudad más poblada. Su capital es Abuya.")})
+    hit = ev.WikipediaEvidence(fetch=fetch).lookup("Nigeria", profile)
+    assert hit["text"] == "Nigeria es un país de África occidental. Su capital es Abuya."
+
+
+def test_neighbouring_fact_does_not_pass_as_the_focus():
+    profile = ev.operation_profile("Para cada uno de los siguientes elementos químicos, "
+                                   "indica solo su símbolo químico:")
+    fetch = _pages({"Plomo": ("Plomo", "El plomo es un elemento químico de número atómico "
+                                       "82. Su símbolo es Pb, del latín plumbum.")})
+    hit = ev.WikipediaEvidence(fetch=fetch).lookup("Plomo", profile)
+    assert "Su símbolo es Pb" in hit["text"]
+
+
+def test_implicit_disambiguation_and_translation_are_skipped():
+    profile = ev.operation_profile("Para cada uno de los siguientes elementos químicos, "
+                                   "indica solo su símbolo químico:")
+    fetch = _pages({
+        "Mercurio": ("Mercurio", "El término mercurio puede hacer referencia a: Mercurio "
+                                 "(elemento), Mercurio (planeta)."),
+        "Mercurio elemento químico": ("Mercurio (elemento)", "El mercurio es un elemento "
+                                      "químico con el símbolo Hg y número atómico 80."),
+    })
+    hit = ev.WikipediaEvidence(fetch=fetch).lookup("Mercurio", profile)
+    assert hit["title"] == "Mercurio (elemento)"
+    found, report = ev.gather({1: "Buenos días"}, ev.WikipediaEvidence(fetch=fetch), 24,
+                              ev.operation_profile("Para cada una de las siguientes frases "
+                                                   "en español, da solo su traducción al "
+                                                   "inglés:"))
+    assert found == {} and report["skipped"].startswith("translation")

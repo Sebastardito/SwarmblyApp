@@ -105,6 +105,9 @@ DEFAULTS: dict[str, Any] = {
         "timeout_s": 4.0,
         "max_chars": 220,
         "max_items": 24,
+        # P2d: topic/focus of the batch operation guide the lookup and the
+        # snippet; translation batches are skipped. False = P2a/P2c behaviour.
+        "operation_aware": True,
     },
     "permissions": {
         "lan_discovery": None,        # None = not asked yet; True/False = answer

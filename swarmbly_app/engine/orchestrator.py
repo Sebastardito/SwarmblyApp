@@ -856,7 +856,14 @@ class Orchestrator:
         items_by_task = {t.task_id: _item_texts(t.instruction) for t in plan.tasks}
         all_items = {n: text for items in items_by_task.values() for n, text in items.items()}
         started = time.monotonic()
-        found, report = ev.gather(all_items, provider, int(ev_cfg.get("max_items", 24)))
+        profile = None
+        if ev_cfg.get("operation_aware", True) and plan.tasks:
+            first = plan.tasks[0].instruction or ""
+            preamble = re.split(r"^\s*[\[(]?\d{1,3}[\]).:]\s", first, maxsplit=1,
+                                flags=re.M)[0]
+            profile = ev.operation_profile(preamble)
+        found, report = ev.gather(all_items, provider, int(ev_cfg.get("max_items", 24)),
+                                  profile)
         report["ms"] = int((time.monotonic() - started) * 1000)
         blocks = {}
         for task_id, items in items_by_task.items():
