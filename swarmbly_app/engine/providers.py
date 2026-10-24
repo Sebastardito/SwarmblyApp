@@ -72,6 +72,8 @@ EVENT_PROPS = {
     "creacion": ("P571",), "fin": ("P582", "P576"), "disolucion": ("P576",),
     "descubrimiento": ("P575",), "publicacion": ("P577",),
 }
+_UNMAPPED_EVENTS = ("extirpacion", "extincion", "desaparicion", "proteccion", "registro",
+                    "primer", "erupcion", "declaracion")
 _STATUS_WORDS = {"iucn", "uicn", "status", "conservation", "conservacion", "threatened",
                  "endangered", "vulnerable", "amenaza", "categoria", "roja"}
 
@@ -83,8 +85,14 @@ def wanted_props(focus: list[str], item: str = "") -> tuple[str, ...]:
         props += STATUS_PROPS
     if "__year__" in focus:
         words = [_fold(w) for w in _WORD.findall(item)]
-        event = [p for w in words for k, ps in EVENT_PROPS.items() if w.startswith(k) for p in ps]
-        props += event or list(DATE_PROPS)
+        event = [p for w in words[:1] for k, ps in EVENT_PROPS.items() if w.startswith(k) for p in ps]
+        if event:
+            props += event
+        elif not (words and words[0].startswith(_UNMAPPED_EVENTS)):
+            # a named event or thing ("Batalla de Pichincha"): its own date
+            props += ["P585", "P580", "P571", "P577"]
+        # an event Wikidata has no property for ("Extirpación del cucuve…",
+        # "Primer registro de…"): no structured fact rather than a wrong date
     return tuple(dict.fromkeys(props))
 
 
@@ -105,8 +113,12 @@ class WikidataProvider:
     def facts(self, entity: str, props: tuple[str, ...]) -> dict[str, Any] | None:
         if not props:
             return None
-        found = self._call(action="wbsearchentities", search=entity, language="en",
-                           uselang=self.lang, type="item", limit="1").get("search") or []
+        found = []
+        for search_lang in dict.fromkeys((self.lang, "en")):
+            found = self._call(action="wbsearchentities", search=entity, language=search_lang,
+                               uselang=self.lang, type="item", limit="1").get("search") or []
+            if found:
+                break
         if not found:
             return None
         hit = found[0]
@@ -259,8 +271,7 @@ class WebSearchProvider:
 
 
 # --- Composite ---------------------------------------------------------------------
-_EVENT_PREFIXES = tuple(EVENT_PROPS) + ("extirpacion", "extincion", "proteccion", "registro",
-                                         "llegada", "erupcion", "declaracion")
+_EVENT_PREFIXES = tuple(EVENT_PROPS)
 
 
 def _names_only(item: str) -> str:

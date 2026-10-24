@@ -47,6 +47,8 @@ def test_props_follow_the_operation_and_the_event_word():
     assert wanted_props(["ano", "__year__"], "Muerte del Solitario George") == ("P570",)
     assert "P571" in wanted_props(["__year__"], "Inicio del Proyecto Isabela")
     assert wanted_props(["capital"]) == ()
+    assert wanted_props(["__year__"], "Extirpación del cucuve de Floreana") == ()
+    assert "P585" in wanted_props(["__year__"], "Batalla de Pichincha")
     assert _names_only("Muerte del Solitario George") == "Solitario George"
     assert _names_only("Mimus melanotis") == "Mimus melanotis"
 
