@@ -380,6 +380,22 @@ Windows, Debian; 0.5 B to 8 B models)
   from articles about the island and the archipelago); IUCN statuses 4/4/3
   of 8. Round 10c: the effective-size paragraph was dropped by the per-file
   cap.
+- Optional local SearXNG installed from the app (Settings → Privacy → Web
+  search), with consent and only when internet access is allowed: the
+  official Docker image when Docker is running, otherwise SearXNG's source in
+  the data folder with its own virtual environment (Python ≥ 3.11, or `uv` to
+  provide one; the system Python is never changed). It listens on 127.0.0.1
+  only, with JSON output and engines DuckDuckGo, Google, Bing, Brave, Mojeek,
+  Wikipedia, Google Scholar, PubMed, Semantic Scholar, OpenAlex, Crossref and
+  arXiv; it starts and stops with the app (`evidence.searxng_managed`), and
+  on success `searxng_url` is set and `web` is added to the providers.
+  Uninstall removes it and its files. Web searches ask the `general` and
+  `science` categories. "Test web search" runs one fixed public query and
+  reports the results and the engines that answered. The Google Custom Search
+  JSON API is closed to new customers and ends on 1 January 2027, so Google
+  and Google Scholar are reached through SearXNG; an existing key still works
+  until then. Tested end to end on Linux (download, environment, start, stop,
+  restart).
 
 **LCE C1: retrieval over your sources, for local answers (P2b)**
 - With LCE enabled at C1, answers produced on this device get the most

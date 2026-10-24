@@ -245,7 +245,8 @@ class WebSearchProvider:
         fetch = self.fetch or _get
         if self.url:
             data = fetch(self.url.rstrip("/") + "/search?" + urllib.parse.urlencode(
-                {"q": q, "format": "json", "language": self.lang}), self.timeout_s, self.user_agent)
+                {"q": q, "format": "json", "language": self.lang,
+                 "categories": "general,science"}), self.timeout_s, self.user_agent)
             results = [(r.get("title", ""), r.get("content", ""), r.get("url", ""))
                        for r in (data or {}).get("results", [])[:5]]
         elif self.key and self.cx:
@@ -338,6 +339,41 @@ class MultiProvider:
             if hit:
                 hits.append(hit)
         return hits
+
+
+def web_check(ev_cfg: dict[str, Any], query: str = "Galápagos Islands",
+              fetch: Fetch | None = None) -> dict[str, Any]:
+    """Run one fixed public query on the configured SearXNG or Google CSE.
+
+    Reports how many results came back and from which engines, so the user
+    can see the web source works before relying on it. No user data is sent.
+    """
+    url = str(ev_cfg.get("searxng_url") or "")
+    key, cx = str(ev_cfg.get("google_cse_key") or ""), str(ev_cfg.get("google_cse_cx") or "")
+    fetch = fetch or _get
+    enabled = "web" in (ev_cfg.get("providers") or [])
+    try:
+        if url:
+            data = fetch(url.rstrip("/") + "/search?" + urllib.parse.urlencode(
+                {"q": query, "format": "json", "categories": "general,science"}), 15.0, USER_AGENT)
+            results = (data or {}).get("results", [])
+            engines = sorted({e for r in results for e in (r.get("engines") or [])})
+            return {"ok": bool(results), "provider": "searxng", "web_enabled": enabled,
+                    "results": len(results), "engines": engines,
+                    "unresponsive": [u[0] for u in (data or {}).get("unresponsive_engines", [])],
+                    "titles": [r.get("title", "")[:90] for r in results[:3]]}
+        if key and cx:
+            data = fetch("https://www.googleapis.com/customsearch/v1?" + urllib.parse.urlencode(
+                {"key": key, "cx": cx, "q": query, "num": "3"}), 15.0, USER_AGENT)
+            items = (data or {}).get("items", [])
+            return {"ok": bool(items), "provider": "google", "web_enabled": enabled,
+                    "results": len(items), "engines": ["google"], "unresponsive": [],
+                    "titles": [i.get("title", "")[:90] for i in items[:3]]}
+    except Exception as exc:
+        return {"ok": False, "provider": "searxng" if url else "google",
+                "web_enabled": enabled, "error": str(exc)[:300]}
+    return {"ok": False, "provider": "", "web_enabled": enabled,
+            "error": "no web search configured"}
 
 
 def build(lang: str, ev_cfg: dict[str, Any], wikipedia: Any) -> MultiProvider:

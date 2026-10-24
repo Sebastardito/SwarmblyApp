@@ -121,7 +121,7 @@ const Settings = (() => {
     if (fn) return fn();
     renderFields(FIELDS[tab] || []);
     if (tab === "models") renderModelsExtra();
-    if (tab === "privacy") renderIdentity();
+    if (tab === "privacy") { renderWebSearch(); renderIdentity(); }
   }
 
   // ---- generic fields ------------------------------------------------------------
@@ -264,6 +264,13 @@ const Settings = (() => {
   }
 
   function onEvent(event) {
+    if (event.type === "searxng.install") {
+      const p = event.payload || {};
+      if (p.status === "done") { UI.toast(t("websearch.ready"), "ok"); show(); }
+      else if (p.status === "failed") { UI.toast(t("websearch.failed"), "error"); refreshWebSearch(); }
+      else if (tab === "privacy") refreshWebSearch();
+      return;
+    }
     if (event.type !== "models.pull") return;
     const p = event.payload || {};
     const el = pulls[p.name];
@@ -275,6 +282,74 @@ const Settings = (() => {
     } else if (p.status === "failed") {
       UI.toast(`${p.name}: ${p.detail}`, "error");
     }
+  }
+
+  // ---- privacy: optional web search (local SearXNG, Google) -----------------------------
+  let searxBox = null;
+  async function renderWebSearch() {
+    searxBox = h("section.subpanel");
+    els.body.appendChild(searxBox);
+    await refreshWebSearch();
+  }
+
+  async function refreshWebSearch() {
+    if (!searxBox) return;
+    let s;
+    try { s = await Api.get("/api/evidence/searxng"); } catch (e) { s = null; }
+    clear(searxBox);
+    searxBox.appendChild(h("h3", t("websearch.title")));
+    searxBox.appendChild(h("p.muted", t("websearch.body")));
+    if (!s) return;
+    const job = s.job;
+    let state;
+    if (job && job.status === "running") state = t("websearch.installing").replace("{step}", t(`websearch.step.${job.step}`, job.step));
+    else if (s.managed && s.running) state = t("websearch.running").replace("{url}", s.url).replace("{method}", s.managed);
+    else if (s.managed) state = t("websearch.stopped").replace("{url}", s.url);
+    else if (s.url) state = t("websearch.external").replace("{url}", s.url);
+    else state = t("websearch.none");
+    searxBox.appendChild(h("p", chip(state, s.running ? "ok" : (job && job.status === "running" ? "net" : ""))));
+    if (job && job.status === "failed") searxBox.appendChild(h("p.error", (job.log || []).slice(-1)[0] || ""));
+    if (s.url && !s.web_enabled) searxBox.appendChild(h("p.caveat", t("websearch.webOff")));
+    const row = h("div.inline-form");
+    if (!s.managed && !(job && job.status === "running"))
+      row.appendChild(button(t("websearch.install"), askInstall, "small"));
+    if (s.managed && !(job && job.status === "running"))
+      row.appendChild(button(t("websearch.reinstall"), askInstall, "ghost small"));
+    row.appendChild(button(t("websearch.test"), testWeb, "ghost small"));
+    if (s.managed) row.appendChild(button(t("websearch.uninstall"), async () => {
+      try { await Api.post("/api/evidence/searxng/uninstall"); UI.toast(t("websearch.removed"), "ok"); }
+      catch (e) { UI.toast(e.message, "error"); }
+      show();
+    }, "ghost small"));
+    searxBox.appendChild(row);
+    searxBox.appendChild(h("p.caveat", t("websearch.google")));
+  }
+
+  async function askInstall() {
+    if (App.state.config?.permissions?.internet === false) { UI.toast(t("websearch.noInternet"), "error"); return; }
+    const s = await Api.get("/api/evidence/searxng").catch(() => ({}));
+    const how = s.docker ? t("websearch.howDocker") : (s.python ? t("websearch.howNative") : t("websearch.howNone"));
+    const body = h("div.form",
+      h("p", t("websearch.consentBody")),
+      h("p.muted", how),
+      h("p.muted", t("websearch.consentPrivacy")));
+    const ok = await UI.modal(t("websearch.consentTitle"), body, [
+      { label: t("common.cancel"), value: false, kind: "ghost" },
+      { label: t("websearch.consentAccept"), value: true, kind: "primary", attrs: { disabled: !s.docker && !s.python } }]);
+    if (!ok) return;
+    try {
+      await Api.post("/api/evidence/searxng/install", { consent: true, method: "auto" });
+      UI.toast(t("websearch.started"), "ok");
+    } catch (e) { UI.toast(e.message, "error"); }
+    refreshWebSearch();
+  }
+
+  async function testWeb() {
+    try {
+      const r = await Api.post("/api/evidence/web/test");
+      if (r.ok) UI.toast(t("websearch.testOk").replace("{n}", r.results).replace("{engines}", (r.engines || []).join(", ")), "ok");
+      else UI.toast(t("websearch.testFail").replace("{why}", r.error || (r.unresponsive || []).join(", ") || "0"), "error");
+    } catch (e) { UI.toast(e.message, "error"); }
   }
 
   // ---- privacy: identity --------------------------------------------------------------

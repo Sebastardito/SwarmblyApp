@@ -51,6 +51,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     state.start_p2p()  # independent P2P listener; discovery/worker per config
+    import threading
+    threading.Thread(target=state.searxng.autostart, daemon=True,
+                     name="swarmbly-searxng-start").start()  # only if the user installed it
 
     api_cfg = state.config.get("api")
     host = args.host or api_cfg.get("host", "127.0.0.1")

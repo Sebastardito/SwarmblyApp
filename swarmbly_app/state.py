@@ -137,6 +137,9 @@ class AppState:
         from .doctor import Installer
         from .model_manager import OllamaModels
         self.installer = Installer(self.bus)
+        from .searxng import SearxngManager
+        self.searxng = SearxngManager(self.dirs.root, self.bus, self.config.all,
+                                      self._update_config)
         self.ollama = OllamaModels(self.bus, self._ollama_url, lambda: self.dirs.root)
         # A finished download changes what is installed: refresh detection.
         self.bus.subscribe(lambda e: self.model_manager.invalidate()
@@ -239,10 +242,19 @@ class AppState:
         self.orchestrator = None
         self.nodes.apply_config()
 
+    def _update_config(self, changes: dict) -> dict:
+        merged = self.config.update(changes)
+        self.on_config_changed()
+        return merged
+
     def stop(self) -> None:
         if self._stopped:
             return
         self._stopped = True
+        try:
+            self.searxng.stop()
+        except Exception:
+            pass
         self.console.stop()
         self.nodes.stop()
         self.db.close()

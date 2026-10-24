@@ -103,6 +103,29 @@ def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
             "status": job.status, "packages": job.packages, "log": job.log[-20:],
             "verified": job.verified}
 
+    # ---- optional local SearXNG and web-search check (consent required) ----------
+    @app.get("/api/evidence/searxng")
+    def searxng_status() -> dict:
+        return state.searxng.status()
+
+    @app.post("/api/evidence/searxng/install")
+    def searxng_install(body: dict[str, Any]) -> dict:
+        job = state.searxng.install(str(body.get("method") or "auto"),
+                                    consent=bool(body.get("consent")))
+        if job.status == "refused":
+            raise HTTPException(status_code=400, detail="; ".join(job.log))
+        return {"status": job.status, "method": job.method}
+
+    @app.post("/api/evidence/searxng/uninstall")
+    def searxng_uninstall() -> dict:
+        return state.searxng.uninstall()
+
+    @app.post("/api/evidence/web/test")
+    def web_test() -> dict:
+        """One fixed public query through the configured web search (no user data)."""
+        from ..engine.providers import web_check
+        return web_check(state.config.all().get("evidence") or {})
+
     # ---- model downloads through Ollama (consent required) -----------------------
     @app.get("/api/models/preview")
     def model_preview(name: str) -> dict:

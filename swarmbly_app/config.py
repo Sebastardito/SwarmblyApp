@@ -130,6 +130,9 @@ DEFAULTS: dict[str, Any] = {
         # only with the URL or the key below).
         "providers": ["wikidata", "wikipedia", "pubmed"],
         "searxng_url": "",
+        # Set by the in-app SearXNG installer: "docker" or "native" (it then
+        # starts and stops with the app); "" = not managed by the app.
+        "searxng_managed": "",
         "google_cse_key": "",
         "google_cse_cx": "",
     },
@@ -248,6 +251,7 @@ _ENUMS = {
     "privacy.manual_tier": {None, "GLOBAL", "TRUSTED", "LOCAL"},
     "lce.level": {"C0", "C1", "C2", "C3", "C4"},
     "evidence.local_lang": {"es", "en", "pt", "fr"},
+    "evidence.searxng_managed": {"", "docker", "native"},
     "results.export_format": {"markdown", "json", "html"},
     "results.report_detail": {"minimal", "standard", "full"},
 }

@@ -87,7 +87,7 @@
   "total_ms": "ms totales",
   "group": {
    "worker": "Compartir esta computadora (worker)",
-   "evidence": "Evidencia pública (Wikipedia)"
+   "evidence": "Evidencia pública"
   }
  },
  "node": {
@@ -585,11 +585,11 @@
   },
   "evidence__searxng_url": {
    "label": "URL de tu SearXNG",
-   "help": "Metabuscador libre instalado por ti (por ejemplo http://localhost:8888). Consulta DuckDuckGo, Google, Bing o Google Scholar en tu nombre. Requiere añadir «web» a las fuentes."
+   "help": "La rellena el instalador de abajo (Instalar y activar SearXNG). También puedes poner la URL de un SearXNG tuyo, con el formato JSON activado. Requiere «web» en las fuentes."
   },
   "evidence__google_cse_key": {
    "label": "Clave de Google Custom Search",
-   "help": "Opcional: clave de la API JSON de Google Custom Search (100 consultas/día gratis). Requiere también el identificador del buscador y «web» en las fuentes."
+   "help": "Solo si ya tenías una clave de la API JSON de Google Custom Search: está cerrada a nuevos clientes y deja de funcionar el 1 de enero de 2027. Requiere también el identificador del buscador y «web» en las fuentes."
   },
   "evidence__google_cse_cx": {
    "label": "Identificador del buscador de Google",
@@ -747,5 +747,44 @@
   "doneTitle": "Listo",
   "doneBody": "Swarmbly está configurado. La vista Enjambre muestra otras computadoras a medida que aparecen, y cada respuesta puede explorarse paso a paso.",
   "answerBoth": "Elige Permitir o Ahora no en cada pregunta para continuar."
+ },
+ "websearch": {
+  "title": "Búsqueda web (opcional)",
+  "body": "Un metabuscador libre (SearXNG) instalado en esta computadora permite consultar DuckDuckGo, Google, Google Scholar, Bing, Brave, PubMed, Semantic Scholar, OpenAlex y Crossref sin claves de API. Solo escucha en esta computadora (127.0.0.1) y arranca y se detiene con la app.",
+  "none": "No instalado",
+  "installing": "Instalando… {step}",
+  "running": "Activo en {url} ({method})",
+  "stopped": "Instalado, sin responder en {url}",
+  "external": "SearXNG propio en {url}",
+  "webOff": "«web» no está en Fuentes públicas: añádelo para usar esta búsqueda.",
+  "install": "Instalar y activar SearXNG",
+  "reinstall": "Reinstalar o actualizar",
+  "uninstall": "Desinstalar",
+  "removed": "SearXNG desinstalado",
+  "test": "Probar búsqueda web",
+  "testOk": "Búsqueda web correcta: {n} resultados ({engines})",
+  "testFail": "La búsqueda web no devolvió resultados: {why}",
+  "started": "Instalando SearXNG; puede tardar unos minutos",
+  "ready": "SearXNG instalado y activo; «web» se añadió a las fuentes públicas",
+  "failed": "No se pudo instalar SearXNG; mira el detalle en Ajustes → Privacidad",
+  "noInternet": "El acceso a internet está denegado en Permisos",
+  "consentTitle": "Instalar SearXNG en esta computadora",
+  "consentBody": "Se descargará SearXNG (licencia AGPL-3.0) y sus dependencias, unos 60 MB, en la carpeta de datos de Swarmbly. Quedará disponible solo en esta computadora y se añadirá «web» a las fuentes públicas.",
+  "howDocker": "Docker está disponible: se usará la imagen oficial searxng/searxng.",
+  "howNative": "Se instalará con Python en un entorno virtual propio (nada cambia en el Python del sistema).",
+  "howNone": "No se encontró Docker ni Python 3.11 o superior (ni uv). Instala uno de ellos y vuelve a intentarlo.",
+  "consentPrivacy": "Como con las demás fuentes públicas, a los buscadores solo se envían nombres (especies, lugares, sucesos), nunca tu pregunta ni tus documentos. Algunos motores (Google, Scholar) pueden bloquear temporalmente consultas automáticas; los demás siguen respondiendo.",
+  "consentAccept": "Instalar",
+  "google": "Google: la API Custom Search JSON está cerrada a nuevos clientes y deja de funcionar el 1 de enero de 2027. Google y Google Scholar se consultan a través de SearXNG. Si ya tienes una clave, ponla abajo con su identificador «cx» y pulsa «Probar búsqueda web».",
+  "step": {
+   "download": "descargando",
+   "venv": "entorno de Python",
+   "packages": "instalando dependencias",
+   "pull": "descargando la imagen",
+   "start": "arrancando",
+   "health": "comprobando",
+   "done": "listo",
+   "failed": "error"
+  }
  }
 }

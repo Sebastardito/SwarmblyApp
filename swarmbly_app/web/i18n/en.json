@@ -87,7 +87,7 @@
   "total_ms": "total ms",
   "group": {
    "worker": "Sharing this computer (worker)",
-   "evidence": "Public evidence (Wikipedia)"
+   "evidence": "Public evidence"
   }
  },
  "node": {
@@ -585,11 +585,11 @@
   },
   "evidence__searxng_url": {
    "label": "Your SearXNG URL",
-   "help": "A free metasearch engine you install (for example http://localhost:8888). It queries DuckDuckGo, Google, Bing or Google Scholar on your behalf. Add \"web\" to the sources."
+   "help": "Filled in by the installer below (Install and enable SearXNG). You can also enter the URL of your own SearXNG with JSON output enabled. Needs \"web\" in the sources."
   },
   "evidence__google_cse_key": {
    "label": "Google Custom Search key",
-   "help": "Optional: key for the Google Custom Search JSON API (100 queries/day free). Also needs the engine id and \"web\" in the sources."
+   "help": "Only if you already had a Google Custom Search JSON API key: the API is closed to new customers and stops working on 1 January 2027. Also needs the search engine identifier and \"web\" in the sources."
   },
   "evidence__google_cse_cx": {
    "label": "Google engine id",
@@ -747,5 +747,44 @@
   "doneTitle": "Ready",
   "doneBody": "Swarmbly is set up. The Swarm view shows other computers as they appear, and every answer can be explored step by step.",
   "answerBoth": "Choose Allow or Not now for each question to continue."
+ },
+ "websearch": {
+  "title": "Web search (optional)",
+  "body": "A free metasearch engine (SearXNG) installed on this computer can query DuckDuckGo, Google, Google Scholar, Bing, Brave, PubMed, Semantic Scholar, OpenAlex and Crossref without API keys. It listens on this computer only (127.0.0.1) and starts and stops with the app.",
+  "none": "Not installed",
+  "installing": "Installing… {step}",
+  "running": "Running on {url} ({method})",
+  "stopped": "Installed, not answering on {url}",
+  "external": "Your own SearXNG at {url}",
+  "webOff": "\"web\" is not in Public sources: add it to use this search.",
+  "install": "Install and enable SearXNG",
+  "reinstall": "Reinstall or update",
+  "uninstall": "Uninstall",
+  "removed": "SearXNG uninstalled",
+  "test": "Test web search",
+  "testOk": "Web search works: {n} results ({engines})",
+  "testFail": "Web search returned no results: {why}",
+  "started": "Installing SearXNG; this can take a few minutes",
+  "ready": "SearXNG installed and running; \"web\" was added to public sources",
+  "failed": "SearXNG could not be installed; see the details in Settings → Privacy",
+  "noInternet": "Internet access is refused in Permissions",
+  "consentTitle": "Install SearXNG on this computer",
+  "consentBody": "SearXNG (AGPL-3.0 licence) and its dependencies, about 60 MB, will be downloaded into Swarmbly's data folder. It will be reachable from this computer only, and \"web\" will be added to public sources.",
+  "howDocker": "Docker is available: the official searxng/searxng image will be used.",
+  "howNative": "It will be installed with Python in its own virtual environment (the system Python is not changed).",
+  "howNone": "Neither Docker nor Python 3.11 or newer (nor uv) was found. Install one of them and try again.",
+  "consentPrivacy": "As with the other public sources, only names (species, places, events) are sent to search engines, never your question or your documents. Some engines (Google, Scholar) may temporarily block automated queries; the others keep answering.",
+  "consentAccept": "Install",
+  "google": "Google: the Custom Search JSON API is closed to new customers and stops working on 1 January 2027. Google and Google Scholar are queried through SearXNG. If you already have a key, enter it below with its \"cx\" identifier and press \"Test web search\".",
+  "step": {
+   "download": "downloading",
+   "venv": "Python environment",
+   "packages": "installing dependencies",
+   "pull": "pulling the image",
+   "start": "starting",
+   "health": "checking",
+   "done": "done",
+   "failed": "error"
+  }
  }
 }
