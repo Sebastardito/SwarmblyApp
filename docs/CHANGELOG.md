@@ -420,6 +420,9 @@ Windows, Debian; 0.5 B to 8 B models)
   without a property sits inside the item ("Inicio de la protección…"). In a
   dry run the subjects resolved to Floreana mockingbird (extirpated by 1888)
   and Galápagos fur seal (protected since 1934).
+- Round 12 (LAN, three repetitions): Galápagos event years 5/5/5 of 5 with
+  evidence (round 11a: 2/2/2; without evidence 1/0/0); IUCN statuses stay at
+  8/8 and historical years at 10/10.
 
 **LCE C1: retrieval over your sources, for local answers (P2b)**
 - With LCE enabled at C1, answers produced on this device get the most
