@@ -407,6 +407,19 @@ Windows, Debian; 0.5 B to 8 B models)
   hits were the Wikipedia article already asked, so web results from hosts
   of providers that are enabled (Wikipedia, PubMed, Wikidata) are now skipped.
   The doctor names the pinned commit when the installed one differs.
+- Event years in batches: the event's subject ("cucuve de Floreana",
+  "lobo peletero de Galápagos", the phrase after "del/de la…" without a
+  trailing place) is looked up in the request language's Wikipedia and
+  followed to its English article through the interlanguage link, only when
+  every content word of the subject is in that article's title or lead
+  ("Proyecto Isabela" does not follow "Provincia de Isabela"). The year comes
+  from the first sentence in article order with a year and the English verb
+  of the event nearest the subject ("protección" over "inicio"), so the lead's
+  date wins over side events ("between 1997 and 2006, initiated…" over
+  "brought into action in 1999"). Wikidata gives no date when an event noun
+  without a property sits inside the item ("Inicio de la protección…"). In a
+  dry run the subjects resolved to Floreana mockingbird (extirpated by 1888)
+  and Galápagos fur seal (protected since 1934).
 
 **LCE C1: retrieval over your sources, for local answers (P2b)**
 - With LCE enabled at C1, answers produced on this device get the most

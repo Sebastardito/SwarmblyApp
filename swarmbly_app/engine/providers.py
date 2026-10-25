@@ -78,6 +78,12 @@ _STATUS_WORDS = {"iucn", "uicn", "status", "conservation", "conservacion", "thre
                  "endangered", "vulnerable", "amenaza", "categoria", "roja"}
 
 
+# Event nouns that, inside an item, make the item's date a different one
+# ("primer" is left out: "Primera Guerra Mundial" is a name).
+_INNER_EVENTS = ("extirpacion", "extincion", "desaparicion", "proteccion", "erupcion",
+                 "declaracion", "registro")
+
+
 def wanted_props(focus: list[str], item: str = "") -> tuple[str, ...]:
     folded = {_stem(_fold(f)) for f in focus}
     props: list[str] = []
@@ -86,9 +92,14 @@ def wanted_props(focus: list[str], item: str = "") -> tuple[str, ...]:
     if "__year__" in focus:
         words = [_fold(w) for w in _WORD.findall(item)]
         event = [p for w in words[:1] for k, ps in EVENT_PROPS.items() if w.startswith(k) for p in ps]
-        if event:
+        # an event Wikidata has no property for, first or inside the item
+        # ("Inicio de la protección legal del lobo…": the inception of the
+        # place named is not the date of the protection, round 11a)
+        unmapped = bool(words) and (words[0].startswith(_UNMAPPED_EVENTS) or
+                                    any(w.startswith(_INNER_EVENTS) for w in words[1:]))
+        if event and not unmapped:
             props += event
-        elif not (words and words[0].startswith(_UNMAPPED_EVENTS)):
+        elif not event and not unmapped:
             # a named event or thing ("Batalla de Pichincha"): its own date
             props += ["P585", "P580", "P571", "P577"]
         # an event Wikidata has no property for ("Extirpación del cucuve…",

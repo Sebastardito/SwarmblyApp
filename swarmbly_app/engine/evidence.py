@@ -249,6 +249,28 @@ def drop_unasked_numbers(profile: OperationProfile, text: str) -> str:
     return " ".join(out) if out else text
 
 
+_SUBJECT_SPLIT = re.compile(r"\s+(?:del|de\s+la|de\s+los|de\s+las|of\s+the|of)\s+", re.I)
+_LOCATIVE = re.compile(r"\s+(?:en|in|on)\s+.*$", re.I)
+
+
+def event_subjects(item: str) -> list[str]:
+    """Subjects of an event item, outermost first: "Inicio de la protección
+    legal del lobo peletero de Galápagos en Ecuador" → ["lobo peletero de
+    Galápagos"] (the tail after each "del/de la…", skipping tails that start
+    with another event word, without a trailing place such as "en la isla
+    Floreana"); "Fundación de la Universidad de los Andes" → ["Universidad de
+    los Andes", "Andes"]."""
+    out = []
+    for m in _SUBJECT_SPLIT.finditer(item):
+        tail = _LOCATIVE.sub("", item[m.end():]).strip(" ,.;")
+        words = tail.split()
+        if len(tail) < 4 or not words or any(_fold(words[0]).startswith(k) for k in EN_EVENT):
+            continue
+        if tail not in out:
+            out.append(tail)
+    return out
+
+
 def _http_get_json(url: str, timeout_s: float, user_agent: str) -> Any:
     req = urllib.request.Request(url, headers={"User-Agent": user_agent,
                                                "Accept": "application/json"})
@@ -359,38 +381,90 @@ class WikipediaEvidence:
         hit["fallback"] = self.fallback.lang
         return hit
 
-    def _fallback_year(self, item: str, profile: OperationProfile) -> dict[str, Any] | None:
-        """Events ("Inicio del Proyecto Isabela") have no article of their own in
-        the request's language (P2e round 9b). The English provider is asked for
-        the item's proper names only ("Proyecto Isabela" → Project Isabela;
-        "Solitario George" → Lonesome George), and a sentence counts only if it
-        has a year and the event's verb in English ("muerte" → died/death,
-        "inicio" → began/initiated): an article full of years must not answer
-        with the wrong one."""
-        words = _WORD.findall(item)
-        names = [w for i, w in enumerate(words)
-                 if i > 0 and len(w) >= 4 and w[:1].isupper()]
-        events = {e for w in words for k, v in EN_EVENT.items()
-                  if _fold(w).startswith(k) for e in v.split()}
-        if not names or not events:
-            return None
+    def english_title(self, query: str) -> str | None:
+        """Title of the best article for ``query`` in this language, as the
+        English article it links to ("cucuve de Floreana" → Mimus trifasciatus
+        → Floreana mockingbird). The match must share a word with the query in
+        its title or first sentences, so an unrelated hit is not followed.
+        Every content word of the query must appear there: "Proyecto Isabela"
+        must not follow "Provincia de Isabela" (Philippines)."""
+        params = {"action": "query", "format": "json", "utf8": "1",
+                  "generator": "search", "gsrsearch": query, "gsrlimit": "1",
+                  "prop": "extracts|langlinks", "exintro": "1", "explaintext": "1",
+                  "exsentences": "3", "lllang": "en", "redirects": "1"}
         try:
-            hit = self.fallback.passages(" ".join(names), ["__year__", *sorted(events)],
-                                         max_sentences=3)
+            data = (self.fetch or _http_get_json)(
+                WIKI_API.format(lang=self.lang) + "?" + urllib.parse.urlencode(params),
+                self.timeout_s, self.user_agent)
         except Exception:
             return None
-        if not hit:
+        for page in (((data or {}).get("query") or {}).get("pages") or {}).values():
+            title = str(page.get("title") or "")
+            want = {_stem(w) for w in (_fold(x) for x in _WORD.findall(query)) if len(w) >= 4}
+            have = {_stem(w) for w in (_fold(x) for x in
+                                       _WORD.findall(f"{title} {page.get('extract') or ''}"))}
+            if not title or not want or not want <= have:
+                continue
+            if self.lang == "en":
+                return title
+            links = page.get("langlinks") or []
+            return str(links[0].get("*") or links[0].get("title") or "") or None if links else None
+        return None
+
+    def _fallback_year(self, item: str, profile: OperationProfile) -> dict[str, Any] | None:
+        """Events ("Inicio del Proyecto Isabela") have no article of their own
+        (P2e rounds 9b, 10b, 11a). The year comes from the English article of
+        the event's subject, and only from a sentence with a year and the
+        event's verb in English ("muerte" → died, "inicio" → began/initiated):
+        an article full of years must not answer with the wrong one.
+
+        The subject is the phrase after "del/de la…" ("cucuve de Floreana",
+        "lobo peletero de Galápagos"), found through this language's search and
+        its English interlanguage link; failing that, the item's proper names.
+        The first qualifying sentence in article order wins, preferring the
+        event word nearest the subject ("protección" over "inicio" in "Inicio
+        de la protección legal del lobo…"): the lead states the canonical date,
+        later sentences add side events ("brought into action in 1999")."""
+        words = _WORD.findall(item)
+        groups = [v.split() for w in words for k, v in EN_EVENT.items() if _fold(w).startswith(k)]
+        if not groups:
             return None
-        chosen = [x for x in _sentences(hit["text"]) if _YEAR.search(x)
-                  and any(_fold(w).startswith(e) for w in _WORD.findall(x) for e in events)]
-        if not chosen:
-            return None
-        text = " ".join(chosen[:2])
-        hit["item"] = item
-        hit["text"] = text if len(text) <= max(self.max_chars, 320) else \
-            text[:320][: text[:320].rfind(" ")] + " …"
-        hit["fallback"] = self.fallback.lang
-        return hit
+        events = {e for g in groups for e in g}
+        main = set(groups[-1])
+        names = [w for i, w in enumerate(words) if i > 0 and len(w) >= 4 and w[:1].isupper()]
+        titles = []
+        if self.fallback is not None:
+            for subject in event_subjects(item):
+                title = self.english_title(subject)
+                if title and title not in titles:
+                    titles.append(title)
+        candidates = [(t, True) for t in titles]
+        if names:
+            candidates.append((" ".join(names), False))
+        for query, exact in candidates:
+            try:
+                page = self.fallback._page(query, None, intro=False)
+            except Exception:
+                page = None
+            if not page:
+                continue
+            title, text = page
+            if not exact and not relevant(" ".join(names), f"{title} {text[:400]}"):
+                continue
+            text = re.sub(r"\s*={2,}[^=]{1,80}={2,}\s*", " ", text)
+            dated = [x for x in _sentences(text) if _YEAR.search(x)]
+
+            def has(sentence: str, stems: set[str]) -> bool:
+                return any(_fold(w).startswith(e) for w in _WORD.findall(sentence) for e in stems)
+            chosen = next((x for x in dated if has(x, main)), None) or \
+                next((x for x in dated if has(x, events)), None)
+            if not chosen:
+                continue
+            hit = self.fallback._hit(item, query, title, chosen if len(chosen) <= 320
+                                     else chosen[:320][: chosen[:320].rfind(" ")] + " …")
+            hit["fallback"] = self.fallback.lang
+            return hit
+        return None
 
     def _around_focus(self, profile: OperationProfile, sentence: str) -> str:
         """A long sentence is cut around its first focus term, so the cut

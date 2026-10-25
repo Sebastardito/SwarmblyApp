@@ -243,3 +243,85 @@ def test_event_items_get_year_sentences_from_the_english_article():
     hit = provider.lookup("Inicio del Proyecto Isabela", profile)
     assert hit and "1997" in hit["text"] and "1835" not in hit["text"] and hit["fallback"] == "en"
     assert provider.lookup("Proyecto Isabela", profile) is None     # no event word: no guess
+
+
+def _wiki_fetch(es_pages, en_pages):
+    """es: search query → (title, intro, english title); en: title → article."""
+    import urllib.parse as up
+
+    def fetch(url, timeout, ua):
+        q = up.parse_qs(up.urlparse(url).query)
+        term = q.get("gsrsearch", [""])[0]
+        if "es.wikipedia" in url:
+            for key, (title, intro, en) in es_pages.items():
+                if key.lower() in term.lower():
+                    return {"query": {"pages": {"1": {"title": title, "extract": intro,
+                                                      "langlinks": [{"lang": "en", "*": en}]}}}}
+            return {"query": {"pages": {}}}
+        for title, text in en_pages.items():
+            if term.lower() in title.lower() or title.lower() in term.lower():
+                return {"query": {"pages": {"1": {"title": title, "extract": text}}}}
+        return {"query": {"pages": {}}}
+    return fetch
+
+
+def test_event_subject_is_found_through_the_local_search_and_its_english_link():
+    assert ev.event_subjects("Inicio de la protección legal del lobo peletero de Galápagos en "
+                             "Ecuador") == ["lobo peletero de Galápagos"]
+    assert ev.event_subjects("Extirpación del cucuve de Floreana en la isla Floreana") == \
+        ["cucuve de Floreana"]
+    es_pages = {"cucuve de Floreana": ("Mimus trifasciatus", "El cucuve de Floreana es un ave.",
+                                       "Floreana mockingbird"),
+                "lobo peletero": ("Arctocephalus galapagoensis",
+                                  "El lobo peletero de Galápagos es un otárido.", "Galápagos fur seal")}
+    en_pages = {
+        "Floreana mockingbird": "The Floreana mockingbird is a bird. It lives on two islets. "
+                                "== Distribution == It was abundant on Floreana Island but had been "
+                                "extirpated from there by 1888. Darwin visited in 1835.",
+        "Galápagos fur seal": "The Galápagos fur seal is a seal. It is the smallest eared seal. "
+                              "It has been protected by the Ecuadorian government since 1934. "
+                              "Starting in 1959, Ecuador established strict laws to protect these animals.",
+        "Floreana Island": "Floreana Island is an island. In 2026 goats were extirpated again.",
+        "Galápagos Islands": "The islands were protected in 2018 by a new law.",
+    }
+    fetch = _wiki_fetch(es_pages, en_pages)
+    provider = ev.WikipediaEvidence(lang="es", fetch=fetch,
+                                    fallback=ev.WikipediaEvidence(lang="en", fetch=fetch, max_chars=800))
+    profile = ev.operation_profile("Para cada uno de los siguientes acontecimientos de Galápagos, "
+                                   "indica solo el año en que ocurrió:")
+    hit = provider._fallback_year("Extirpación del cucuve de Floreana en la isla Floreana", profile)
+    assert hit and "1888" in hit["text"] and "1835" not in hit["text"]
+    assert hit["title"] == "Floreana mockingbird" and "==" not in hit["text"]
+    hit = provider._fallback_year("Inicio de la protección legal del lobo peletero de Galápagos "
+                                  "en Ecuador", profile)
+    # the event word nearest the subject ("protección") decides, the first such sentence wins
+    assert hit and "1934" in hit["text"] and "1959" not in hit["text"]
+
+
+def test_event_year_prefers_the_lead_sentence():
+    en = {"Project Isabela": "The Project Isabela was a restoration project in the Galápagos "
+                             "Islands that took place between 1997 and 2006, initiated by the "
+                             "Charles Darwin Foundation. Goats were introduced in the 16th century. "
+                             "The initiative was brought into action in 1999, and by 2006 goats "
+                             "were eradicated."}
+    fetch = _wiki_fetch({"Proyecto Isabela": ("Proyecto Isabela", "El Proyecto Isabela fue un "
+                                              "proyecto.", "Project Isabela")}, en)
+    provider = ev.WikipediaEvidence(lang="es", fetch=fetch,
+                                    fallback=ev.WikipediaEvidence(lang="en", fetch=fetch, max_chars=800))
+    profile = ev.operation_profile("Para cada uno de los siguientes acontecimientos de Galápagos, "
+                                   "indica solo el año en que ocurrió:")
+    hit = provider._fallback_year("Inicio del Proyecto Isabela", profile)
+    assert hit and "1997" in hit["text"] and "1999" not in hit["text"]
+
+
+def test_unrelated_local_search_hit_is_not_followed():
+    fetch = _wiki_fetch({"cucuve": ("Fundación Charles Darwin", "Una fundación científica.",
+                                    "Charles Darwin Foundation")}, {})
+    provider = ev.WikipediaEvidence(lang="es", fetch=fetch)
+    assert provider.english_title("cucuve de Floreana") is None
+
+
+def test_partial_match_is_not_followed():
+    fetch = _wiki_fetch({"Proyecto Isabela": ("Provincia de Isabela", "Isabela es una provincia "
+                                              "de Filipinas.", "Isabela (province)")}, {})
+    assert ev.WikipediaEvidence(lang="es", fetch=fetch).english_title("Proyecto Isabela") is None

@@ -118,3 +118,10 @@ def test_local_passages_collect_every_provider():
     mp = MultiProvider(wikipedia=Wiki(), wikidata=WikidataProvider(fetch=wikidata_fetch))
     hits = mp.passages("Mimus melanotis", ["iucn", "status"])
     assert [h["title"] for h in hits] == ["Wikidata: Mimus melanotis", "San Cristóbal mockingbird"]
+
+
+def test_no_wikidata_date_when_the_event_is_inside_the_item():
+    assert wanted_props(["__year__"], "Inicio de la protección legal del lobo peletero de "
+                                      "Galápagos en Ecuador") == ()
+    assert "P580" in wanted_props(["__year__"], "Inicio de la Revolución francesa")
+    assert "P580" in wanted_props(["__year__"], "Inicio de la Primera Guerra Mundial")
