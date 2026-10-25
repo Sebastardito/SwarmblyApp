@@ -401,6 +401,12 @@ Windows, Debian; 0.5 B to 8 B models)
   (Lonesome George from Wikidata), historical years unchanged at 10/10.
   Locally (hybrid, k = 6, evidence, 27B fusion) 37 and 36 of 44, with every
   public fact labelled by its source. PubMed rarely added anything here.
+- Round 11c, with the local SearXNG: web results appeared in 11 of the 12
+  answers with evidence and the score stayed at 37 and 36 of 44 (graded by
+  hand where the automatic key missed a correct phrasing). Half of the web
+  hits were the Wikipedia article already asked, so web results from hosts
+  of providers that are enabled (Wikipedia, PubMed, Wikidata) are now skipped.
+  The doctor names the pinned commit when the installed one differs.
 
 **LCE C1: retrieval over your sources, for local answers (P2b)**
 - With LCE enabled at C1, answers produced on this device get the most

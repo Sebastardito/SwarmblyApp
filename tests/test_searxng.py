@@ -221,3 +221,20 @@ class TestApi:
         client = make_client(app_state)
         r = client.post("/api/evidence/web/test").json()
         assert r["ok"] is False and r["error"]
+
+
+class TestWebDedup:
+    def test_skips_pages_of_providers_already_asked(self):
+        data = {"results": [
+            {"title": "Floreana mockingbird - Wikipedia", "content": "The Floreana mockingbird is endangered.",
+             "url": "https://en.wikipedia.org/wiki/Floreana_mockingbird"},
+            {"title": "Floreana Mockingbird Factsheet", "content": "Floreana mockingbird endangered factsheet.",
+             "url": "https://datazone.birdlife.org/species/factsheet/floreana-mockingbird"}]}
+        p = WebSearchProvider(url="http://x", fetch=lambda u, t, a: data, skip_hosts=("wikipedia.org",))
+        got = p.passages("Floreana mockingbird", ["endangered"])
+        assert got and "birdlife" in got["url"]
+
+    def test_build_skips_enabled_providers_hosts(self):
+        from swarmbly_app.engine.providers import build
+        mp = build("en", {"providers": ["wikipedia", "web"], "searxng_url": "http://x"}, wikipedia=None)
+        assert mp.web.skip_hosts == ("wikipedia.org",)

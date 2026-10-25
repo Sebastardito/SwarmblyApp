@@ -234,6 +234,9 @@ class WebSearchProvider:
     fetch: Fetch | None = None
     user_agent: str = USER_AGENT
     max_chars: int = 500
+    # Hosts already asked through their own provider (Wikipedia, PubMed):
+    # their pages in web results would only repeat that evidence.
+    skip_hosts: tuple[str, ...] = ()
 
     @property
     def name(self) -> str:
@@ -259,6 +262,9 @@ class WebSearchProvider:
         stems = {_stem(_fold(t)) for t in terms}
         want_year = "__year__" in focus
         for title, content, link in results:
+            host = urllib.parse.urlparse(link or "").netloc.lower()
+            if any(host == h or host.endswith("." + h) for h in self.skip_hosts):
+                continue
             if not _shares_word(entity, f"{title} {content}"):
                 continue
             words = {_stem(_fold(w)) for w in _WORD.findall(content)}
@@ -385,7 +391,11 @@ def build(lang: str, ev_cfg: dict[str, Any], wikipedia: Any) -> MultiProvider:
         web = WebSearchProvider(url=str(ev_cfg.get("searxng_url") or ""),
                                 key=str(ev_cfg.get("google_cse_key") or ""),
                                 cx=str(ev_cfg.get("google_cse_cx") or ""), lang=lang,
-                                timeout_s=max(timeout, 6.0))
+                                timeout_s=max(timeout, 6.0),
+                                skip_hosts=tuple(h for p, h in (("wikipedia", "wikipedia.org"),
+                                                                ("pubmed", "pubmed.ncbi.nlm.nih.gov"),
+                                                                ("wikidata", "wikidata.org"))
+                                                 if p in enabled))
     return MultiProvider(
         wikipedia=wikipedia if "wikipedia" in enabled else None,
         wikidata=WikidataProvider(lang=lang, timeout_s=timeout) if "wikidata" in enabled else None,
