@@ -552,8 +552,8 @@
    "help": "Contadores diarios para la vista Enjambre."
   },
   "evidence__enabled": {
-   "label": "Añadir evidencia pública a los lotes",
-   "help": "En listas de elementos que nombran algo («Piquero de patas azules», «Ecuador»), la app busca cada elemento en Wikipedia y añade dos oraciones de su entrada al fragmento de ese elemento. Solo se envía a Wikipedia el texto de cada elemento, nunca tu solicitud, y nada si la solicitud se clasifica como sensible. En pruebas ayudó mucho cuando a los modelos les faltaba el dato (autores de obras), pero empeoró algunas respuestas que ya acertaban cuando el artículo era homónimo («Cecilia» como nombre propio) o traía un dato vecino (el número atómico en vez del símbolo). Por eso está apagada por defecto."
+   "label": "Añadir evidencia pública",
+   "help": "En listas de elementos que nombran algo («Piquero de patas azules», «Ecuador») y en las respuestas de este equipo que piden datos actuales, la app consulta fuentes públicas (Wikidata, Wikipedia, PubMed y, si lo instalaste, SearXNG) y añade la frase con el dato. Solo se envían los nombres de los elementos, nunca tu solicitud ni tus documentos, y nada si la solicitud se clasifica como sensible. Está activada por defecto: en las pruebas corrigió lo que los modelos no sabían (estado UICN 8/8, años de sucesos 5/5) sin empeorar lo que ya acertaban. Puedes apagarla aquí."
   },
   "evidence__timeout_s": {
    "label": "Tiempo máximo por consulta (s)",

@@ -1,4 +1,4 @@
-"""P2 prototype: public evidence for batch items (off by default)."""
+"""Public evidence for batch items (on by default since P2e round 12)."""
 
 from __future__ import annotations
 
@@ -325,3 +325,8 @@ def test_partial_match_is_not_followed():
     fetch = _wiki_fetch({"Proyecto Isabela": ("Provincia de Isabela", "Isabela es una provincia "
                                               "de Filipinas.", "Isabela (province)")}, {})
     assert ev.WikipediaEvidence(lang="es", fetch=fetch).english_title("Proyecto Isabela") is None
+
+
+def test_public_evidence_is_on_by_default():
+    from swarmbly_app.config import DEFAULTS
+    assert DEFAULTS["evidence"]["enabled"] is True

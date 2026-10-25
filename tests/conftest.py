@@ -58,6 +58,9 @@ class FakeBackend:
 @pytest.fixture()
 def app_state(tmp_path: Path) -> AppState:
     state = AppState(str(tmp_path / "data"))
+    # Public evidence is on by default; tests stay off the network unless
+    # they turn it on with fake providers.
+    state.config.update({"evidence.enabled": False})
     yield state
     state.stop()
 

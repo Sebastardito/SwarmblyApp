@@ -108,7 +108,11 @@ DEFAULTS: dict[str, Any] = {
     # P2 prototype: public evidence for batch items (only item texts are sent
     # to the provider, only for PUBLIC requests). Off until the user enables it.
     "evidence": {
-        "enabled": False,
+        # On by default since P2e round 12: with operation-aware lookups,
+        # Wikidata and subject resolution it fixed what the models lacked and
+        # no longer worsened what they knew. Only item texts or entity names
+        # are sent, never the request; nothing for SENSITIVE requests.
+        "enabled": True,
         "provider": "wikipedia",
         "timeout_s": 4.0,
         "max_chars": 220,

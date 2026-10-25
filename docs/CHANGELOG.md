@@ -423,6 +423,12 @@ Windows, Debian; 0.5 B to 8 B models)
 - Round 12 (LAN, three repetitions): Galápagos event years 5/5/5 of 5 with
   evidence (round 11a: 2/2/2; without evidence 1/0/0); IUCN statuses stay at
   8/8 and historical years at 10/10.
+- Public evidence is now on by default (`evidence.enabled`): it fixed what
+  the models lacked (IUCN statuses 8/8, event years 5/5) and no longer
+  worsened what they knew (historical years 10/10). Only item texts or
+  entity names leave the device, never the request or local documents, and
+  nothing for SENSITIVE requests; Settings → Privacy turns it off. Saved
+  configurations keep their explicit value.
 
 **LCE C1: retrieval over your sources, for local answers (P2b)**
 - With LCE enabled at C1, answers produced on this device get the most

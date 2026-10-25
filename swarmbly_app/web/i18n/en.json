@@ -552,8 +552,8 @@
    "help": "Daily counters for the Swarm view."
   },
   "evidence__enabled": {
-   "label": "Add public evidence to batches",
-   "help": "In lists of items that name something (\"Blue-footed booby\", \"Ecuador\"), the app looks each item up on Wikipedia and adds two sentences of its entry to that item's fragment. Only each item's text is sent to Wikipedia, never your request, and nothing if the request is classified as sensitive. In tests it helped a lot when the models lacked the fact (authors of books), but it made some already-correct answers worse when the article was a homonym (\"Cecilia\" as a first name) or carried a neighbouring fact (the atomic number instead of the symbol). That is why it is off by default."
+   "label": "Add public evidence",
+   "help": "In lists of items that name something (\"Blue-footed booby\", \"Ecuador\") and in answers on this device that ask for current facts, the app looks the names up in public sources (Wikidata, Wikipedia, PubMed and, if installed, SearXNG) and adds the sentence with the fact. Only item names are sent, never your request or your documents, and nothing if the request is classified as sensitive. It is on by default: in tests it fixed what the models did not know (IUCN status 8/8, event years 5/5) without worsening what they already got right. You can turn it off here."
   },
   "evidence__timeout_s": {
    "label": "Maximum time per lookup (s)",

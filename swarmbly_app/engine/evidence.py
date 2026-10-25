@@ -1,4 +1,4 @@
-"""Public evidence for the items of a batch (P2 prototype; off by default).
+"""Public evidence for the items of a batch (on by default since P2e round 12).
 
 Several small models can agree on the same wrong answer ("Piquero de patas
 azules → pez", "Pingüino de Galápagos → mamífero" in P3b–P3l): a vote cannot
@@ -8,8 +8,9 @@ fragment, so every worker reads the same evidence.
 
 Rules (preregistered in the P2 note of the P3b document):
 
-- **Off by default** (``evidence.enabled``). Turning it on is the user's
-  consent to send *item texts* — never the request — to the provider.
+- **On by default since P2e round 12** (``evidence.enabled``; it was off
+  through P2d). Only *item texts* or entity names — never the request — go
+  to the providers; the user can turn it off in Settings → Privacy.
 - **Public requests only**: the orchestrator calls this module only when the
   request's lane is PUBLIC and the batch is enumerated.
 - **Items that name something**: an item qualifies if it has a word of three
