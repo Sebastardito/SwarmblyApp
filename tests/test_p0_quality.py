@@ -336,3 +336,42 @@ class TestItemVote:
         items = {7: "100 m", 8: "7000 m"}
         assert _parse_items("* 100 m = 0,1 km\n* 7000 m = 7 km.", items) == \
             {7: "0,1 km", 8: "7 km"}
+
+
+class TestPersonalStaysLocal:
+    """A request about the user with C1 active is answered here even in LAN mode:
+    the swarm would get it without the user's passages and with personal details."""
+
+    def _chat(self, fake_chat, hits):
+        chat, _ = fake_chat
+        seen = {}
+
+        class Stub:
+            def run(self, text, **kw):
+                seen["text"] = text
+                return {"routed": "local", "reason": "stub", "metadata": {}, "stages": []}
+        chat.orchestrator = lambda: Stub()
+        chat.retriever = lambda q, kw="": hits
+        chat.retrieval_active = lambda: True
+        return chat, seen
+
+    def test_about_me_with_sources_stays_local(self, fake_chat):
+        chat, seen = self._chat(fake_chat, [{"source": "cv.md", "start": 0, "end": 8, "text": "AcmeLabs", "score": 1.0}])
+        conv = chat.create_conversation(mode="lan")
+        _, msg = chat.send(conv["id"], "Resume mi carrera como investigador y mis publicaciones.",
+                           mode="lan", run_async=False)
+        assert "text" not in seen                     # the swarm was never asked
+        stored = chat.db.get_messages(conv["id"])[-1]
+        assert "on this device" in (stored["meta"].get("note") or "")
+
+    def test_a_batch_with_bare_me_still_goes_to_the_swarm(self, fake_chat):
+        chat, seen = self._chat(fake_chat, [{"source": "cv.md", "start": 0, "end": 1, "text": "x", "score": 1.0}])
+        conv = chat.create_conversation(mode="lan")
+        chat.send(conv["id"], "¿Me traduces al inglés estas palabras? 1. casa 2. perro 3. mesa",
+                  mode="lan", run_async=False)
+        assert seen.get("text", "").startswith("¿Me traduces")
+        chat2, seen2 = self._chat(fake_chat, [])          # no matching sources: not personal
+        conv2 = chat2.create_conversation(mode="lan")
+        chat2.send(conv2["id"], "Clasifica mis 3 animales: 1. perro 2. loro 3. rana",
+                   mode="lan", run_async=False)
+        assert seen2.get("text", "").startswith("Clasifica")

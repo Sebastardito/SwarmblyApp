@@ -75,8 +75,11 @@ def main(argv: list[str] | None = None) -> int:
           f"— http://{host}:{port}/ (node {state.identity.short_id(12)})")
     try:
         from .console import uvicorn_log_config
+        # A long swarm request keeps the event loop busy at times: a longer
+        # ping timeout avoids dropping the browser's WebSocket mid-answer.
         uvicorn.run(app, host=host, port=port, log_level="info",
-                    access_log=False, log_config=uvicorn_log_config())
+                    access_log=False, log_config=uvicorn_log_config(),
+                    ws_ping_interval=20.0, ws_ping_timeout=90.0)
     except KeyboardInterrupt:
         pass
     finally:

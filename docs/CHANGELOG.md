@@ -455,6 +455,20 @@ Windows, Debian; 0.5 B to 8 B models)
   as good as the model that writes it, crossing languages relies on the
   glossary, and a fact in a passage that ranks seventh for its question
   (F3, F7) is missed.
+- Requests about the user stay on this device: with C1 active, a first-person
+  request about the user's own material ("mi carrera", "mis publicaciones",
+  "my thesis") that matches the user's sources is answered locally even in
+  LAN or auto mode (`lce.keep_personal_local`, on by default), with a note.
+  In an October 2026 test such a request went to four nodes without the
+  user's passages (which never leave the device) and came back as generic,
+  invented text ("investigador de materiales"), carrying the user's name to
+  other machines. A bare "me" (¿me traduces…?) does not count. "internet",
+  "web", "en línea" and "busca" now also ask for public evidence.
+- Chat: a swarm answer that finished while the WebSocket was down (a long
+  request, sleep, a network change) only showed after a reload. Pending
+  messages with no recent event are now read from the database every few
+  seconds and right after a reconnection; the server's WebSocket ping
+  timeout is 90 s.
 - LCE C1, formats: Word (.docx), HTML and PDF (with `pdftotext` from poppler,
   on the PATH or in Homebrew's folders; ligatures normalised) are read, not
   only text files. Memory → Your sources lists every file with its passages,

@@ -94,6 +94,11 @@ DEFAULTS: dict[str, Any] = {
         "enabled": False,
         "level": "C0",                # C0..C4; v0.1 ships C0, prepares C1
         "sources_dirs": [],           # extra source folders
+        # A request about the user ("mi carrera", "my papers") with C1 active is
+        # answered on this device even in LAN/auto mode: the swarm would get the
+        # request without the user's sources (no grounding) and with personal
+        # details in it (privacy). The answer says why it stayed local.
+        "keep_personal_local": True,
         "learning_enabled": False,    # I8: nothing trains without permission
         "capsules_enabled": False,
         # P2e: the local model adds English keywords to the retrieval query,

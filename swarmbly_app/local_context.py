@@ -162,7 +162,8 @@ def _words(text: str) -> set[str]:
 
 _PUBLIC_ASK = re.compile(
     r"\b(actual(?:es|mente)?|hoy|hoy en d[ií]a|p[uú]blic[oa]s?|p[uú]blicamente|reciente(?:s|mente)?|"
-    r"current(?:ly)?|today|now|public(?:ly)?|recent(?:ly)?|atual(?:mente)?|actuel(?:le)?s?|publique)\b",
+    r"current(?:ly)?|today|now|public(?:ly)?|recent(?:ly)?|atual(?:mente)?|actuel(?:le)?s?|publique|"
+    r"internet|en l[ií]nea|online|web|busca(?:r)?|search)\b",
     re.I)
 
 

@@ -8,6 +8,8 @@ model per conversation as required.
 
 from __future__ import annotations
 
+import re
+
 import json
 import threading
 import time
@@ -33,6 +35,13 @@ class ActiveRequest:
     model: str = ""
     stop_event: threading.Event = field(default_factory=threading.Event)
     started_at: float = field(default_factory=time.time)
+
+
+# Possessives and "about me" in es/en/pt (not French "mes", the Spanish month);
+# a bare "me" ("¿me traduces…?") is not enough, so batches still go to the swarm.
+_FIRST_PERSON = re.compile(
+    r"\b(mi|mis|m[ií]o|m[ií]a|m[ií]os|m[ií]as|sobre m[ií]|de m[ií]|conmigo|"
+    r"my|mine|myself|about me|meu|minha|meus|minhas)\b", re.I)
 
 
 class ChatService:
@@ -127,6 +136,22 @@ class ChatService:
             self._run_generation(request, mode, model)
         return user_msg, assistant_msg
 
+    def _personal_request(self, text: str) -> bool:
+        """A first-person request about the user's own material ("mi carrera",
+        "mis artículos", "my thesis") while C1 has sources for it. Such a request
+        goes to the swarm without the user's passages, which never leave this
+        device, so the workers would write without facts (the October 2026
+        test: "investigador de materiales"), and it would carry personal
+        details to other machines."""
+        lce = (self.config().get("lce") or {})
+        if not lce.get("keep_personal_local", True) or self.retriever is None \
+                or not self.retrieval_active() or not _FIRST_PERSON.search(text or ""):
+            return False
+        try:
+            return bool(self.retriever(text, ""))
+        except Exception:
+            return False
+
     def _run_generation(self, request: ActiveRequest, mode: str, model: str) -> None:
         conv_id = request.conversation_id
         try:
@@ -144,7 +169,14 @@ class ChatService:
             routing_stages: list[dict[str, Any]] | None = None
             routing_meta: dict[str, Any] = {}
             multi_local = mode == "local" and bool(self.config()["model"].get("multi_model"))
-            if (mode in ("lan", "internet", "auto") or multi_local) \
+            personal = mode in ("lan", "internet", "auto") and self._personal_request(user_text)
+            if personal:
+                local_reason = ("about you and your documents: answered on this device "
+                                "with your sources (nothing sent to the swarm)")
+                self.bus.publish("chat.notice", request_id=request.request_id,
+                                 conversation_id=conv_id, message_id=request.message_id,
+                                 note=local_reason)
+            if (mode in ("lan", "internet", "auto") or multi_local) and not personal \
                     and self.orchestrator is not None:
                 if mode == "internet":
                     return self._fail(

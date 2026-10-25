@@ -42,7 +42,11 @@ const Api = (() => {
     ws.onmessage = (msg) => {
       try { onEvent(JSON.parse(msg.data)); } catch (_) {}
     };
-    ws.onopen = () => { retryDelay = 2000; };
+    ws.onopen = () => {
+      retryDelay = 2000;
+      // after a reconnection, views re-read what may have finished meanwhile
+      try { onEvent({ type: "ws.open", payload: {} }); } catch (_) {}
+    };
     ws.onclose = () => setTimeout(() => reconnect(onEvent), retryDelay);
     return ws;
   }

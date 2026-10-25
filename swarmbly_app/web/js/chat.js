@@ -237,7 +237,7 @@ const Chat = (() => {
     els.thread.appendChild(messageEl(res.user_message));
     const el = messageEl(res.assistant_message, true);
     els.thread.appendChild(el);
-    pending[res.assistant_message.id] = { el, partial: "" };
+    pending[res.assistant_message.id] = { el, partial: "", conv: active, last: Date.now() };
     els.stop.disabled = false;
     const queued = early[res.assistant_message.id];
     delete early[res.assistant_message.id];
@@ -258,7 +258,9 @@ const Chat = (() => {
     const p = event.payload || {};
     if (event.type === "request.started" && p.message_id) requestOf[p.message_id] = p.request_id;
     if (!["chat.delta", "chat.done", "chat.notice"].includes(event.type)) return;
+    if (event.type === "ws.open") { checkPending(true); return; }
     const entry = pending[p.message_id];
+    if (entry) entry.last = Date.now();
     if (!entry) {
       (early[p.message_id] = early[p.message_id] || []).push(event);
       return;
@@ -275,6 +277,32 @@ const Chat = (() => {
       refreshMessage(p.message_id, entry.el, p);
     }
   }
+
+  /* A swarm request can run for minutes with few events; if the WebSocket
+     dropped meanwhile (sleep, network change, a server-side ping timeout),
+     the final event is lost and the answer only showed after a reload. Every
+     few seconds, a message with no recent event is read from the database
+     and shown once it is finished; after a reconnection, at once. */
+  async function checkPending(force = false) {
+    const now = Date.now();
+    for (const [mid, entry] of Object.entries(pending)) {
+      if (!force && now - entry.last < 8000) continue;
+      entry.last = now;
+      let m = null;
+      try {
+        const messages = await Api.get(`/api/conversations/${encodeURIComponent(entry.conv)}/messages`);
+        m = messages.find((x) => x.id === mid);
+      } catch (_) { continue; }
+      const status = m?.meta?.status;
+      if (m && status && status !== "running" && pending[mid]) {
+        delete pending[mid];
+        els.stop.disabled = Object.keys(pending).length === 0;
+        if (entry.el.isConnected && entry.conv === active) entry.el.replaceWith(messageEl(m));
+        scroll();
+      }
+    }
+  }
+  setInterval(() => { if (Object.keys(pending).length) checkPending(); }, 5000);
 
   /* Re-read the finished message from the DB (it now holds the stage log). */
   async function refreshMessage(mid, el, payload) {
