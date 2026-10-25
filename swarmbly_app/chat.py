@@ -39,6 +39,13 @@ class ActiveRequest:
 
 # Possessives and "about me" in es/en/pt (not French "mes", the Spanish month);
 # a bare "me" ("¿me traduces…?") is not enough, so batches still go to the swarm.
+_PERSONAL_TOPIC = re.compile(
+    r"\b(?:mi|mis|my|meu|minha|meus|minhas)\s+(?:propi[oa]s?\s+|own\s+)?"
+    r"(carrera|trayectoria|curr[ií]cul\w*|cv|tesis|publicaciones|art[ií]culos|perfil|"
+    r"experiencia|historia\s+(?:profesional|laboral|cl[ií]nica|m[eé]dica)|salud|familia|"
+    r"finanzas|sueldo|salario|empleos?|trabajos?|career|resume|thesis|publications|papers|"
+    r"profile|experience|work\s+history|health|family|finances|salary|jobs?|carreira|"
+    r"trajet[oó]ria|tese|publica[cç][oõ]es)\b", re.I)
 _FIRST_PERSON = re.compile(
     r"\b(mi|mis|m[ií]o|m[ií]a|m[ií]os|m[ií]as|sobre m[ií]|de m[ií]|conmigo|"
     r"my|mine|myself|about me|meu|minha|meus|minhas)\b", re.I)
@@ -144,8 +151,14 @@ class ChatService:
         test: "investigador de materiales"), and it would carry personal
         details to other machines."""
         lce = (self.config().get("lce") or {})
-        if not lce.get("keep_personal_local", True) or self.retriever is None \
-                or not self.retrieval_active() or not _FIRST_PERSON.search(text or ""):
+        if not lce.get("keep_personal_local", True) or not _FIRST_PERSON.search(text or ""):
+            return False
+        # "mi carrera", "mis publicaciones", "my thesis": personal whatever the
+        # sources say (the 25 Oct retest had C1 on but no source folder, and the
+        # request went to the swarm again with the user's name in it)
+        if _PERSONAL_TOPIC.search(text):
+            return True
+        if self.retriever is None or not self.retrieval_active():
             return False
         try:
             return bool(self.retriever(text, ""))

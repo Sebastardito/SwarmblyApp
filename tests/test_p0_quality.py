@@ -375,3 +375,22 @@ class TestPersonalStaysLocal:
         chat2.send(conv2["id"], "Clasifica mis 3 animales: 1. perro 2. loro 3. rana",
                    mode="lan", run_async=False)
         assert seen2.get("text", "").startswith("Clasifica")
+
+
+def test_personal_topic_stays_local_even_without_sources(fake_chat):
+    chat, _ = fake_chat
+    seen = {}
+
+    class Stub:
+        def run(self, text, **kw):
+            seen["text"] = text
+            return {"routed": "local", "reason": "stub", "metadata": {}, "stages": []}
+    chat.orchestrator = lambda: Stub()
+    chat.retriever = None                          # C1 off or no source folder
+    conv = chat.create_conversation(mode="lan")
+    chat.send(conv["id"], "Resume mi carrera como investigador y mis publicaciones.",
+              mode="lan", run_async=False)
+    assert "text" not in seen
+    chat.send(conv["id"], "Para cada uno de mis 3 animales, di si es ave: 1. perro 2. loro 3. rana",
+              mode="lan", run_async=False)
+    assert seen.get("text", "").startswith("Para cada")   # "mis animales" is not a personal topic

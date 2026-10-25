@@ -469,6 +469,11 @@ Windows, Debian; 0.5 B to 8 B models)
   messages with no recent event are now read from the database every few
   seconds and right after a reconnection; the server's WebSocket ping
   timeout is 90 s.
+- Personal requests: a possessive personal topic ("mi carrera", "mis
+  publicaciones", "my thesis", "mi salud"…) keeps the request local even
+  with no source folder; in the 25 Oct retest C1 was on without sources and
+  the request went to the swarm again with the user's name. "Mis 3
+  animales" in a batch is not a personal topic.
 - LCE C1, formats: Word (.docx), HTML and PDF (with `pdftotext` from poppler,
   on the PATH or in Homebrew's folders; ligatures normalised) are read, not
   only text files. Memory → Your sources lists every file with its passages,
