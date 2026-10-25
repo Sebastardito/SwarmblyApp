@@ -442,6 +442,11 @@ Windows, Debian; 0.5 B to 8 B models)
   end: "Entomólogo Jefe de I+D (Investigador Principal) — … — Nov 2022 – Sep
   2024") count as headings too, so the role is shown with the duties under
   it; author lists joined by "|" stay passages. Offline check: 13 of 16.
+- Round 13 (measured with `8aac98a`): the effective-size passage is now
+  retrieved for K3 in both repetitions (the thesis gives two estimates, ~14/~62
+  in the results and ~30/~120 in the discussion; both answers quote one), and
+  every source file is read; 12 of 16 retrieval hits, 35 and 38 of 44 by hand.
+  K6 failed until the title-line change.
 - LCE C1, formats: Word (.docx), HTML and PDF (with `pdftotext` from poppler,
   on the PATH or in Homebrew's folders; ligatures normalised) are read, not
   only text files. Memory → Your sources lists every file with its passages,
