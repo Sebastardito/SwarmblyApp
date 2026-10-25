@@ -447,6 +447,14 @@ Windows, Debian; 0.5 B to 8 B models)
   in the results and ~30/~120 in the discussion; both answers quote one), and
   every source file is read; 12 of 16 retrieval hits, 35 and 38 of 44 by hand.
   K6 failed until the title-line change.
+- Round 13c (measured with `c9b08bd`), the preregistered C1 closing check:
+  the passage with the fact is among the six for 13 of 16 questions in both
+  repetitions; K6 now answers "Gerente de I+D (R&D Manager)… mosca soldado
+  negra (BSF)" and K3 "~30, ~120, ancestral Ne ~15 000"; 39 and 38 of 44
+  (rounds 11b/11c: 37 and 36). LCE C1 is closed. Known limits: an answer is
+  as good as the model that writes it, crossing languages relies on the
+  glossary, and a fact in a passage that ranks seventh for its question
+  (F3, F7) is missed.
 - LCE C1, formats: Word (.docx), HTML and PDF (with `pdftotext` from poppler,
   on the PATH or in Homebrew's folders; ligatures normalised) are read, not
   only text files. Memory → Your sources lists every file with its passages,
