@@ -90,15 +90,34 @@ const Memory = (() => {
       els.sources.appendChild(h("p.empty", t("memory.sourcesOff")));
       return;
     }
+    // other folders read in place (lce.sources_dirs), e.g. a documents folder
+    const dirs = App.state.config?.lce?.sources_dirs || [];
+    const saveDirs = async (next) => {
+      try { await App.saveConfig({ "lce.sources_dirs": next }); } catch (e) { UI.toast(e.message, "error"); }
+      show();
+    };
+    const input = h("input", { type: "text", placeholder: "/Users/…/Documents", "aria-label": t("memory.addFolder") });
+    els.sources.appendChild(h("h3", t("memory.otherFolders")));
+    els.sources.appendChild(h("p.muted", t("memory.otherFoldersBody")));
+    if (dirs.length) els.sources.appendChild(h("ul.file-list", dirs.map((d) =>
+      h("li", h("code.path", d), button(t("memory.removeFolder"), () => saveDirs(dirs.filter((x) => x !== d)), "ghost small")))));
+    els.sources.appendChild(h("div.inline-form", input,
+      button(t("memory.addFolder"), () => { const v = input.value.trim(); if (v && !dirs.includes(v)) saveDirs([...dirs, v]); }, "small")));
     let list = [];
     try { list = await Api.get("/api/lce/sources"); } catch (_) { /* shown empty */ }
     if (!list.length) {
       els.sources.appendChild(h("p.empty", t("memory.noSources")));
     } else {
+      const read = list.filter((f) => f.passages > 0 || f.glossary).length;
+      els.sources.appendChild(h("p", t("memory.readCount").replace("{n}", read).replace("{total}", list.length)));
       els.sources.appendChild(h("ul.file-list", list.map((f) =>
-        h("li", h("span", f.name), h("span.muted", UI.fmtBytes(f.size_bytes))))));
+        h("li", h("span", f.name), h("span.muted", UI.fmtBytes(f.size_bytes)),
+          f.glossary ? chip(t("memory.glossary"), "net")
+            : f.unreadable ? chip(t("memory.unreadable"), "warn", f.unreadable)
+            : chip(t("memory.passages").replace("{n}", f.passages), f.passages ? "ok" : ""),
+          f.unreadable ? h("span.muted", f.unreadable) : null))));
     }
-    els.sources.appendChild(h("p.caveat", t("memory.c1Progress")));
+    els.sources.appendChild(h("p.caveat", t("memory.c1Ready")));
   }
 
   function relabel() { build(); show(); }

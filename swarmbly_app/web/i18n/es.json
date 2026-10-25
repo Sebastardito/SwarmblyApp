@@ -329,7 +329,15 @@
   "sourcesBody": "Pon en esta carpeta los documentos que quieras que Swarmbly recuerde. Se leen, nunca se modifican.",
   "sourcesOff": "Activa la memoria para usar una carpeta de fuentes.",
   "noSources": "La carpeta está vacía.",
-  "c1Progress": "La recuperación sobre estas fuentes se está integrando; por ahora la carpeta y la política de aprendizaje están preparadas."
+  "otherFolders": "Otras carpetas",
+  "otherFoldersBody": "Carpetas de tu equipo que también se leen, sin copiarlas ni modificarlas (por ejemplo, tus documentos de trabajo).",
+  "addFolder": "Añadir carpeta",
+  "removeFolder": "Quitar",
+  "readCount": "{n} de {total} archivos se pueden consultar.",
+  "glossary": "glosario",
+  "unreadable": "no se puede leer",
+  "passages": "{n} pasajes",
+  "c1Ready": "Formatos: texto, Markdown, Word (.docx), HTML y PDF (con pdftotext). Los pasajes solo se usan en respuestas de este equipo y nunca salen de él; un archivo glosario.md («término = equivalentes») ayuda a cruzar idiomas."
  },
  "settings": {
   "title": "Ajustes",

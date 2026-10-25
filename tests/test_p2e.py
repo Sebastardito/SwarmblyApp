@@ -22,9 +22,26 @@ def test_tokens_fold_accents_drop_function_words_and_plurals():
 def test_paragraphs_index_file_name_title_and_heading_not_as_spans():
     text = "# Chapter 2: genome assembly\n\nMethods.\n\nWe used Supernova to assemble the genome."
     spans = _paragraphs("02_tesis_genoma.md", text, label="tesis/02_tesis_genoma.md")
-    assert [s["text"] for s in spans] == ["We used Supernova to assemble the genome."]
+    # the heading right above is shown with the paragraph; the document title is not
+    assert [s["text"] for s in spans] == ["Methods. — We used Supernova to assemble the genome."]
     assert "tesis" in spans[0]["index"] and "Chapter 2" in spans[0]["index"] \
         and "Methods" in spans[0]["index"]
+
+
+def test_stacked_headings_are_shown_and_cut_pieces_overlap_in_the_index():
+    text = ("Experiencia\n\nGerente de I+D (R&D Manager) — Sep 2024\n\nAcmeLabs Inc.\n\n"
+            "Lideré los programas de mejoramiento de la mosca soldado negra con un equipo de doce "
+            "personas en tres sedes distintas del laboratorio.")
+    spans = _paragraphs("perfil.md", text)
+    assert spans[0]["text"].startswith("Experiencia · Gerente de I+D (R&D Manager) — Sep 2024 · "
+                                       "AcmeLabs Inc. — Lideré")
+    body = ("The two remnant populations of AB1 live on Champion and Gardner. " +
+            "Filler sentence about genetic load and island size here. " * 9 +
+            "These two populations, Champion (Ne ~30) and Gardner (Ne ~120), are small.")
+    pieces = _paragraphs("ch3.md", body)
+    assert len(pieces) > 1 and "Ne ~30" in pieces[-1]["text"]
+    assert "Filler sentence" in pieces[-1]["index"].split("These two")[0]   # previous sentence
+    assert _tokens("tamaño efectivo (Ne)")[-1] == "ne"                    # not a stop word
 
 
 def test_long_paragraph_is_cut_at_a_sentence_end():

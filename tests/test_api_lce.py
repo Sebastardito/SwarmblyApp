@@ -90,7 +90,8 @@ class TestLceAdapter:
         assert app_state.dirs.sources.exists()
         policy = app_state.dirs.wiki / "policy.json"
         assert policy.exists()
-        assert app_state.lce.list_sources()  # README.md created
+        assert (app_state.dirs.sources / "README.md").exists()   # the folder's own guide
+        assert app_state.lce.list_sources() == []                 # is not one of the sources
 
     def test_higher_levels_refused(self, app_state):
         try:

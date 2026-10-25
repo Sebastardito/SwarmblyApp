@@ -369,7 +369,8 @@ def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
 
     @app.get("/api/lce/sources")
     def lce_sources() -> list[dict]:
-        return state.lce.list_sources()
+        cfg = state.config.all().get("lce") or {}
+        return state.lce.list_sources(cfg.get("sources_dirs") or [])
 
     # ---- swarm (Phase 2) --------------------------------------------------------------
     @app.get("/api/swarm")

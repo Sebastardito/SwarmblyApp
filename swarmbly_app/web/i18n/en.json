@@ -329,7 +329,15 @@
   "sourcesBody": "Put documents you want Swarmbly to remember in this folder. They are read, never modified.",
   "sourcesOff": "Turn memory on to use a source folder.",
   "noSources": "The folder is empty.",
-  "c1Progress": "Retrieval over these sources is being integrated; for now the folder and learning policy are prepared."
+  "otherFolders": "Other folders",
+  "otherFoldersBody": "Folders on this computer that are also read, without copying or changing them (your work documents, for example).",
+  "addFolder": "Add folder",
+  "removeFolder": "Remove",
+  "readCount": "{n} of {total} files can be searched.",
+  "glossary": "glossary",
+  "unreadable": "cannot be read",
+  "passages": "{n} passages",
+  "c1Ready": "Formats: text, Markdown, Word (.docx), HTML and PDF (with pdftotext). Passages are only used in answers made on this computer and never leave it; a glossary.md file (\"term = equivalents\") helps across languages."
  },
  "settings": {
   "title": "Settings",

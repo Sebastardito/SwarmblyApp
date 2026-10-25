@@ -429,6 +429,20 @@ Windows, Debian; 0.5 B to 8 B models)
   entity names leave the device, never the request or local documents, and
   nothing for SENSITIVE requests; Settings → Privacy turns it off. Saved
   configurations keep their explicit value.
+- LCE C1, passages: the heading right above a paragraph is shown with it,
+  stacked headings together ("Gerente de I+D (R&D Manager) — Sep 2024 ·
+  NRGene Canada Inc. (NAIC) — Lideré…"): a job title in a heading was never
+  shown to the model (K6). Pieces cut from a long paragraph are indexed with
+  the previous piece's last sentence, an overlap as between reads ("…the two
+  remnant populations of M. trifasciatus on Champion and Gardner" before
+  "These two populations, Champion (Ne ~30)…", K3). "ne" is no longer a stop
+  word (Ne, effective population size). Offline BM25 check: the passage with
+  the fact is now among the six for 12 of 16 questions (10 before), K3 first.
+- LCE C1, formats: Word (.docx), HTML and PDF (with `pdftotext` from poppler,
+  on the PATH or in Homebrew's folders; ligatures normalised) are read, not
+  only text files. Memory → Your sources lists every file with its passages,
+  or why it cannot be read (no pdftotext, no text layer), shows the glossary,
+  and lets the user add other folders read in place (`lce.sources_dirs`).
 
 **LCE C1: retrieval over your sources, for local answers (P2b)**
 - With LCE enabled at C1, answers produced on this device get the most

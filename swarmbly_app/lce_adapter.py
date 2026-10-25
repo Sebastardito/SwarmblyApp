@@ -17,12 +17,14 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .paths import DataDirs
+from .source_readers import READABLE_SUFFIXES, read_source
 
 LEVELS = {
     "C0": {"active": True, "status": "active",
            "note": "Swarmbly unchanged; no LCE components applied."},
     "C1": {"active": True, "status": "active (local answers)",
-           "note": "Retrieval over your raw sources (BM25 over paragraphs) is added "
+           "note": "Retrieval over your raw sources (text, Word, HTML and PDF; "
+                  "keyword and local-embedding search, with your glossary) is added "
                   "to answers produced on this device, with the source cited. "
                   "Passages never leave the device; projection into Γ needs "
                   "digested claims (C2) and stays empty at C1."},
@@ -123,19 +125,35 @@ class LCEAdapter:
         except Exception as exc:  # upstream package is a dependency; report honestly
             raise RuntimeError(f"could not initialize LCE C1: {exc}") from exc
 
-    def list_sources(self) -> list[dict[str, Any]]:
+    def list_sources(self, extra_dirs: list[str] | tuple[str, ...] = ()) -> list[dict[str, Any]]:
+        """Files C1 reads (the LCE source folder plus ``lce.sources_dirs``), with
+        how many passages each gave and, if none, why ("pdftotext is not
+        installed", "no text layer")."""
+        roots = [self.dirs.sources, *[Path(d).expanduser() for d in extra_dirs or ()]]
+        spans = self._spans(roots)
+        counts: dict[str, int] = {}
+        for sp in spans:
+            counts[sp["source"]] = counts.get(sp["source"], 0) + 1
+        unreadable = getattr(self, "_unreadable", {})
         out: list[dict[str, Any]] = []
-        if not self.dirs.sources.exists():
-            return out
-        suffixes = {".txt", ".md", ".pdf", ".docx", ".html"}
-        for path in sorted(self.dirs.sources.rglob("*")):
-            if path.is_file() and path.suffix.lower() in suffixes:
+        for root in roots:
+            if not root.is_dir():
+                continue
+            for path in sorted(root.rglob("*")):
+                if not path.is_file() or path.suffix.lower() not in READABLE_SUFFIXES \
+                        or any(p.startswith(".") for p in path.relative_to(root).parts) \
+                        or path.name == "README.md" and path.parent == self.dirs.sources:
+                    continue
                 try:
                     size = path.stat().st_size
                 except OSError:
                     size = 0
-                out.append({"name": path.name, "path": str(path),
-                            "size_bytes": size})
+                entry = {"name": path.name, "path": str(path), "size_bytes": size,
+                         "folder": str(root), "glossary": _is_glossary(path),
+                         "passages": 0 if _is_glossary(path) else counts.get(path.name, 0)}
+                if str(path) in unreadable:
+                    entry["unreadable"] = unreadable[str(path)]
+                out.append(entry)
         return out
 
     # -- C1: retrieval over raw sources (WP LCE v0.2 §11.7–11.8, R13) ---------
@@ -318,7 +336,7 @@ class LCEAdapter:
             if not root.is_dir():
                 continue
             for path in sorted(root.rglob("*")):
-                if (not path.is_file() or path.suffix.lower() not in SOURCE_SUFFIXES
+                if (not path.is_file() or path.suffix.lower() not in READABLE_SUFFIXES
                         or _is_glossary(path)
                         or path.name == "README.md" and path.parent == self.dirs.sources
                         or any(p.startswith(".") for p in path.relative_to(root).parts)):
@@ -329,8 +347,14 @@ class LCEAdapter:
                     continue
                 key = (str(path), hashlib.sha256(data).hexdigest())
                 if key not in cache:
-                    cache[key] = _paragraphs(path.name, data.decode("utf-8", "replace"),
-                                             label=str(path.relative_to(root)))
+                    text, reason = read_source(path, data)
+                    cache[key] = _paragraphs(path.name, text, label=str(path.relative_to(root))) \
+                        if text else []
+                    self._unreadable = getattr(self, "_unreadable", {})
+                    if text is None:
+                        self._unreadable[str(path)] = reason
+                    else:
+                        self._unreadable.pop(str(path), None)
                 out.extend(cache[key])
         return out
 
@@ -345,7 +369,7 @@ class LCEAdapter:
             return None
 
 
-SOURCE_SUFFIXES = frozenset({".md", ".txt", ".markdown", ".rst", ".org", ".csv"})
+SOURCE_SUFFIXES = READABLE_SUFFIXES   # text, Word, HTML and (with pdftotext) PDF
 SPAN_MAX_CHARS = 600
 RELATIVE_FLOOR = 0.35
 SHORT_BLOCK_CHARS = 60   # shorter blocks are headings ("NRGene Canada Inc.", "Methods")
@@ -391,6 +415,7 @@ def _paragraphs(name: str, text: str, label: str = "") -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     pos = 0
     heading = ""
+    heading_start = -1           # >= 0: a heading sits right before this block
     for block in text.split("\n\n"):
         start = text.find(block, pos)
         start = pos if start < 0 else start
@@ -400,8 +425,25 @@ def _paragraphs(name: str, text: str, label: str = "") -> list[dict[str, Any]]:
             continue
         if len(body) < SHORT_BLOCK_CHARS and (not body.endswith((".", "?", "!"))
                                               or len(body.split()) <= 4):
-            heading = body.lstrip("#").strip()     # a heading: context for what follows
+            # a heading: context for what follows; stacked headings ("Gerente de
+            # I+D (R&D Manager) — Sep 2024…" then "NRGene Canada Inc. (NAIC)")
+            # are kept together, up to three
+            title_ = body.lstrip("#").strip()
+            if block.lstrip().startswith("# "):
+                heading, heading_start = title_, -1   # the document title: in the header
+                continue
+            if heading_start >= 0:
+                heading = " · ".join((heading.split(" · ") + [title_])[-3:])
+            else:
+                heading = title_
+            heading_start = start
             continue
+        # The paragraph right under a heading is shown with it: the heading can
+        # carry the fact ("Gerente de I+D (R&D Manager) — Sep 2024 – …" above
+        # the duties, round 11: K6 was never answerable).
+        lead = heading if heading_start >= 0 else ""
+        heading_start = -1
+        previous = ""            # last sentence of the previous piece, for the index
         while body:
             if len(body) <= SPAN_MAX_CHARS:
                 piece, body = body, ""
@@ -414,12 +456,21 @@ def _paragraphs(name: str, text: str, label: str = "") -> list[dict[str, Any]]:
             # The passage shown to the model also spells the genus out: a 3B
             # model read "M. trifasciatus (IUCN: Critical Endangered)" as saying
             # nothing about Mimus trifasciatus (round 4).
-            out.append({"source": name, "start": start, "end": pos, "text": full,
-                        "index": f"{header} {heading} {full}"})
+            shown = f"{lead} — {full}" if lead else full
+            # A piece cut from a long paragraph is indexed with the previous
+            # piece's last sentence (an overlap, as reads in an assembly): "These
+            # two populations, Champion (Ne ~30)…" follows "…the two remnant
+            # populations of M. trifasciatus on Champion and Gardner" (K3).
+            out.append({"source": name, "start": start, "end": pos,
+                        "text": shown, "index": f"{header} {heading} {previous} {shown}"})
+            sentences = _SENTENCE_END.split(full)
+            previous = sentences[-1] if sentences else ""
+            lead = ""
     return out
 
 
 # Function words (es/en/pt/fr) carry no topic; folded, as the tokens are.
+# French "ne" is left out: "Ne" is the effective population size (K3).
 _STOPWORDS = frozenset("""
 a al algo ante antes asi aun cada como con contra cual cuales cuando cuanto cuantos de del desde donde
 dos durante e el ella ellas ellos en entre era eran es esa ese eso esta estaba este esto estos fue fueron
@@ -430,7 +481,7 @@ an and are as at be been but by can could did do does for from had has have how 
 may more most my no not of on or our she should so such than that the their them then there these they
 this those to was we were what when where which while who why will with would you your
 um uma os as ao aos da das do dos em na nas no nos pelo pela ou
-au aux ce ces dans des du est et il ils je la le les leur mais ne nous ou par pas pour qu que qui sa se ses son sur un une vous
+au aux ce ces dans des du est et il ils je la le les leur mais nous ou par pas pour qu que qui sa se ses son sur un une vous
 """.split())
 
 
