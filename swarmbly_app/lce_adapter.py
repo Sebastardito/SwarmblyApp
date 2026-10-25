@@ -373,6 +373,7 @@ SOURCE_SUFFIXES = READABLE_SUFFIXES   # text, Word, HTML and (with pdftotext) PD
 SPAN_MAX_CHARS = 600
 RELATIVE_FLOOR = 0.35
 SHORT_BLOCK_CHARS = 60   # shorter blocks are headings ("NRGene Canada Inc.", "Methods")
+TITLE_LINE_CHARS = 160   # longer title lines with dashes count too (see _title_line)
 EXTRA_WEIGHT = 0.5       # weight of added query terms (model keywords, glossary)
 RRF_K = 60               # reciprocal-rank fusion constant
 DENSE_CANDIDATES = 40    # dense ranks that enter the fusion
@@ -381,6 +382,19 @@ MAX_PER_FILE = 3         # passages per file, at least (2 cut a needed third, ro
 #                          two thirds of k when larger (round 10c: the Ne paragraph was
 #                          5th of its chapter with k = 6 and a cap of 3)
 _GLOSS_LINE = re.compile(r"^\s*[-*]?\s*([^=→#<>|]{2,80}?)\s*(?:=|→|->)\s*([^=→]{2,200})$")
+
+
+_TITLE_SEP = re.compile(r"\s[—–]\s")     # not "|": author lists use it
+
+
+def _title_line(body: str) -> bool:
+    """A longer title line, as in a CV: "Entomólogo Jefe de I+D (Investigador
+    Principal) — Fenotipado… — Nov 2022 – Sep 2024". No sentence end, parts
+    joined by dashes, under TITLE_LINE_CHARS: shown with the paragraph
+    below it, like a heading (round 13: the role was its own passage, apart
+    from the duties under it)."""
+    return (len(body) < TITLE_LINE_CHARS and not body.endswith((".", "?", "!", ":", ";", ","))
+            and bool(_TITLE_SEP.search(body)) and not body.startswith(("-", "*", "•")))
 
 
 def _is_glossary(path: Path) -> bool:
@@ -423,8 +437,8 @@ def _paragraphs(name: str, text: str, label: str = "") -> list[dict[str, Any]]:
         body = " ".join(block.split())
         if not body or body.startswith("<!--"):
             continue
-        if len(body) < SHORT_BLOCK_CHARS and (not body.endswith((".", "?", "!"))
-                                              or len(body.split()) <= 4):
+        if (len(body) < SHORT_BLOCK_CHARS and (not body.endswith((".", "?", "!"))
+                                               or len(body.split()) <= 4)) or _title_line(body):
             # a heading: context for what follows; stacked headings ("Gerente de
             # I+D (R&D Manager) — Sep 2024…" then "NRGene Canada Inc. (NAIC)")
             # are kept together, up to three

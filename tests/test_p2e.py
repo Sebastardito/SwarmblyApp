@@ -44,6 +44,18 @@ def test_stacked_headings_are_shown_and_cut_pieces_overlap_in_the_index():
     assert _tokens("tamaño efectivo (Ne)")[-1] == "ne"                    # not a stop word
 
 
+def test_cv_title_line_is_shown_with_the_duties_below():
+    text = ("Entomólogo Jefe de I+D (Investigador Principal) — Fenotipado, Mejoramiento Selectivo y "
+            "Genómica — Nov 2022 – Sep 2024\n\nAcmeLabs Inc.\n\nLideré iniciativas de fenotipado y "
+            "mejoramiento selectivo aplicadas a insectos en el laboratorio.\n\n"
+            "Ana Pérez1 | Luis Gómez2 | Sebastián Ruiz3 | Marta Díaz4 | Pedro Vela5 | Rosa Lima6 | Juan Ortiz7\n\n"
+            "We studied the effects of an invasive parasite on the nestlings of island birds.")
+    spans = _paragraphs("cv.md", text)
+    assert spans[0]["text"].startswith("Entomólogo Jefe de I+D (Investigador Principal)")
+    assert "Lideré iniciativas" in spans[0]["text"]
+    assert any(s["text"].startswith("Ana Pérez1 |") for s in spans)   # an author list stays a passage
+
+
 def test_long_paragraph_is_cut_at_a_sentence_end():
     body = ("Sentence one is here. " * 40).strip()
     spans = _paragraphs("a.md", body)

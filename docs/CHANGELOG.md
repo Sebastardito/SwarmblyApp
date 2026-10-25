@@ -438,6 +438,10 @@ Windows, Debian; 0.5 B to 8 B models)
   "These two populations, Champion (Ne ~30)…", K3). "ne" is no longer a stop
   word (Ne, effective population size). Offline BM25 check: the passage with
   the fact is now among the six for 12 of 16 questions (10 before), K3 first.
+  CV title lines (up to 160 characters, parts joined by dashes, no sentence
+  end: "Entomólogo Jefe de I+D (Investigador Principal) — … — Nov 2022 – Sep
+  2024") count as headings too, so the role is shown with the duties under
+  it; author lists joined by "|" stay passages. Offline check: 13 of 16.
 - LCE C1, formats: Word (.docx), HTML and PDF (with `pdftotext` from poppler,
   on the PATH or in Homebrew's folders; ligatures normalised) are read, not
   only text files. Memory → Your sources lists every file with its passages,
