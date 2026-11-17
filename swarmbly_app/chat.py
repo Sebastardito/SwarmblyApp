@@ -525,6 +525,9 @@ class ChatService:
                     sources = self.retriever(user_text, extra_terms, request.project_id) or []
                 except Exception:
                     sources = []
+                if expansion and expansion.keywords:
+                    sources += _other_language(self.retriever, expansion.keywords, user_text,
+                                               request.project_id, sources)
                 from .compose import is_composition, related
                 named_docs = self._named_documents(user_text, request.project_id)
                 if sources and not named_docs and not _ABOUT_ME.search(user_text) \
@@ -1910,6 +1913,32 @@ _ES_MARKS = re.compile(r"[¿¡ñáíóú]|\b(qu[eé]|c[oó]mo|cu[aá]l(?:es)?|d[
                        r"el|los|las|del|una|y|en español|"
                        # 3.2: "Resume mis notas de campo." got English instructions
                        r"mis|tus|sus|resumen|escribe|redacta|prepara|haz|lista|compara)\b", re.I)
+
+
+def _other_language(retriever: Callable[..., list[dict[str, Any]]], keywords: str, question: str,
+                    project_id: str, sources: list[dict[str, Any]], limit: int = 2) -> list[dict[str, Any]]:
+    """Paragraphs in another language than the question, found with the
+    translated keywords alone. Searched together with the question, a
+    document in English ranked below the Spanish ones and was cut: the
+    sealed bank v3.1 missed the English report in 3 of 3 cases that needed
+    it, once with its paragraph among the candidates."""
+    from .lang import language_if_sure
+    asked = _lang(question)
+    have = {(s.get("doc_id"), s.get("start"), s.get("text")) for s in sources}
+    try:
+        found = retriever(keywords, "", project_id) or []
+    except Exception:
+        return []
+    out = []
+    for s in found:
+        if (s.get("doc_id"), s.get("start"), s.get("text")) in have:
+            continue
+        other = language_if_sure(str(s.get("text", "")))
+        if other and other != asked:
+            out.append(s)
+            if len(out) >= limit:
+                break
+    return out
 
 
 def _lang(text: str) -> str:

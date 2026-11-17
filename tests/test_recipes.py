@@ -165,3 +165,23 @@ def test_the_telemetry_says_what_the_receipt_says_about_consent(app_state, tmp_p
     meta = app_state.chat.get_messages(conv["id"])[-1]["meta"]
     assert meta["receipt"]["consentimiento"]["requerido"] is True
     assert meta["telemetry"]["online"]["consent_required"] is True
+
+
+def test_paragraphs_in_another_language_are_found_with_the_translated_keywords():
+    from swarmbly_app.chat import _other_language
+    es = {"doc_id": "a", "start": 0, "text": "Las colonias efectivas fueron 10, no 12: dos colonias de la parcela "
+                                              "baja murieron por el calor y los técnicos las sacaron con cuidado."}
+    en = {"doc_id": "b", "start": 0, "text": "Fruit weight averaged 1.9 g in the Upper Plot, and the activity of the "
+                                              "bees was high in the morning."}
+    calls = []
+
+    def retriever(query, expansion, project_id):
+        calls.append(query)
+        return [es, en]
+    out = _other_language(retriever, "fruit weight, upper plot", "¿Cuánto pesaban los frutos de la parcela alta?",
+                          "p", [es])
+    assert out == [en] and calls == ["fruit weight, upper plot"]
+    # a question in English adds nothing in English
+    assert _other_language(retriever, "fruit weight", "How much did the fruit weigh in the upper plot?", "p", []) \
+        == [es]
+    assert _other_language(retriever, "fruit weight", "¿Cuánto pesaban los frutos?", "p", [es, en]) == []
