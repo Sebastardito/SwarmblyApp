@@ -385,7 +385,19 @@ class ChatService:
             personal = mode in ("lan", "internet", "auto") and (
                 request.memory_saved is not None or capture or bool(request.web_query)
                 or self._personal_request(user_text, request.project_id))
+            asked_to_send = bool(_ASKS_TO_SEND.search(user_text))
+            if asked_to_send and mode == "local":
+                # sealed bank v3.1: "send this to the swarm" with the tier LOCAL was
+                # answered on this device, rightly, but the answer did not say so
+                local_reason = ("you asked to send this out, but the conversation is local: "
+                                "answered on this device, nothing sent")
+                request.receipt_ctx["asked_to_send"] = True
+                self.bus.publish("chat.notice", request_id=request.request_id,
+                                 conversation_id=conv_id, message_id=request.message_id,
+                                 note=local_reason)
             if personal:
+                if asked_to_send:
+                    request.receipt_ctx["asked_to_send"] = True
                 local_reason = ("about you and your documents: answered on this device "
                                 "with your sources (nothing sent to the swarm)")
                 self.bus.publish("chat.notice", request_id=request.request_id,
@@ -612,8 +624,11 @@ class ChatService:
                 blocks.append(gblock)
             web_found = None
             late_blocks: list[str] = []
+            if request.receipt_ctx.get("asked_to_send"):
+                late_blocks.append(_NOT_SENT.get(_lang(user_text), _NOT_SENT["en"]))
             from . import web_search
             if request.web_query:
+                request.receipt_ctx["web_searched"] = True
                 with egress.purpose(egress.PUBLIC_QUERY):
                     groups = {_fold_word(n): _fold_word(t) for t, eq in gloss_pairs
                               for n in [t, *[e.strip() for e in eq.split(",") if e.strip()]]}
@@ -950,7 +965,9 @@ class ChatService:
                 "online": {"approved_query": request.web_query or None,
                            "results": len((web_found or {}).get("results") or []),
                            "offered": request.receipt_ctx.get("web_offer") is not None,
-                           "consent_required": bool(request.receipt_ctx.get("consent_required"))},
+                           # as the receipt: an approved search needed (and had) the user's yes
+                           "consent_required": bool(request.receipt_ctx.get("consent_required")
+                                                    or request.receipt_ctx.get("web_searched"))},
                 "route": "local", "model": answer_model}
             answer_text = getattr(result, "text", "") or ""
             # a correction made in this very message applies to this answer too
@@ -1297,11 +1314,14 @@ class ChatService:
                 consent = {"requerido": required, "otorgado": True,
                            "alcance": "nombres de entidades públicas de la pregunta o de tus fuentes",
                            "base": base}
-                if request.web_query:
-                    # an approved search sends the text the user saw and edited
-                    consent = {"requerido": True, "otorgado": True,
-                               "alcance": f"el texto de búsqueda que aprobaste: «{request.web_query[:160]}»",
-                               "base": "lo aprobaste en el diálogo «Buscar en línea»"}
+            if request.web_query and ctx.get("web_searched"):
+                # an approved search sends the text the user saw and edited; its
+                # yes is the consent, whether or not a result came back (the
+                # telemetry and the receipt disagreed in 5 of 5 research cases,
+                # sealed bank v3.2)
+                consent = {"requerido": True, "otorgado": True,
+                           "alcance": f"el texto de búsqueda que aprobaste: «{request.web_query[:160]}»",
+                           "base": "lo aprobaste en el diálogo «Buscar en línea»"}
             if dest.get("clase") == egress.THIRD_PARTY:
                 consent["modelo_terceros"] = {
                     "host": dest.get("host", ""), "autorizado": True,
@@ -1801,6 +1821,25 @@ def _unsupported(answer: str, given: list[str] | None = None) -> list[str]:
                     continue
                 out.append(x[:300])
     return out[:12]
+# a request to send something out of this computer (swarm, network, servers)
+_ASKS_TO_SEND = re.compile(
+    # a request (imperative or infinitive), not a report ("se enviaron a otros laboratorios")
+    r"\b(env[ií]a(?:lo|la|los|las|me|nos)?|env[ií]e|enviar(?:lo|la|los|las)?|manda(?:lo|la|los|las)?|"
+    r"mandar(?:lo|la)?|comparte(?:lo|la)?|compartir(?:lo|la)?|sube(?:lo|la)?|subir(?:lo|la)?|"
+    r"distribuye(?:lo|la)?|distribuir(?:lo|la)?|reparte(?:lo|la)?|repartir(?:lo|la)?|"
+    r"procesa(?:lo|la)?|proc[eé]sa(?:lo|la)|procesar(?:lo|la)?|usa|usar|utiliza|utilizar|"
+    r"send|share|upload|distribute|process|use)\b[^.?!\n]{0,60}?"
+    r"\b(enjambre|nodos?|otr[oa]s?\s+(?:equipos?|computadoras?|ordenadores?|nodos?)|la\s+red|"
+    r"internet|la\s+nube|terceros|servidor(?:es)?\s+extern\w*|swarm|nodes?|peers?|the\s+network|"
+    r"the\s+cloud|other\s+(?:computers?|machines?|nodes?))\b", re.I)
+_NOT_SENT = {
+    "es": ("El usuario pidió enviar o procesar algo fuera de esta computadora (el enjambre, la red u otros "
+           "equipos). No se envió nada: esta respuesta se hizo en esta computadora, con sus fuentes. Dilo "
+           "al principio de tu respuesta, sin decir que se envió, y responde aquí lo que pide."),
+    "en": ("The user asked to send or process something outside this computer (the swarm, the network or "
+           "other machines). Nothing was sent: this answer was made on this computer, with their sources. "
+           "Say so at the start of your answer, without saying it was sent, and answer here what they ask."),
+}
 _FOLLOW_UP = re.compile(r"\b(este|esta|esto|ese|esa|eso|estos|estas|anterior|lo mismo|"
                         r"this|that|these|those|it|previous|above|isso|isto)\b", re.I)
 

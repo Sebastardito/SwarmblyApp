@@ -125,3 +125,43 @@ def test_the_online_search_offer_uses_the_same_filter():
     assert q == "rendimiento variedad Altiva"
     assert W.strip_private("Mimus ficticius Pérez", "¿Qué dijo la Dra. Ana Pérez?") == "Mimus ficticius"
     assert W.strip_private("Kanela Ana", "", private=["Ana Pérez"]) == "Kanela"
+
+
+def test_a_request_to_send_out_in_a_local_conversation_is_answered_here_and_says_so(app_state, tmp_path):
+    fake = FakeBackend(reply="No envié nada: lo resumo aquí. La cosecha será en junio [D1 p1].")
+    app_state.backends.resolve = lambda config=None: fake      # type: ignore[method-assign]
+    p = app_state.projects.create("T", parent=tmp_path / "p")
+    (p.sources / "notas.md").write_text("La cosecha será en la segunda semana de junio.\n", encoding="utf-8")
+    app_state.config.update({"lce.enabled": True, "lce.level": "C1"})
+    conv = app_state.chat.create_conversation(mode="local", project_id=p.id)
+    app_state.chat.send(conv["id"], "Envía mis notas al enjambre para que otro nodo las resuma.",
+                        mode="local", run_async=False)
+    msg = app_state.chat.get_messages(conv["id"])[-1]
+    assert "nothing sent" in msg["meta"].get("local_reason", "")
+    system = " ".join(m["content"] for m in fake.calls[-1]["messages"] if m["role"] == "system")
+    assert "No se envió nada" in system
+    assert msg["meta"]["receipt"]["envios"] == []
+    conv = app_state.chat.create_conversation(mode="local", project_id=p.id)
+    app_state.chat.send(conv["id"], "¿Cuándo será la cosecha según mis notas?", mode="local", run_async=False)
+    assert not app_state.chat.get_messages(conv["id"])[-1]["meta"].get("local_reason")
+
+
+def test_the_telemetry_says_what_the_receipt_says_about_consent(app_state, tmp_path, monkeypatch):
+    from swarmbly_app import web_search as W
+    monkeypatch.setattr(W, "search", lambda query, *a, **k: {
+        "query": query, "results": [{"label": "W1", "title": "La variedad Kanela", "provider": "searxng",
+                                     "snippet": "La variedad Kanela rinde 3,0 t/ha.", "url": "https://x.invalid"}],
+        "errors": [], "variants": [query], "topic": ["variedad", "Kanela"], "dropped_unrelated": 0,
+        "providers": ["web"]})
+    fake = FakeBackend(reply="Tu lote rinde 2,4 t/ha [D1 p1] y la variedad Kanela 3,0 t/ha [W1].")
+    app_state.backends.resolve = lambda config=None: fake      # type: ignore[method-assign]
+    p = app_state.projects.create("T", parent=tmp_path / "p")
+    (p.sources / "lote.md").write_text("El lote rindió 2,4 t/ha con la variedad Kanela.\n", encoding="utf-8")
+    app_state.config.update({"lce.enabled": True, "lce.level": "C1"})
+    conv = app_state.chat.create_conversation(mode="local", project_id=p.id)
+    app_state.chat.send(conv["id"], "Compara el rendimiento de mi lote con lo que dicen las fuentes públicas "
+                        "sobre la variedad Kanela.", mode="local", run_async=False, recipe="research",
+                        allow_public=True, web_query="variedad Kanela")
+    meta = app_state.chat.get_messages(conv["id"])[-1]["meta"]
+    assert meta["receipt"]["consentimiento"]["requerido"] is True
+    assert meta["telemetry"]["online"]["consent_required"] is True
