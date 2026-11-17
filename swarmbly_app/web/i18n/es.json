@@ -177,6 +177,7 @@
   "memoryEquivalents": "sinónimos, traducciones (separados por comas)",
   "memoryDefinition": "definición breve",
   "webNone": "La búsqueda aprobada no encontró resultados (consulta: «{q}»). Puedes probar con otros términos, por ejemplo en inglés.",
+  "webDropped": "La búsqueda aprobada (consulta: «{q}») encontró {n} resultados, pero ninguno trataba del tema y se descartaron. Puedes probar con otros términos.",
   "webAgain": "Buscar de nuevo",
   "citeMismatch": "{n} cita con archivo equivocado",
   "citeMismatchTitle": "Estas etiquetas existen pero el modelo les atribuyó otro archivo: {labels}.",

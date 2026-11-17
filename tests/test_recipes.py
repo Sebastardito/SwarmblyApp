@@ -92,3 +92,36 @@ def test_the_documents_recipe_offers_no_public_lookup(app_state, tmp_path):
                         allow_public=True, web_query="cosecha junio")
     meta = app_state.chat.get_messages(conv["id"])[-1]["meta"]
     assert meta["recipe"] == "documents" and "web_offer" not in meta and "web_search" not in meta
+
+
+# ---- 3.3: a proposed query carries the public topic only (sealed bank v3.2) ----
+
+def test_proposed_query_leaves_out_plots_codes_people_and_format_words():
+    from swarmbly_app.recipes import propose_query
+    cases = {
+        "Compara la cuaja de mi Parcela Norte con lo que dicen las fuentes públicas sobre la "
+        "variedad Lumbre para la Parcela Norte y redacta un informe de unas 200 palabras.": "variedad Lumbre",
+        "¿Mis conteos de abejorros en el lote AB7 cuadran con lo que se publica sobre Bombus "
+        "ficticius? Respóndeme en tres frases.": "abejorros Bombus ficticius",
+        "¿Qué rendimiento tuvo la Parcela Sur en 2024 comparado con la variedad Altiva?":
+            "rendimiento variedad Altiva",
+        "¿Lo que anotó la Dra. Ana Pérez sobre Mimus ficticius coincide con la literatura?": "Mimus ficticius",
+    }
+    for text, expected in cases.items():
+        assert propose_query(text) == expected, text
+
+
+def test_proposed_query_keeps_public_places_and_drops_the_users_garden():
+    from swarmbly_app.recipes import propose_query
+    q = propose_query("¿El abejorro colorado que vimos en el Huerto Los Aromos está amenazado?")
+    assert "Huerto" not in q and "Aromos" not in q and "Los" not in q.split()
+    assert "abejorro colorado" in q
+    assert "Patagonia" in propose_query("¿Qué se sabe del abejorro colorado en Patagonia?")
+
+
+def test_the_online_search_offer_uses_the_same_filter():
+    from swarmbly_app import web_search as W
+    q = W.propose_query("¿Qué rendimiento tuvo la Parcela Sur en 2024 comparado con la variedad Altiva?")
+    assert q == "rendimiento variedad Altiva"
+    assert W.strip_private("Mimus ficticius Pérez", "¿Qué dijo la Dra. Ana Pérez?") == "Mimus ficticius"
+    assert W.strip_private("Kanela Ana", "", private=["Ana Pérez"]) == "Kanela"

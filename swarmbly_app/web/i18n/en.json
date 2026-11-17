@@ -177,6 +177,7 @@
   "memoryEquivalents": "synonyms, translations (comma-separated)",
   "memoryDefinition": "short definition",
   "webNone": "The approved search found nothing (query: \"{q}\"). Try other terms, for example in English.",
+  "webDropped": "The approved search (query: \"{q}\") found {n} results, but none was about the topic and they were left out. Try other terms.",
   "webAgain": "Search again",
   "citeMismatch": "{n} citation with the wrong file",
   "citeMismatchTitle": "These labels exist but the model gave them another file: {labels}.",

@@ -621,7 +621,9 @@ const Chat = (() => {
     if (!streaming) {
       if (meta.web_search?.results?.length) article.appendChild(webResults(meta.web_search));
       else if (meta.web_search) article.appendChild(h("p.note.web-results",
-        t("chat.webNone").replace("{q}", meta.web_search.query || "")));
+        (meta.web_search.dropped_unrelated
+          ? t("chat.webDropped").replace("{n}", meta.web_search.dropped_unrelated)
+          : t("chat.webNone")).replace("{q}", meta.web_search.query || "")));
       if (meta.conflicts?.length) article.appendChild(conflictBox(meta.conflicts));
       if (meta.coverage?.missing?.length) article.appendChild(coverageBox(meta.coverage.missing));
       if (meta.verification?.flagged?.length) article.appendChild(verificationBox(meta.verification));
