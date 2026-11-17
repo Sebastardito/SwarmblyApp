@@ -1929,9 +1929,15 @@ def _other_language(retriever: Callable[..., list[dict[str, Any]]], keywords: st
         found = retriever(keywords, "", project_id) or []
     except Exception:
         return []
+    from .compose import _stems
+    wanted = _stems(keywords)
     out = []
     for s in found:
         if (s.get("doc_id"), s.get("start"), s.get("text")) in have:
+            continue
+        # a paragraph that shares one keyword is not about the question: two
+        # of them, or every keyword when there is only one
+        if len(wanted & _stems(str(s.get("text", "")))) < min(2, len(wanted)):
             continue
         other = language_if_sure(str(s.get("text", "")))
         if other and other != asked:

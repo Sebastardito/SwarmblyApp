@@ -182,6 +182,8 @@ def test_paragraphs_in_another_language_are_found_with_the_translated_keywords()
                           "p", [es])
     assert out == [en] and calls == ["fruit weight, upper plot"]
     # a question in English adds nothing in English
-    assert _other_language(retriever, "fruit weight", "How much did the fruit weigh in the upper plot?", "p", []) \
+    assert _other_language(retriever, "colonias parcela", "How many colonies died in the lower plot?", "p", []) \
         == [es]
     assert _other_language(retriever, "fruit weight", "¿Cuánto pesaban los frutos?", "p", [es, en]) == []
+    # one shared keyword of several is not enough
+    assert _other_language(retriever, "fruit price, market", "¿A cuánto se vendió la fruta?", "p", []) == []

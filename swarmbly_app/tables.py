@@ -613,13 +613,17 @@ def apply_corrections(header: list[str], rows: list[dict[str, Any]],
                     m = re.search(_NOT_OLD, sentence)
                     if m and _canon(m.group(2)) == _canon(old_n.group(1)):
                         new = m.group(1)
-                    elif _CORRECTION.search(sentence):
-                        # the value the cue gives: a few words after it, after
-                        # "en", "a", ":"…, and not a date
-                        after = sentence[_CORRECTION.search(sentence).end():]
-                        n = re.match(r"\W*(?:[\wáéíóúñ]+\W+){0,4}?(?:en|a|al|:|es|de|queda\w*|to|at|is|of)\s+"
-                                     r"(\d+(?:[.,]\d+)?)(?!\s*(?:/|de\s+(?:" + _MONTH_WORDS + r")))", after, re.I)
-                        new = n.group(1) if n else ""
+                    else:
+                        # the value a cue gives: a few words after it, after
+                        # "en", "a", ":"…, and not a date ("Con esa corrección,
+                        # la cuaja … se recalcula en 61 %": the second cue gives it)
+                        for cue in _CORRECTION.finditer(sentence):
+                            n = re.match(r"\W*(?:[\wáéíóúñ]+\W+){0,4}?(?:en|a|al|:|es|de|queda\w*|to|at|is|of)\s+"
+                                         r"(\d+(?:[.,]\d+)?)(?!\s*(?:/|de\s+(?:" + _MONTH_WORDS + r")))",
+                                         sentence[cue.end():], re.I)
+                            if n:
+                                new = n.group(1)
+                                break
                     if new and _canon(new) != _canon(old_n.group(1)) and _close(new, old_n.group(1)):
                         unit = old[old_n.end():].strip()
                         earlier = "antes" if lang == "es" else "earlier"
