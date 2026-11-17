@@ -213,6 +213,8 @@
   "roleBlocked": "El modelo {model} está fuera de tu computadora y no tiene autorización para esto: respondió el modelo de la conversación y no se envió nada.",
   "tableBuilt": "Tabla armada por el programa",
   "tableBuiltTitle": "La tabla se armó con valores comprobados en tus documentos: {rows} filas de {docs} documentos; {empty} celdas sin dato en las fuentes; {dropped} valores descartados por no estar en el documento.",
+  "tableCorrected": "Valores corregidos: {n}",
+  "tableCorrectedTitle": "Otro párrafo de tus fuentes corrige estos valores; la tabla da el corregido y deja el anterior entre paréntesis:",
   "tableUnsupported": "{n} celdas sin respaldo",
   "tableUnsupportedTitle": "Estas cifras de la tabla no están en los párrafos de tus fuentes ni salen de un cálculo entre celdas:",
   "verifyTitle": "Frases que su cita no respalda ({n} de {m})",

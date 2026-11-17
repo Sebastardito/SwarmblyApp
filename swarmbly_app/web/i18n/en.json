@@ -213,6 +213,8 @@
   "roleBlocked": "The model {model} is off this computer and is not authorised for this: the conversation's model answered and nothing was sent.",
   "tableBuilt": "Table built by the program",
   "tableBuiltTitle": "The table was built from values checked in your documents: {rows} rows from {docs} documents; {empty} cells the sources do not give; {dropped} values dropped for not being in the document.",
+  "tableCorrected": "Corrected values: {n}",
+  "tableCorrectedTitle": "Another paragraph of your sources corrects these values; the table gives the corrected one and keeps the earlier one in brackets:",
   "tableUnsupported": "{n} unsupported cells",
   "tableUnsupportedTitle": "These figures of the table are not in the paragraphs of your sources and do not come from a calculation between cells:",
   "verifyTitle": "Sentences their citation does not support ({n} of {m})",

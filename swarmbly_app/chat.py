@@ -806,7 +806,18 @@ class ChatService:
             # 3.3, recipe 2: the table a composition asks for is built by code
             # from values each document supports; the model writes around it
             table_built = None
+            table_why: dict[str, Any] = {}
             inv_now = request.receipt_ctx.get("inventory")
+            wants_table = bool((inv_now and inv_now.get("table")) or request.recipe == "table")
+            if wants_table and not (((self.config().get("compose") or {}).get("table_by_code")
+                                     or request.recipe == "table")):
+                table_why["reason"] = "table_by_code_off"
+            elif wants_table and not sources:
+                table_why["reason"] = "no_sources"
+            elif wants_table and public_hits:
+                table_why["reason"] = "public_evidence"
+            elif wants_table and not inv_now:
+                table_why["reason"] = "no_inventory"
             if (((self.config().get("compose") or {}).get("table_by_code") or request.recipe == "table")
                     and inv_now and inv_now.get("table") and sources and not public_hits):
                 from . import tables
@@ -826,13 +837,15 @@ class ChatService:
                         # wrote none for "Compara la germinación…", open battery RC-01)
                         table_request = user_text.rstrip() + (" Hazlo en una tabla." if _lang(user_text) == "es"
                                                               else " Put it in a table.")
-                    table_built = tables.build(table_request, sources, inv_now, _short, _lang(user_text))
+                    table_built = tables.build(table_request, sources, inv_now, _short, _lang(user_text),
+                                               table_why)
                 except Interrupted:
                     raise
                 except egress.EgressDenied:
                     raise
-                except Exception:
+                except Exception as exc:
                     table_built = None
+                    table_why["reason"] = f"error: {type(exc).__name__}"
                 if table_built:
                     table_built["seconds"] = round(time.monotonic() - t0, 1)
                     context = [*context[:-1],
@@ -963,6 +976,10 @@ class ChatService:
                 except Exception:
                     pass
                 extra["table"] = {k: v for k, v in table_built.items() if k != "markdown"}
+                extra["table"]["by_code"] = True
+            elif table_why:
+                # why the code built no table: the answer's table, if any, is the model's
+                extra["table"] = {"by_code": False, **table_why}
             conflicts = _term_conflicts(answer_text, gloss_pairs, gmeta)
             if conflicts:
                 extra["term_conflicts"] = conflicts
@@ -1771,7 +1788,8 @@ def _unsupported(answer: str, given: list[str] | None = None) -> list[str]:
                 outside = True
             if outside:
                 continue
-            for x in re.split(r"(?<=[.!?])\s+", line):
+            from .verify import sentences
+            for x in sentences(line):
                 x = x.strip()
                 if (len(x.split()) < 6 or x.startswith(("#", "|", ">")) or x.endswith("?")
                         or _CITE.search(x) or _ABOUT_SOURCES.search(x)):
