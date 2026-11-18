@@ -1877,6 +1877,7 @@ class ChatService:
             prompt = recipes.build_list_prompt(job.operation, wave)
             local_items = {n: item for n, item in enumerate(wave, 1)}
             wave_exec = "local"
+            retried = False
             result_map: dict[int, dict[str, Any]] = {}
             if job.where == "swarm" and orchestrator is not None:
                 try:
@@ -1908,16 +1909,18 @@ class ChatService:
                     local_reasons.append(str(outcome.get("reason") or
                                              "the swarm path kept this wave local"))
                     try:
-                        result_map, _model = self._list_local_wave(
-                            orchestrator, prompt, local_items, cfg, lang)
+                        result_map, _model, retried = self._list_local_wave(
+                            orchestrator, prompt, local_items, cfg, lang,
+                            job.operation)
                     except Exception as exc:
                         return self._fail(request, f"local list wave {wave_no} failed: {exc}")
             else:
                 if job.where == "swarm" and orchestrator is None:
                     local_reasons.append("no orchestrator is available")
                 try:
-                    result_map, _model = self._list_local_wave(
-                        orchestrator, prompt, local_items, cfg, lang)
+                    result_map, _model, retried = self._list_local_wave(
+                        orchestrator, prompt, local_items, cfg, lang,
+                        job.operation)
                 except Exception as exc:
                     return self._fail(request, f"local list wave {wave_no} failed: {exc}")
             for local_n in local_items:
@@ -1925,7 +1928,7 @@ class ChatService:
                     local_n, {"answer": "", "status": "missing", "agreement": 0.0})
             executed_waves.append(wave_exec)
             wave_meta.append({"wave": wave_no, "items": len(wave),
-                              "executed": wave_exec})
+                              "executed": wave_exec, "retried": retried})
             offset += len(wave)
             self.bus.publish("recipe.list.wave", request_id=request.request_id,
                              conversation_id=request.conversation_id,
@@ -1970,6 +1973,7 @@ class ChatService:
                      "missing": counts["missing"], "disagreement": counts["disagreement"],
                      "where": job.where, "waves": len(waves), "executed": executed,
                      "wave_size": wave_size, "duplicates": len(duplicates),
+                     "retries": sum(1 for w in wave_meta if w.get("retried")),
                      "partial_reasons": list(dict.fromkeys(local_reasons)),
                      "privacy": {"tier": privacy["tier"], "lane": privacy["lane"],
                                  "sensitive": privacy["sensitive"]}}
@@ -1990,13 +1994,39 @@ class ChatService:
                     "waves": wave_meta, "partial_reasons": list_meta["partial_reasons"]}
         return self._finish_distributed(request, answer_text, metadata, stages, extra=extra)
 
+    @staticmethod
+    def _degenerate_wave(local_items: dict[int, str],
+                         result_map: dict[int, dict[str, Any]]) -> bool:
+        """The model answered one item and repeated it for the rest.
+
+        qwen2.5:7b does this with a 12-item wave of near-identical lines: all
+        twelve cells carry item 1's answer, while a 6-item wave is correct.
+        Only a wave with at least four distinct items and four answered cells
+        can show the pattern. A legitimate operation that gives every item the
+        same value is retried once; the retry's identical answers are kept.
+        """
+        texts = {str(v).strip().casefold() for v in local_items.values()
+                 if str(v).strip()}
+        values = [str(a.get("answer") or "").strip().casefold()
+                  for a in result_map.values()
+                  if a.get("status") == "answered" and str(a.get("answer") or "").strip()]
+        return len(texts) >= 4 and len(values) >= 4 and len(set(values)) == 1
+
     def _list_local_wave(self, orchestrator: Any, prompt: str,
                          local_items: dict[int, str], cfg: dict[str, Any],
-                         lang: str) -> tuple[dict[int, dict[str, Any]], str]:
+                         lang: str, operation: str = ""
+                         ) -> tuple[dict[int, dict[str, Any]], str, bool]:
         """One wave on this device, reusing the orchestrator's local backend
-        and, when enabled, its local model pool."""
+        and, when enabled, its local model pool.
+
+        A whole-wave prompt can make a small model repeat the first item's
+        answer (MX-01, 12 items). When every distinct item gets the same
+        answer, the wave is retried one item per prompt; the return value says
+        whether that happened, so the answer's meta can show it.
+        """
+        from . import recipes
         from .engine.scheduler import Replica
-        from .engine.orchestrator import _vote_items
+        from .engine.orchestrator import _parse_single_item, _vote_items
         if orchestrator is None:
             raise RuntimeError("no orchestrator is available")
         stream = getattr(orchestrator, "local_stream", None)
@@ -2028,40 +2058,71 @@ class ChatService:
         models = list(dict.fromkeys(str(m) for m in models if m))
         if not models:
             raise RuntimeError("no local model is configured")
-        max_tokens = min(4096, max(512, 120 * len(local_items)))
         temperature = float(((cfg.get("model") or {}).get("temperature", 0.2)))
-        replicas, errors = [], []
-        for model in models:
-            if egress.cloud_host_by_name(model):
-                raise RuntimeError(f"{model} runs at {egress.OLLAMA_CLOUD}, not on this computer")
-            try:
-                result = stream.stream_chat(
-                    [{"role": "user", "content": prompt}], model=model,
-                    max_tokens=max_tokens, temperature=temperature)
-                text = str(getattr(result, "text", "") or "")
-            except Exception as exc:
-                text = ""
-                errors.append(str(exc))
-            replicas.append(Replica(text, "local", model, model, 0))
-        if not any(r.text.strip() for r in replicas):
-            raise RuntimeError(errors[-1] if errors else "the local model returned no text")
-        vote = _vote_items(replicas, local_items,
-                           list(range(len(replicas))), lang)
-        report = vote[1] if vote is not None else {"items": [], "missing_items": list(local_items)}
-        out: dict[int, dict[str, Any]] = {}
-        for entry in report.get("items") or []:
-            n = int(entry.get("item") or 0)
-            if n not in local_items:
-                continue
-            agreement = float(entry.get("agreement") or 0.0)
-            distinct = int(entry.get("distinct_answers") or 1)
-            out[n] = {"answer": str(entry.get("value") or "").strip(),
-                      "status": "disagreement" if distinct > 1 or agreement < 0.999
-                      else "answered",
-                      "agreement": agreement}
-        for n in local_items:
-            out.setdefault(n, {"answer": "", "status": "missing", "agreement": 0.0})
-        return out, models[0]
+
+        def call(prompt_text: str, items: dict[int, str],
+                 single: bool = False) -> dict[int, dict[str, Any]]:
+            max_tokens = min(4096, max(512, 120 * len(items)))
+            replicas, errors = [], []
+            for model in models:
+                if egress.cloud_host_by_name(model):
+                    raise RuntimeError(
+                        f"{model} runs at {egress.OLLAMA_CLOUD}, not on this computer")
+                try:
+                    result = stream.stream_chat(
+                        [{"role": "user", "content": prompt_text}], model=model,
+                        max_tokens=max_tokens, temperature=temperature)
+                    text = str(getattr(result, "text", "") or "")
+                except Exception as exc:
+                    text = ""
+                    errors.append(str(exc))
+                replicas.append(Replica(text, "local", model, model, 0))
+            if not any(r.text.strip() for r in replicas):
+                raise RuntimeError(errors[-1] if errors else "the local model returned no text")
+            if single:
+                # One item: a model may label it with its own number ("2."),
+                # so read the value, not only the prompt's label "1.".
+                parsed = [_parse_single_item(r.text, items[1]) for r in replicas]
+                values = [value for value in parsed if value]
+                if not values:
+                    return {1: {"answer": "", "status": "missing", "agreement": 0.0}}
+                counts: dict[str, int] = {}
+                for value in values:
+                    counts[value] = counts.get(value, 0) + 1
+                winner = max(counts, key=lambda value: counts[value])
+                return {1: {"answer": winner,
+                            "status": "answered" if len(counts) == 1 else "disagreement",
+                            "agreement": round(counts[winner] / len(replicas), 4)}}
+            vote = _vote_items(replicas, items, list(range(len(replicas))), lang)
+            report = (vote[1] if vote is not None
+                      else {"items": [], "missing_items": list(items)})
+            out: dict[int, dict[str, Any]] = {}
+            for entry in report.get("items") or []:
+                n = int(entry.get("item") or 0)
+                if n not in items:
+                    continue
+                agreement = float(entry.get("agreement") or 0.0)
+                distinct = int(entry.get("distinct_answers") or 1)
+                out[n] = {"answer": str(entry.get("value") or "").strip(),
+                          "status": "disagreement" if distinct > 1 or agreement < 0.999
+                          else "answered",
+                          "agreement": agreement}
+            for n in items:
+                out.setdefault(n, {"answer": "", "status": "missing", "agreement": 0.0})
+            return out
+
+        result_map = call(prompt, local_items)
+        retried = False
+        if operation and self._degenerate_wave(local_items, result_map):
+            retried = True
+            retry: dict[int, dict[str, Any]] = {}
+            for n, item in local_items.items():
+                single_prompt = recipes.build_single_item_prompt(operation, item)
+                single = call(single_prompt, {1: item}, single=True)
+                retry[n] = single.get(1) or {"answer": "", "status": "missing",
+                                             "agreement": 0.0}
+            result_map = retry
+        return result_map, models[0], retried
 
     @staticmethod
     def _list_swarm_results(metadata: dict[str, Any], text: str,

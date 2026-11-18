@@ -60,6 +60,19 @@
   Settings → Models gains the role's model/server/URL/key fields (en/es). The
   role's key is kept in the system keychain.
 
+- **Recipe 4: a degenerate long wave is retried item by item** (`chat.py`,
+  `recipes.py`, `engine/orchestrator.py`). The local list path sent a whole
+  wave (up to 12 items) as one prompt with “responde solo ese elemento”. With
+  12 near-identical records, qwen2.5:7b answered item 1 for the whole wave
+  (`8` in all twelve cells), while the 6-item second wave was correct; the
+  app wrote the repeated value into the table. A wave where at least four
+  distinct items receive four or more identical answers is now retried one
+  item per prompt as a single-row Markdown table, and `meta.list` reports
+  `retries` (and each wave's `retried` flag). The parser also ignores a number
+  inside an echoed item (“Ficha 2: …”) and reads a single-item table row or an
+  item with its number replaced, so the retry's answer is not lost. A 4-item
+  wave is unchanged; a 13-item list retries only its 12-item first wave.
+
 - **MCP client core** (`swarmbly_app/tools/mcp.py`, `mcp_registry.py`). MCP
   servers are configured per project in `settings/mcp_servers.json` with the
   exact local command, arguments, working directory and environment-variable

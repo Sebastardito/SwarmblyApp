@@ -272,6 +272,26 @@ def build_list_prompt(operation: str, items: list[str]) -> str:
     return f"{operation.strip()}\n\n{cue}\n{heading}\n{numbered}"
 
 
+def build_single_item_prompt(operation: str, item: str) -> str:
+    """One item, answered as a table row, for a degenerated local wave.
+
+    A 12-item wave made qwen2.5:7b repeat item 1's answer; asked one item at a
+    time with a line cue, it echoed the item and put the answer inside it
+    ("Ficha 9: parcela Norte.").  A single-row table keeps the answer in its
+    own cell, so the app can read it without guessing where the item ends.
+    """
+    lang = list_language(operation)
+    if lang == "es":
+        cue = ("Devuelve una tabla Markdown con una fila y dos columnas: "
+               "número y resultado. No incluyas el texto del elemento.")
+        heading = "Elemento:"
+    else:
+        cue = ("Return a Markdown table with one row and two columns: "
+               "number and result. Do not include the item text.")
+        heading = "Item:"
+    return f"{operation.strip()}\n\n{cue}\n{heading}\n1. {item.strip()}"
+
+
 def summary_line(count: int, answered: int, missing: int, disagreement: int,
                  lang: str = "en") -> str:
     if lang == "es":

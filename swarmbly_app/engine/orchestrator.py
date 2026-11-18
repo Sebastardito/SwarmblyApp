@@ -1187,6 +1187,26 @@ def _item_texts(instruction: str) -> dict[int, str]:
     return {int(m.group(1)): m.group(2) for m in _ITEM_LINE.finditer(text)}
 
 
+def _item_echo_span(text: str, start: int, item_text: str) -> tuple[int, int] | None:
+    """Where ``item_text`` is echoed right after a label, if it is.
+
+    A model that repeats the item keeps its own numbers ("1. Ficha 2: … 9");
+    the ``2:`` inside that text is not a second item label.  Returns the span
+    so the caller can ignore labels that fall inside it.
+    """
+    item = item_text.strip(_STRIP).rstrip(".;,")
+    if not item:
+        return None
+    for needle in (item, item[:40]):
+        if not needle:
+            continue
+        found = re.search(re.escape(needle), text[start:start + len(needle) + 8],
+                          re.IGNORECASE)
+        if found:
+            return start + found.start(), start + found.end()
+    return None
+
+
 def _parse_items(text: str, items: dict[int, str]) -> dict[int, str]:
     """A replica's answer per item: first occurrence of each wanted label.
 
@@ -1203,7 +1223,15 @@ def _parse_items(text: str, items: dict[int, str]) -> dict[int, str]:
         n = int(m.group(1))
         if n not in items or n in found:
             continue
+        # Labels inside the item's own echoed text ("Ficha 2:") are not new
+        # items: skip them before choosing where this item's answer ends.
         end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        echo = _item_echo_span(text, m.end(), items[n])
+        if echo is not None:
+            j = i + 1
+            while j < len(matches) and matches[j].start() < echo[1]:
+                j += 1
+            end = matches[j].start() if j < len(matches) else len(text)
         lines = [ln for ln in text[m.end():end].split("\n")]
         value = _item_value(lines[0], items[n])
         if not value and len(lines) > 1:
@@ -1272,13 +1300,60 @@ def _parse_items(text: str, items: dict[int, str]) -> dict[int, str]:
 _SEPARATOR = re.compile(r"\s[:–—=→-]\s|:\s")
 
 
+def _substituted_number(text: str, item: str) -> str:
+    """The number a model put in the item's place ("Ficha 2" → "Ficha 9")."""
+    found = re.search(r"\d+", item)
+    if not found:
+        return ""
+    pattern = (re.escape(item[:found.start()]) + r"(\d{1,6})"
+               + re.escape(item[found.end():]))
+    match = re.search(pattern, text or "", re.IGNORECASE)
+    return match.group(1) if match else ""
+
+
+def _parse_single_item(text: str, item: str) -> str:
+    """The one answer of a single-item prompt.
+
+    A model may label it with the item's own number ("2. Ficha 2: … 9") or
+    rewrite the item with the answer in place ("Ficha 9: …"), so read a table
+    row first, then the labelled value, then the substituted number.
+    """
+    text = text or ""
+    # A single-row table may keep the item's own number in the first cell
+    # ("| 2 | 9 |" for "Ficha 2"): read the last cell, not the row label.
+    for row in _TABLE_ROW.finditer(text):
+        cells = [c.strip(_STRIP) for c in row.group(2).split("|")]
+        cells = [c for c in cells
+                 if c and c.casefold() != item.strip(_STRIP).rstrip(".;,").casefold()]
+        if cells:
+            value = _item_value(cells[-1], item) or cells[-1]
+            if value:
+                return value
+    parsed = _parse_items(text, {1: item})
+    if 1 in parsed:
+        value = parsed[1]
+        # "Ficha" from "1. Ficha 9: …" is the item's own start, not an answer.
+        if not (value and item.casefold().startswith(value.casefold())):
+            return value
+    substituted = _substituted_number(text, item)
+    if substituted:
+        return substituted
+    for line in text.splitlines():
+        bare = re.sub(r"^\s*[-*•]\s*", "", line).strip()
+        bare = re.sub(r"^\s*[\[(]?\d{1,3}[\]).:]\s*", "", bare).strip()
+        value = _item_value(bare, item)
+        if value and value.casefold() != item.strip(_STRIP).rstrip(".;,").casefold():
+            return value
+    return ""
+
+
 def _item_value(raw: str, item_text: str) -> str:
     value = re.sub(r"\*\*|__", "", raw.split("```")[0])     # "**12.5** km" (P3j.1)
     value = value.strip(_STRIP).rstrip(".;,").strip(_STRIP)
     value = _RESIDUAL_LABEL.sub("", value).strip(_STRIP)
     item = item_text.strip(_STRIP).rstrip(".;,")
     if value.casefold().startswith(item.casefold()):
-        value = value[len(item):].lstrip(" :-–—=→*_`\"'").strip(_STRIP)
+        value = value[len(item):].lstrip(" .,:;:-–—=→*_`\"'").strip(_STRIP)
     elif _SEPARATOR.search(value):
         value = _SEPARATOR.split(value)[-1].strip(_STRIP)
     value = value.rstrip(".;,").strip()

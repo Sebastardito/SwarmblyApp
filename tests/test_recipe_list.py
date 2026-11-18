@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 
 import pytest
@@ -10,6 +11,7 @@ from fastapi.testclient import TestClient
 from swarmbly_app import egress
 from swarmbly_app import recipes
 from swarmbly_app.config import ConfigError, validate_changes
+from swarmbly_app.inference.base import GenerationResult
 from swarmbly_app.recipes import (ListJobError, MAX_ITEM_CHARS, build_list_prompt,
                                    duplicate_rows, list_wave_size, normalise_list_job,
                                    preview_list, read_csv_column)
@@ -232,3 +234,117 @@ def test_swarm_run_reports_agreement_and_disagreement(tmp_path):
     assert msg["meta"]["receipt"]["recipe_where"] == "swarm"
     assert msg["meta"]["receipt"]["envios"], "distributed fragments must be in the receipt"
     client.stop(); worker1.stop(); worker2.stop()
+
+
+# --- degenerated local waves (MX-01) ------------------------------------------
+
+OP_ADD_SEVEN = "Suma 7 al número de cada ficha. Responde solo con el resultado."
+
+
+class ItemTextBackend:
+    """A fake model that answers from the item text.
+
+    It also reproduces what qwen2.5:7b did with a whole 12-item wave: it
+    answers the first item and repeats that value for every line. A prompt
+    with at most six items (the per-item retry) is answered correctly; the
+    single-item table prompt keeps the item's own number in the first cell.
+    """
+
+    name = "fake"
+
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def available(self) -> bool:
+        return True
+
+    def list_models(self) -> list[str]:
+        return ["fake-model:1b"]
+
+    @staticmethod
+    def _answer(item: str) -> str:
+        found = re.search(r"Ficha\s+(\d+)", item)
+        return str(int(found.group(1)) + 7) if found else ""
+
+    def stream_chat(self, messages, *, model, max_tokens=1024,
+                    temperature=0.2, **kw):
+        prompt = messages[-1]["content"]
+        self.calls.append(prompt)
+        items = re.findall(r"^\s*(\d+)\.\s+(.+?)\s*$", prompt, re.M)
+        if not items:
+            return GenerationResult(text="", model=model)
+        if "tabla Markdown" in prompt or "Markdown table" in prompt:
+            # the per-item retry: a table row with the item's own number
+            ficha = re.search(r"Ficha\s+(\d+)", items[0][1])
+            numero = ficha.group(1) if ficha else items[0][0]
+            return GenerationResult(text=f"| {numero} | {self._answer(items[0][1])} |",
+                                    model=model)
+        if len(items) > 6:
+            first = self._answer(items[0][1])
+            text = "\n".join(f"{n}. {first}" for n, _ in items)
+        else:
+            text = "\n".join(f"{n}. {self._answer(item)}" for n, item in items)
+        return GenerationResult(text=text, model=model)
+
+
+def _send_list_with(app_state, job, fake):
+    app_state.config.update({"model": {"model_name": "fake-model:1b"},
+                             "swarm": {"n_fragments_max": 4,
+                                       "min_items_per_fragment": 3}})
+    app_state.backends.resolve = lambda config=None: fake
+    conv = app_state.chat.create_conversation(mode="local")
+    app_state.chat.send(conv["id"], job.operation, recipe="list",
+                        list_job=job.to_dict(), run_async=False)
+    return app_state.chat.get_messages(conv["id"])[-1], fake
+
+
+def _cells(message):
+    return {row["n"]: row["answer"] for row in message["meta"]["table"]["rows_data"]}
+
+
+def test_a_12_item_wave_that_repeats_the_first_answer_is_retried(app_state):
+    items = [f"Ficha {n}: parcela Norte." for n in range(1, 13)]
+    message, fake = _send_list_with(app_state, _job(items, operation=OP_ADD_SEVEN),
+                                    ItemTextBackend())
+    assert message["meta"]["status"] == "done", message["meta"]
+    assert _cells(message) == {n: str(n + 7) for n in range(1, 13)}
+    assert message["meta"]["list"]["waves"] == 1
+    assert message["meta"]["list"]["retries"] == 1
+    # the first prompt carries items 1 and 2 in the same 12-item wave
+    assert "1. Ficha 1: parcela Norte." in fake.calls[0]
+    assert "2. Ficha 2: parcela Norte." in fake.calls[0]
+    # the retry is one item per prompt, as a single-row table
+    assert "tabla Markdown" in fake.calls[1]
+    assert "Elemento:\n1. Ficha 1: parcela Norte." in fake.calls[1]
+    assert "Elemento:\n1. Ficha 2: parcela Norte." in fake.calls[2]
+    assert len(fake.calls) == 13
+
+
+def test_a_13_item_list_retries_only_the_12_item_wave(app_state):
+    items = [f"Ficha {n}: parcela Norte." for n in range(1, 14)]
+    message, fake = _send_list_with(app_state, _job(items, operation=OP_ADD_SEVEN),
+                                    ItemTextBackend())
+    assert _cells(message) == {n: str(n + 7) for n in range(1, 14)}
+    assert message["meta"]["list"]["waves"] == 2
+    assert message["meta"]["list"]["retries"] == 1
+    # 12-item wave + 12 single-item retries + 1-item second wave
+    assert len(fake.calls) == 14
+
+
+def test_a_single_short_wave_is_not_retried(app_state):
+    items = [f"Ficha {n}: parcela Norte." for n in range(1, 5)]
+    message, fake = _send_list_with(app_state, _job(items, operation=OP_ADD_SEVEN),
+                                    ItemTextBackend())
+    assert _cells(message) == {n: str(n + 7) for n in range(1, 5)}
+    assert message["meta"]["list"]["waves"] == 1
+    assert (message["meta"]["list"].get("retries") or 0) == 0
+    assert len(fake.calls) == 1
+
+
+def test_item_text_echoed_with_its_own_number_is_parsed():
+    from swarmbly_app.engine.orchestrator import _parse_items, _parse_single_item
+
+    item = "Ficha 2: parcela Norte."
+    assert _parse_items("1. Ficha 2: parcela Norte. 9", {1: item}) == {1: "9"}
+    assert _parse_single_item("1. Ficha 9: parcela Norte.", item) == "9"
+    assert _parse_single_item("| 2 | 9 |", item) == "9"
