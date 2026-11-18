@@ -24,7 +24,8 @@ from ..keystore import SECRET_KEYS, delete_secret, get_secret, redact, set_secre
 from ..state import AppState
 from ..tools import (MCPApprovalError, MCPClient, MCPError, MCPNotFound,
                      MCPNotRunning, MCPTimeout, MCPUnavailable, ServerConfig,
-                     ToolDenied)
+                     StandingError, ToolDenied)
+from ..agent_adapter import AgentConflict, AgentUnavailable
 from .security import ApiGuard, GuardMiddleware
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -423,6 +424,76 @@ def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
             raise _mcp_fail(exc) from exc
         return _server_view(config, pid)
 
+    # ---- agent runtime and standing approvals (3.4, D-011) -------------------
+    @app.get("/api/agent/tools")
+    def agent_tools(project: str | None = None) -> dict[str, Any]:
+        pid = _project_id(project)
+        try:
+            return state.chat.agent_tools(pid)
+        except Exception as exc:
+            raise _mcp_fail(exc) from exc
+
+    @app.get("/api/tools/standing")
+    def list_standing(project: str | None = None) -> dict[str, Any]:
+        pid = _project_id(project)
+        try:
+            records = state.agent.standing_records(pid)
+        except Exception as exc:
+            raise _mcp_fail(exc) from exc
+        return {"project_id": pid, "standing": records}
+
+    @app.post("/api/tools/standing")
+    def set_standing(body: dict[str, Any] | None = None,
+                     project: str | None = None) -> dict[str, Any]:
+        body = body or {}
+        pid = _project_id(project, body)
+        spec_id = str(body.get("spec_id") or "")
+        if not spec_id:
+            raise HTTPException(status_code=400, detail="spec_id is required")
+        enabled = body.get("standing", True)
+        if not isinstance(enabled, bool):
+            raise HTTPException(status_code=400, detail="standing must be true or false")
+        try:
+            if enabled:
+                state.agent.grant_standing(spec_id, pid)
+            else:
+                state.agent.revoke_standing(spec_id, pid)
+            records = state.agent.standing_records(pid)
+        except StandingError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise _mcp_fail(exc) from exc
+        return {"project_id": pid, "spec_id": spec_id,
+                "standing": enabled, "standing_tools": records}
+
+    @app.post("/api/conversations/{conv_id}/messages/{message_id}/approve")
+    def approve_agent_tool(conv_id: str, message_id: str,
+                           body: dict[str, Any] | None = None) -> dict[str, Any]:
+        body = body or {}
+        decision = str(body.get("decision") or "")
+        if decision not in ("run", "skip", "stop", "approve", "deny"):
+            raise HTTPException(
+                status_code=400,
+                detail="decision must be run, skip or stop")
+        args_sha256 = str(body.get("args_sha256") or "")
+        remember = body.get("remember", False)
+        if not isinstance(remember, bool):
+            raise HTTPException(status_code=400, detail="remember must be true or false")
+        try:
+            return state.chat.agent_decide(
+                conv_id, message_id, decision,
+                remember=remember, args_sha256=args_sha256)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except AgentConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except AgentUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except StandingError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise _mcp_fail(exc) from exc
+
     # ---- health / system ------------------------------------------------------
     @app.get("/api/health")
     def health() -> dict:
@@ -710,7 +781,8 @@ def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
                 model=body.get("model") or None,
                 allow_public=bool(body.get("allow_public")),
                 web_query=str(body.get("web_query") or ""),
-                recipe=recipe, list_job=list_job, skill=skill_obj)
+                recipe=recipe, list_job=list_job, skill=skill_obj,
+                use_tools=bool(body.get("use_tools")))
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ListJobError as exc:

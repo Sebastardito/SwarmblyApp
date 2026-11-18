@@ -422,9 +422,12 @@ const Settings = (() => {
     els.body.appendChild(h("p.muted", t("tools.loading")));
     let listing;
     let projects;
+    let standing = [];
     try {
       projects = await Api.get("/api/projects");
       listing = await Api.get(`/api/mcp/servers?project=${encodeURIComponent(projects.active || "")}`);
+      const data = await Api.get(`/api/tools/standing?project=${encodeURIComponent(projects.active || "")}`);
+      standing = data.standing || [];
     } catch (e) {
       if (tab === "tools") clear(els.body).appendChild(h("p.error", e.message));
       return;
@@ -453,6 +456,53 @@ const Settings = (() => {
         } catch (_) { renderTools(); }
       }, null, { "aria-label": t("tools.author") })));
     els.body.appendChild(h("div.fields", author));
+
+    // 3.4, D-011: the agent loop's hard budget. The server enforces the same
+    // upper bounds; these fields only lower them.
+    const agentCfg = App.state.config?.tools?.agent || {};
+    const budgetInput = (key, label, min, max) => {
+      const value = agentCfg[key] ?? { max_steps: 8, max_tool_calls: 8,
+        max_observation_chars: 4000 }[key];
+      const input = h("input", { type: "number", min: String(min), max: String(max),
+        value: String(value), "aria-label": label });
+      input.addEventListener("change", async () => {
+        try {
+          await App.saveConfig({ [`tools.agent.${key}`]: Number(input.value) }, { quiet: true });
+          UI.toast(t("tools.saved"), "ok");
+        } catch (_) { renderTools(); }
+      });
+      return toolField(label, input, t(`tools.agent.${key}Hint`));
+    };
+    els.body.appendChild(h("section.subpanel",
+      h("h3", t("tools.agentTitle")),
+      h("p.muted", t("tools.agentBody")),
+      h("div.fields",
+        budgetInput("max_steps", t("tools.agentMaxSteps"), 1, 8),
+        budgetInput("max_tool_calls", t("tools.agentMaxToolCalls"), 1, 8),
+        budgetInput("max_observation_chars", t("tools.agentMaxObservation"), 500, 8000))));
+
+    // 3.4, D-011: "don't ask again in this project" is only for local MCP
+    // tools. Revoking it here makes the next call ask again.
+    const standingBox = h("div");
+    if (!standing.length) {
+      standingBox.appendChild(h("p.empty", t("tools.standingNone")));
+    } else {
+      standingBox.appendChild(h("ul.plain", standing.map((record) => h("li",
+        h("code", record.spec_id), " ",
+        h("span.muted", record.granted_at || ""), " ",
+        button(t("tools.standingRevoke"), async () => {
+          try {
+            await Api.post("/api/tools/standing",
+              { project_id: projectId, spec_id: record.spec_id, standing: false });
+            UI.toast(t("tools.standingRevoked"), "ok");
+            renderTools();
+          } catch (e) { UI.toast(e.message, "error"); }
+        }, "ghost small")))));
+    }
+    els.body.appendChild(h("section.subpanel",
+      h("h3", t("tools.standingTitle")),
+      h("p.muted", t("tools.standingBody")),
+      standingBox));
 
     // Add form. Nothing here starts a process; Start is an explicit button.
     const id = h("input", { type: "text", autocomplete: "off", placeholder: "weather",

@@ -17,6 +17,7 @@ from .mcp_registry import (KINDS, LOCAL_RIGHTS_NOTE, MCP_SERVERS_FILE,
                            MCPRegistryError, MCPTimeout, MCPUnavailable,
                            REMOTE_HOST_NOTE, STATUSES, ServerConfig, ServerRegistry,
                            UNTRUSTED_NOTE)
+from .standing import STANDING_FILE, STANDING_SCHEMA, StandingError, StandingStore
 
 
 def register_sandbox(broker: "ToolBroker", *, project_path, runner=None):
@@ -60,7 +61,11 @@ __all__ = [
     "PROVIDER_KINDS",
     "REMOTE_HOST_NOTE",
     "STATUSES",
+    "STANDING_FILE",
+    "STANDING_SCHEMA",
     "SchemaError",
+    "StandingError",
+    "StandingStore",
     "ServerConfig",
     "ServerRegistry",
     "ToolManifest",

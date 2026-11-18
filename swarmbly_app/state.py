@@ -154,14 +154,25 @@ class AppState:
         from .projects import ProjectRegistry
         self.projects = ProjectRegistry(self.config.all, self.config.update)
         # 3.4: one broker for every tool call. Approvals are per project, or
-        # personal when no project is active; chat only receives the handle
-        # for the receipt, it does not invoke tools yet.
+        # personal when no project is active. The chat drives the optional
+        # agent adapter; the broker is still the only path that invokes a tool.
         from .tools import ToolBroker
+        from .tools.standing import StandingStore
         self.tools = ToolBroker(
             self.dirs.root,
             project_path=lambda pid: (project.path if (project := self.projects.get(pid))
                                       else None))
+        self.standing = StandingStore(
+            self.dirs.root,
+            project_path=lambda pid: (project.path if (project := self.projects.get(pid))
+                                      else None))
+        # 3.4, D-011: the conversation can drive MCP tools through the Core
+        # runtime. The package is optional and imported only when used.
+        from .agent_adapter import AgentAdapter
+        self.agent = AgentAdapter(self.tools, self.config.all, self.backends,
+                                  standing=self.standing, bus=self.bus)
         self.chat.tools = self.tools
+        self.chat.agent = self.agent
         self.chat.on_conversation_changed = self._copy_chat_to_project
         self.chat.on_conversation_deleted = self._remove_chat_from_project
         self.chat.project_name = lambda pid: (getattr(self.projects.get(pid), "name", "")

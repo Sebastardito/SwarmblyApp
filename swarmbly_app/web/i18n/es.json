@@ -307,7 +307,26 @@
   "recipeSoon": "Próximamente",
   "recipeClear": "Quitar la receta",
   "recipeFill": "Completa las partes entre corchetes antes de enviar.",
-  "recipeChipTitle": "La respuesta se hizo con esta receta."
+  "recipeChipTitle": "La respuesta se hizo con esta receta.",
+  "useTools": "Usar herramientas",
+  "useToolsHint": "El modelo puede proponer una llamada a una herramienta MCP. Ves la herramienta y sus argumentos exactos antes de que se ejecute nada; solo una herramienta MCP local puede marcarse como no volver a preguntar en este proyecto.",
+  "useToolsUnavailable": "El agente de herramientas no está disponible. Instala el extra opcional del agente para usar herramientas MCP en una conversación.",
+  "agentChip": "{s} pasos · {t} llamadas",
+  "agentChipTitle": "La respuesta registra cada llamada que propuso el modelo y cómo se decidió.",
+  "agentApprovalTitle": "¿Ejecutar esta herramienta?",
+  "agentApprovalBody": "Todavía no se ha ejecutado nada. Revisa la herramienta, adónde va y los argumentos exactos.",
+  "agentTool": "Herramienta",
+  "agentServer": "Servidor",
+  "agentWhere": "Se ejecuta",
+  "agentLocal": "Local",
+  "agentRemote": "Terceros",
+  "agentLocalNote": "en esta computadora, con tus permisos",
+  "agentArguments": "Argumentos exactos",
+  "agentWhy": "El modelo dice:",
+  "agentRemember": "No volver a preguntar en este proyecto (solo herramienta MCP local)",
+  "agentRun": "Ejecutar",
+  "agentSkip": "Omitir",
+  "agentStop": "Detener"
  },
  "explore": {
   "title": "Cómo se construyó esta respuesta",
@@ -442,7 +461,25 @@
    "note": "Medida simple: cuenta frases con una etiqueta; no comprueba que la etiqueta respalde la frase (eso es la verificación de 3.2)."
   },
   "skill": "Skill",
-  "skillSha": "SHA-256 de la skill"
+  "skillSha": "SHA-256 de la skill",
+  "agent": {
+   "title": "Herramientas en esta respuesta",
+   "steps": "Pasos",
+   "toolCalls": "Llamadas a herramientas",
+   "stop": "Motivo de parada",
+   "by": "aprobada por",
+   "byKind": {
+    "user": "ti",
+    "standing": "aprobación permanente"
+   },
+   "decision": {
+    "approved": "ejecutada",
+    "skipped": "omitida",
+    "stopped": "detenida",
+    "denied": "denegada"
+   },
+   "none": "No se aprobó ninguna llamada a herramienta en esta respuesta."
+  }
  },
  "monitor": {
   "title": "Enjambre",
@@ -1192,7 +1229,20 @@
    "unapproved": "sin aprobar",
    "approved": "aprobado",
    "suspended": "suspendido"
-  }
+  },
+  "agentTitle": "Herramientas en una conversación",
+  "agentBody": "El modelo puede proponer una llamada a herramienta por vez. Toda llamada pregunta primero, salvo una herramienta MCP local que hayas marcado como no volver a preguntar en este proyecto. Estos topes son máximos duros; aquí puedes bajarlos.",
+  "agentMaxSteps": "Máximo de pasos por mensaje",
+  "agentMaxStepsHint": "Una decisión del modelo por paso. D-011 permite como máximo 8.",
+  "agentMaxToolCalls": "Máximo de llamadas a herramientas por mensaje",
+  "agentMaxToolCallsHint": "Cada llamada aprobada cuenta una vez. D-011 permite como máximo 8.",
+  "agentMaxObservation": "Máximo de caracteres de un resultado",
+  "agentMaxObservationHint": "Los resultados más largos se recortan para el modelo; el recibo conserva el hash del texto completo.",
+  "standingTitle": "No volver a preguntar en este proyecto",
+  "standingBody": "Solo pueden aparecer aquí herramientas MCP locales. Las herramientas MCP remotas, el sandbox y la búsqueda de autor siempre preguntan. Al revocar una, la próxima llamada vuelve a preguntar.",
+  "standingNone": "No hay aprobaciones permanentes en este proyecto.",
+  "standingRevoke": "Volver a preguntar",
+  "standingRevoked": "Revocada: la próxima llamada volverá a preguntar."
  },
  "skills": {
   "title": "Skills",

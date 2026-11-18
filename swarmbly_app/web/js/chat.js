@@ -15,6 +15,7 @@ const Chat = (() => {
   let skill = null;              // the skill the user picked (never automatic)
   let skillOffer = null;         // a suggestion, shown as a chip, not activated
   let skillOfferTimer = null;
+  let agentTools = null;         // 3.4, D-011: what the agent may use here
   let projects = { items: [], active: "", default_parent: "", default_parent_warning: "" };
   const pending = {};           // message_id -> {el, partial}
   const early = {};             // message_id -> events that arrived before the element
@@ -69,6 +70,11 @@ const Chat = (() => {
         const found = skills.find((s) => s.name === value);
         if (found) selectSkill(found); else clearSkill();
       }, { "aria-label": t("skills.pick") });
+    els.useTools = h("input", { type: "checkbox" });
+    els.useToolsRow = h("label.inline.small.tools-toggle",
+      els.useTools, h("span", t("chat.useTools")));
+    els.useToolsRow.title = t("chat.useToolsHint");
+    els.useToolsRow.style.display = "none";
     const composer = h("div.composer",
       els.attachList,
       els.recipeTag,
@@ -81,6 +87,7 @@ const Chat = (() => {
         h("label.inline", h("span", t("chat.mode")), els.mode),
         h("label.inline", h("span", t("chat.model")), els.model),
         h("label.inline", h("span", t("skills.pick")), els.skill),
+        els.useToolsRow,
         h("span.spacer"), els.stop, els.send),
       els.hint);
     els.projectStrip = h("div.project-strip");
@@ -101,6 +108,7 @@ const Chat = (() => {
     try { projects = await Api.get("/api/projects"); } catch (_) { /* keep the last list */ }
     renderProjects();
     await loadSkills();
+    await loadAgentTools();
   }
 
   function renderProjects() {
@@ -313,6 +321,22 @@ const Chat = (() => {
         h("div.inline-form", path, importBtn),
         h("label.inline.small", overwrite, h("span", t("skills.overwrite"))),
         result)), [{ label: t("common.close"), value: null, kind: "primary" }]);
+  }
+
+  /* 3.4, D-011: the toggle is offered only when at least one MCP tool is
+     approved for this project. Off by default and reset after each message. */
+  async function loadAgentTools() {
+    try {
+      agentTools = await Api.get(`/api/agent/tools?project=${encodeURIComponent(projects.active || "")}`);
+    } catch (_) {
+      agentTools = { available: false, mcp_approved: false, tools: [] };
+    }
+    const offered = !!(agentTools.available && agentTools.mcp_approved);
+    if (!offered) els.useTools.checked = false;
+    els.useToolsRow.style.display = offered ? "" : "none";
+    els.useToolsRow.title = agentTools.available
+      ? t("chat.useToolsHint")
+      : (agentTools.reason || t("chat.useToolsUnavailable"));
   }
 
   async function onProjectChoice(value) {
@@ -887,6 +911,7 @@ const Chat = (() => {
     const extra = {};
     if (recipe) extra.recipe = recipe;
     if (skill) extra.skill = skill.name;
+    if (els.useTools.checked) extra.use_tools = true;
     if (recipe === "research") {
       const query = await approveResearch(els.input.value.trim());
       if (!query) return;
@@ -903,6 +928,7 @@ const Chat = (() => {
     renderAttachments();
     recipe = null;
     showRecipeTag();
+    els.useTools.checked = false;      // per message: off by default again
     let res;
     try {
       res = await Api.post(`/api/conversations/${encodeURIComponent(active)}/messages`,
@@ -942,7 +968,7 @@ const Chat = (() => {
   function onEvent(event) {
     const p = event.payload || {};
     if (event.type === "request.started" && p.message_id) requestOf[p.message_id] = p.request_id;
-    if (!["chat.delta", "chat.done", "chat.notice"].includes(event.type)) return;
+    if (!["chat.delta", "chat.done", "chat.notice", "chat.approval"].includes(event.type)) return;
     if (event.type === "ws.open") { checkPending(true); return; }
     const entry = pending[p.message_id];
     if (entry) entry.last = Date.now();
@@ -956,6 +982,10 @@ const Chat = (() => {
       scroll();
     } else if (event.type === "chat.notice") {
       setNote(entry.el, p.note);
+    } else if (event.type === "chat.approval") {
+      delete pending[p.message_id];
+      els.stop.disabled = Object.keys(pending).length === 0;
+      refreshMessage(p.message_id, entry.el, p);
     } else {
       delete pending[p.message_id];
       els.stop.disabled = Object.keys(pending).length === 0;
@@ -1035,6 +1065,9 @@ const Chat = (() => {
       if (meta.verification?.flagged?.length) article.appendChild(verificationBox(meta.verification));
       if (meta.memory_proposals) article.appendChild(memoryCard(m));
       if (meta.code) article.appendChild(codeResult(m));
+      if (meta.status === "awaiting_approval" && meta.agent?.pending) {
+        article.appendChild(approvalCard(m));
+      }
       article.appendChild(footer(m));
     }
     return article;
@@ -1073,6 +1106,55 @@ const Chat = (() => {
       range.setEnd(map[at + len - 1][0], map[at + len - 1][1] + 1);
       unsupportedHL.add(range);
     }
+  }
+
+  /* 3.4, D-011: nothing runs until the user sees the exact call and says yes.
+     Run asks the approval endpoint for the one-time token; Skip sends a denial
+     back to the model; Stop ends the run with what it has. */
+  function approvalCard(m) {
+    const card = m.meta.agent.pending;
+    const remember = h("input", { type: "checkbox" });
+    const rememberRow = h("label.inline.small", remember,
+      h("span", t("chat.agentRemember")));
+    rememberRow.style.display = card.can_remember ? "" : "none";
+    const decide = async (decision) => {
+      const buttons = [...cardEl.querySelectorAll("button")];
+      buttons.forEach((b) => { b.disabled = true; });
+      try {
+        await Api.post(
+          `/api/conversations/${encodeURIComponent(m.conversation_id)}/messages/${encodeURIComponent(m.id)}/approve`,
+          { decision, remember: remember.checked, args_sha256: card.args_sha256 });
+        const messages = await Api.get(
+          `/api/conversations/${encodeURIComponent(m.conversation_id)}/messages`);
+        const fresh = messages.find((x) => x.id === m.id);
+        const article = cardEl.closest("article");
+        if (fresh && article) article.replaceWith(messageEl(fresh));
+        scroll();
+      } catch (e) {
+        UI.toast(e.message, "error");
+        buttons.forEach((b) => { b.disabled = false; });
+      }
+    };
+    const cardEl = h("section.agent-approval",
+      h("h3", t("chat.agentApprovalTitle")),
+      h("p.muted", t("chat.agentApprovalBody")),
+      h("dl.facts",
+        h("dt", t("chat.agentTool")), h("dd", h("code", card.tool)),
+        h("dt", t("chat.agentServer")), h("dd", h("code", card.server)),
+        h("dt", t("chat.agentWhere")),
+        h("dd", card.third_party
+          ? h("span", chip(t("chat.agentRemote"), "warn"), ` ${card.host}`)
+          : h("span", chip(t("chat.agentLocal")), ` ${t("chat.agentLocalNote")}`))),
+      card.why ? h("p.muted", `${t("chat.agentWhy")} ${card.why}`) : null,
+      h("p", h("strong", t("chat.agentArguments"))),
+      h("pre.code-script", { style: "max-height: 20rem; overflow: auto; white-space: pre-wrap;" },
+        card.arguments_json),
+      rememberRow,
+      h("div.msg-actions",
+        button(t("chat.agentRun"), () => decide("run"), "primary small"),
+        button(t("chat.agentSkip"), () => decide("skip"), "ghost small"),
+        button(t("chat.agentStop"), () => decide("stop"), "danger small")));
+    return cardEl;
   }
 
   function setNote(article, note) {
@@ -1180,6 +1262,12 @@ const Chat = (() => {
       t("chat.citeUnknownTitle").replace("{labels}", meta.citations.unknown.join(", "))));
     if (meta.memory_saved?.path) chips.push(chip(t("chat.memorySaved"), "ok",
       t("chat.memorySavedTitle").replace("{path}", meta.memory_saved.full_path || meta.memory_saved.path)));
+    if (meta.agent) {
+      chips.push(chip(t("chat.agentChip").replace("{s}", meta.agent.steps)
+        .replace("{t}", meta.agent.tool_calls),
+        meta.status === "awaiting_approval" ? "warn" : "ok",
+        t("chat.agentChipTitle")));
+    }
     if (meta.model) chips.push(chip(meta.model));
     const ms = sw.total_ms ?? meta.total_ms;
     if (ms) chips.push(chip(UI.fmtMs(ms)));
@@ -1400,7 +1488,7 @@ const Chat = (() => {
   }
 
   function relabel() { build(); loadProjects().then(() => loadConversations(active)); }
-  function show() { refreshModels(); updateHint(); }
+  function show() { refreshModels(); updateHint(); loadAgentTools(); }
 
   return { init, show, relabel };
 })();
@@ -1447,6 +1535,21 @@ const Explore = (() => {
       readout(t("explore.skillSha"), meta.skill?.sha256 ? meta.skill.sha256.slice(0, 16) : null, "measured"))];
     if (meta.local_reason) sections.push(h("p.note", I18n.reason(meta.local_reason)));
     if (meta.passages_withheld) sections.push(h("p.note", meta.passages_withheld));
+    if (meta.agent) {
+      sections.push(h("h3", t("explore.agent.title")),
+        h("div.readouts",
+          readout(t("explore.agent.steps"), String(meta.agent.steps || 0), "measured"),
+          readout(t("explore.agent.toolCalls"), String(meta.agent.tool_calls || 0), "measured"),
+          readout(t("explore.agent.stop"), meta.agent.stop_reason || "—", "measured")),
+        (meta.agent.approvals || []).length
+          ? h("ul.sources", meta.agent.approvals.map((a) => h("li",
+            h("code", a.tool), " · ",
+            chip(t(`explore.agent.decision.${a.decision}`, a.decision),
+              a.decision === "approved" ? "ok" : a.decision === "skipped" ? "warn" : ""),
+            ` ${t("explore.agent.by")} ${t(`explore.agent.byKind.${a.by}`, a.by)} · `,
+            h("code", { title: "sha256" }, (a.args_sha256 || "").slice(0, 16) + "…"))))
+          : h("p.muted", t("explore.agent.none")));
+    }
     if (meta.receipt) sections.push(h("h3", t("explore.receipt.title")), receiptView(meta.receipt));
     if (meta.citations && meta.citations.sentences) sections.push(h("h3", t("explore.anchor.title")),
       h("div.readouts",

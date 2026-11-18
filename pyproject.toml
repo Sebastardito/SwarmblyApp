@@ -45,6 +45,11 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
 tools = ["mcp==2.3.0"]
+# The agent runtime that drives MCP tools in a conversation (D-007, D-011).
+# Pinned by commit: the package is small and changes with the runtime contract.
+agent = [
+  "swarmbly-agent @ git+https://github.com/Sebastardito/SwarmblyAI.git@a19df689be49499e6ea2f40c13888b3b01fb810a#subdirectory=SwarmblyCore/agent",
+]
 # Recipe 5 sandbox (D-010). Exact pins, deliberately not ranges: wasi-python
 # 0.1.5 is young and only its named public API is promised. Upgrades require a
 # new escape-test spike (D-010, R-007) and a renewed wheel-hash lock.

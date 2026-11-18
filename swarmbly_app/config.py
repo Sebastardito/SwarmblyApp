@@ -109,6 +109,15 @@ DEFAULTS: dict[str, Any] = {
         "author": {
             "enabled": False,
         },
+        # 3.4, D-011: the agent loop that lets the model propose MCP tool
+        # calls. Every call still needs the user's yes (or a standing yes for
+        # a local MCP tool in this project). The step and tool-call ceilings
+        # are hard upper bounds, not UI hints: D-011 says at most 8 steps.
+        "agent": {
+            "max_steps": 8,
+            "max_tool_calls": 8,
+            "max_observation_chars": 4000,
+        },
     },
     "privacy": {
         "tier": "LOCAL",              # GLOBAL | TRUSTED | LOCAL
@@ -397,6 +406,10 @@ _RANGES = {
     "recipes.code_max_script_chars": (1000, 100000),
     "recipes.code_max_corrections": (0, 5),
     "recipes.code_max_sample_rows": (1, 20),
+    # D-011: the ceiling is the decision (8 steps); Settings may lower it.
+    "tools.agent.max_steps": (1, 8),
+    "tools.agent.max_tool_calls": (1, 8),
+    "tools.agent.max_observation_chars": (500, 8000),
 }
 # Never changeable from the browser: binding the admin API elsewhere is a
 # security decision made on the command line, by the machine's owner.

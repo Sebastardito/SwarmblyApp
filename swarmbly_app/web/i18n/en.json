@@ -307,7 +307,26 @@
   "recipeSoon": "Coming soon",
   "recipeClear": "Remove the recipe",
   "recipeFill": "Fill in the parts in brackets before sending.",
-  "recipeChipTitle": "The answer was made with this recipe."
+  "recipeChipTitle": "The answer was made with this recipe.",
+  "useTools": "Use tools",
+  "useToolsHint": "The model may propose an MCP tool call. You see the tool and its exact arguments before anything runs; only local MCP tools can be set to don't ask again in this project.",
+  "useToolsUnavailable": "The tools agent is not available. Install the optional agent extra to use MCP tools in a conversation.",
+  "agentChip": "{s} steps · {t} tool calls",
+  "agentChipTitle": "The answer records every call the model proposed and how it was decided.",
+  "agentApprovalTitle": "Run this tool?",
+  "agentApprovalBody": "Nothing has run yet. Check the tool, where it goes and the exact arguments.",
+  "agentTool": "Tool",
+  "agentServer": "Server",
+  "agentWhere": "Runs",
+  "agentLocal": "Local",
+  "agentRemote": "Third party",
+  "agentLocalNote": "on this computer, with your rights",
+  "agentArguments": "Exact arguments",
+  "agentWhy": "The model says:",
+  "agentRemember": "Don't ask again in this project (local MCP tool only)",
+  "agentRun": "Run",
+  "agentSkip": "Skip",
+  "agentStop": "Stop"
  },
  "explore": {
   "title": "How this answer was made",
@@ -442,7 +461,25 @@
    "note": "A simple measure: it counts sentences carrying a label; it does not check that the label supports the sentence (that is 3.2's verifier)."
   },
   "skill": "Skill",
-  "skillSha": "Skill SHA-256"
+  "skillSha": "Skill SHA-256",
+  "agent": {
+   "title": "Tools in this answer",
+   "steps": "Steps",
+   "toolCalls": "Tool calls",
+   "stop": "Stop reason",
+   "by": "approved by",
+   "byKind": {
+    "user": "you",
+    "standing": "standing approval"
+   },
+   "decision": {
+    "approved": "ran",
+    "skipped": "skipped",
+    "stopped": "stopped",
+    "denied": "denied"
+   },
+   "none": "No tool call was approved in this answer."
+  }
  },
  "monitor": {
   "title": "Swarm",
@@ -1181,7 +1218,20 @@
    "unapproved": "not approved",
    "approved": "approved",
    "suspended": "suspended"
-  }
+  },
+  "agentTitle": "Tools in a conversation",
+  "agentBody": "The model may propose one tool call at a time. Every call asks first, except a local MCP tool you marked as don't ask again in this project. These ceilings are hard upper bounds; you can lower them here.",
+  "agentMaxSteps": "Maximum steps per message",
+  "agentMaxStepsHint": "One model decision per step. D-011 allows at most 8.",
+  "agentMaxToolCalls": "Maximum tool calls per message",
+  "agentMaxToolCallsHint": "Each approved tool call counts once. D-011 allows at most 8.",
+  "agentMaxObservation": "Maximum characters of a tool result",
+  "agentMaxObservationHint": "Longer results are truncated for the model; the receipt keeps the hash of the full text.",
+  "standingTitle": "Don't ask again in this project",
+  "standingBody": "Only local MCP tools can appear here. Remote MCP tools, the sandbox and author search always ask. Revoking one makes the next call ask again.",
+  "standingNone": "No standing approvals in this project.",
+  "standingRevoke": "Ask again",
+  "standingRevoked": "Revoked: the next call will ask again."
  },
  "skills": {
   "title": "Skills",

@@ -242,6 +242,9 @@ table.data td .chip { margin: 0 4px 4px 0; }
 .msg.failed .msg-gutter { background: linear-gradient(var(--venom), var(--venom)) left / 1.5px 100% no-repeat; }
 .msg.failed .md { color: var(--venom); }
 .msg-note { font-size: 12.5px; color: var(--pollen); margin: 0 0 6px; }
+.agent-approval { margin-top: 12px; padding: 12px 14px; border: 1px solid var(--pollen); border-radius: var(--r-m); background: color-mix(in srgb, var(--wax) 72%, transparent); }
+.agent-approval h3 { margin-top: 0; color: var(--pollen); }
+.agent-approval pre { background: var(--cell); border: 1px solid var(--membrane); border-radius: var(--r-s); padding: 10px 12px; font: 13px/1.5 var(--mono); }
 .msg-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
 .msg-actions { display: flex; gap: 6px; }
 .cursor { display: inline-block; width: 8px; height: 15px; background: var(--chlorophyll); vertical-align: text-bottom; animation: blink 1s steps(2) infinite; }

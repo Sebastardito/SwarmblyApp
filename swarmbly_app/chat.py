@@ -53,6 +53,8 @@ class ActiveRequest:
     recipe: str = ""               # 3.3: the recipe the user picked ("documents", "table", "research", "list")
     list_job: Any = None           # 3.4 recipe 4: the validated ListJob
     skill: Any = None              # 3.4: the activated Skill (quoted material)
+    use_tools: bool = False        # 3.4, D-011: this message drives tools via the agent runtime
+    task: str = ""                 # the user text this request answers
 
 
 # Possessives and "about me" in es/en/pt (not French "mes", the Spanish month);
@@ -117,6 +119,8 @@ class ChatService:
         # 3.4, recipe 5: the broker, its sandbox runner and the pending script
         # proposals. A proposal is only a script; nothing runs until approve.
         self.tools: Any = None
+        # 3.4, D-011: the agent runtime adapter (optional package).
+        self.agent: Any = None
         self._code_runner: Any = None
         self._code_tool_spec: Any = None
         self._code_roots: dict[str, Path] = {}
@@ -148,7 +152,32 @@ class ChatService:
         return self.db.get_conversation(conv_id)
 
     def get_messages(self, conv_id: str) -> list[dict[str, Any]]:
-        return self.db.get_messages(conv_id)
+        rows = self.db.get_messages(conv_id)
+        # A pending approval lives in memory. After an app restart there is no
+        # run to resume, so the message becomes a stopped run instead of a
+        # card that can never work (documented in LIMITATIONS.md).
+        if self.agent is not None:
+            for message in rows:
+                meta = message.get("meta") or {}
+                if meta.get("status") != "awaiting_approval":
+                    continue
+                if self.agent.get(message["id"]) is not None:
+                    continue
+                agent = dict(meta.get("agent") or {})
+                agent.pop("pending", None)
+                agent["stop_reason"] = "app_restarted"
+                agent["status"] = "stopped"
+                meta = dict(meta)
+                meta.update({"status": "stopped",
+                             "note": self._agent_stop_text("app_restarted", None),
+                             "agent": agent})
+                try:
+                    self.db.update_message(message["id"], content="", meta=meta)
+                except Exception:
+                    pass
+                message["meta"] = meta
+                message["content"] = ""
+        return rows
 
     def delete_conversation(self, conv_id: str) -> None:
         conv = self.db.get_conversation(conv_id)
@@ -165,7 +194,8 @@ class ChatService:
              run_async: bool = True,
              allow_public: bool = False,
              web_query: str = "", recipe: str = "",
-             list_job: Any = None, skill: Any = None) -> tuple[dict[str, Any], dict[str, Any]]:
+             list_job: Any = None, skill: Any = None,
+             use_tools: bool = False) -> tuple[dict[str, Any], dict[str, Any]]:
         """Store the user message and start generation.
 
         Returns ``(user_message, assistant_message)``; when ``run_async`` the
@@ -201,7 +231,8 @@ class ChatService:
                                         else first_line)
         assistant_msg = self.db.add_message(conversation_id, "assistant", "",
                                             meta={"mode": mode, "model": model,
-                                                  "status": "running"})
+                                                  "status": "running",
+                                                  "use_tools": bool(use_tools)})
         self.db.touch_conversation(conversation_id)
 
         request = ActiveRequest(
@@ -210,10 +241,15 @@ class ChatService:
             message_id=assistant_msg["id"],
             mode=mode, model=model, project_id=str(conv.get("project_id") or ""),
             allow_public=bool(allow_public), memory_saved=memory_saved,
-            web_query=" ".join((web_query or "").split())[:200])
+            web_query=" ".join((web_query or "").split())[:200],
+            use_tools=bool(use_tools), task=text)
         request.recipe = recipe_id
         request.list_job = list_ready
         request.skill = skill
+        if request.use_tools:
+            # D-011: the agent loop is local; the model may still be remote,
+            # and its destination policy is checked in the adapter.
+            request.mode = "local"
         if request.recipe == "documents":
             # ask your documents: no public lookup for this answer
             request.allow_public, request.web_query = False, ""
@@ -224,20 +260,220 @@ class ChatService:
         with self._lock:
             self._active[request.request_id] = request
         self.db.add_request(request.request_id, conversation_id,
-                            user_msg["id"], mode, model)
+                            user_msg["id"], request.mode, model)
         self.bus.publish("request.started", request_id=request.request_id,
                          conversation_id=conversation_id,
-                         message_id=assistant_msg["id"], mode=mode, model=model)
+                         message_id=assistant_msg["id"], mode=request.mode, model=model)
         self._changed(conversation_id)
 
+        target = self._run_agent if request.use_tools else self._run_generation
         if run_async:
             thread = threading.Thread(
-                target=self._run_generation, args=(request, mode, model),
+                target=target, args=(request, mode, model),
                 name=f"chat-{request.request_id[:8]}", daemon=True)
             thread.start()
         else:
-            self._run_generation(request, mode, model)
+            target(request, mode, model)
         return user_msg, assistant_msg
+
+    # -- agent runtime (3.4, D-011) ------------------------------------------
+    def agent_tools(self, project_id: str = "") -> dict[str, Any]:
+        """What Settings/the composer may offer for this project."""
+        if self.agent is None:
+            from .agent_adapter import AGENT_EXTRA_HINT
+            return {"available": False, "reason": AGENT_EXTRA_HINT,
+                    "project_id": project_id, "mcp_approved": False,
+                    "tools": [], "budget": {}}
+        return self.agent.tools_view(project_id)
+
+    def _run_agent(self, request: ActiveRequest, mode: str = "",
+                   model: str = "") -> None:
+        """The message asked for tools: let the runtime propose the first call."""
+        from .agent_adapter import AgentUnavailable
+        if self.agent is None:
+            return self._fail(request, AgentUnavailable.__name__ + ": the tools agent "
+                              "needs the optional swarmbly-agent package")
+        try:
+            run = self.agent.start(
+                request_id=request.request_id,
+                conversation_id=request.conversation_id,
+                message_id=request.message_id,
+                project_id=request.project_id,
+                task=request.task,
+                model=request.model or model,
+            )
+        except AgentUnavailable as exc:
+            return self._fail(request, str(exc))
+        except Exception as exc:
+            return self._fail(request, f"agent error: {type(exc).__name__}: {exc}")
+        self._agent_update(request, run)
+
+    def _agent_update(self, request: ActiveRequest, run: Any) -> None:
+        """Publish a pause for approval, or finish the message and its receipt."""
+        state = run.state
+        if getattr(state, "status", "") == "awaiting_approval":
+            card = self.agent.pending_card(run)
+            summary = self.agent.summary(run)
+            summary["pending"] = card
+            note = self._agent_wait_text(card)
+            meta = {
+                "status": "awaiting_approval", "note": note,
+                "mode": "local", "model": request.model,
+                "request_id": request.request_id, "executed": "local",
+                "use_tools": True, "agent": summary,
+            }
+            try:
+                self.db.update_message(request.message_id, content="", meta=meta)
+                self.db.touch_conversation(request.conversation_id)
+            except Exception:
+                pass
+            self._changed(request.conversation_id)
+            self.bus.publish("chat.approval", request_id=request.request_id,
+                             conversation_id=request.conversation_id,
+                             message_id=request.message_id, meta=meta,
+                             pending=card)
+            return
+
+        content = self._agent_answer(request, run)
+        status = "done" if getattr(state, "status", "") == "done" else "stopped"
+        summary = self.agent.summary(run)
+        meta: dict[str, Any] = {
+            "status": status,
+            "note": self._agent_stop_text(summary.get("stop_reason", ""), request),
+            "mode": "local", "model": request.model,
+            "request_id": request.request_id, "executed": "local",
+            "use_tools": True, "agent": summary,
+        }
+        if run.last_model:
+            meta["model"] = run.last_model.get("model") or request.model
+            meta["completion_tokens"] = run.last_model.get("completion_tokens")
+            meta["total_ms"] = run.last_model.get("total_ms")
+        try:
+            receipt = self.agent.receipt(run, content)
+            receipt["ambito"] = (
+                {"tipo": "proyecto", "id": request.project_id,
+                 "nombre": self.project_name(request.project_id)}
+                if request.project_id else {"tipo": "personal"})
+            meta["receipt"] = receipt
+            meta["model_destination"] = run.model_destination
+        except Exception as exc:       # a receipt problem never loses the answer
+            meta["receipt_error"] = str(exc)[:200]
+        try:
+            self.db.update_message(request.message_id, content=content, meta=meta)
+            self.db.finish_request(request.request_id, status, meta)
+            self.db.touch_conversation(request.conversation_id)
+        except Exception:
+            pass
+        with self._lock:
+            self._active.pop(request.request_id, None)
+        try:
+            self.agent.forget(request.message_id)
+        except Exception:
+            pass
+        self._changed(request.conversation_id)
+        self.bus.publish("chat.done", request_id=request.request_id,
+                         conversation_id=request.conversation_id,
+                         message_id=request.message_id, status=status,
+                         content=content, meta=meta)
+
+    def agent_decide(self, conversation_id: str, message_id: str,
+                     decision: str, *, remember: bool = False,
+                     args_sha256: str = "") -> dict[str, Any]:
+        """Run, Skip or Stop the pending call; the token is issued here only."""
+        from .agent_adapter import AgentConflict
+        conv = self.db.get_conversation(conversation_id)
+        if conv is None:
+            raise KeyError(f"unknown conversation {conversation_id}")
+        run = self.agent.get(message_id) if self.agent is not None else None
+        if run is None:
+            messages = self.db.get_messages(conversation_id)
+            message = next((item for item in messages if item["id"] == message_id), None)
+            if message is not None:
+                meta = dict(message.get("meta") or {})
+                agent = dict(meta.get("agent") or {})
+                agent.pop("pending", None)
+                agent["stop_reason"] = "app_restarted"
+                agent["status"] = "stopped"
+                meta.update({"status": "stopped",
+                             "note": self._agent_stop_text("app_restarted", None),
+                             "agent": agent})
+                self.db.update_message(message_id, content="", meta=meta)
+            raise AgentConflict(
+                "this approval is no longer available (the app restarted); "
+                "the run is stopped, send the question again")
+        if run.conversation_id != conversation_id:
+            raise KeyError("that run belongs to another conversation")
+        run = self.agent.approve(run, decision, remember=remember,
+                                 args_sha256=args_sha256)
+        request = None
+        with self._lock:
+            request = self._active.get(run.request_id)
+        if request is None:
+            request = ActiveRequest(
+                request_id=run.request_id, conversation_id=conversation_id,
+                message_id=message_id, mode="local", model=run.model,
+                project_id=run.project_id, use_tools=True, task=run.task)
+        self._agent_update(request, run)
+        messages = self.db.get_messages(conversation_id)
+        message = next((item for item in messages if item["id"] == message_id), None)
+        return {"status": (message or {}).get("meta", {}).get("status", ""),
+                "message": message}
+
+    def _agent_wait_text(self, card: dict[str, Any]) -> str:
+        es = str((self.config().get("language") or "en")).lower().startswith("es")
+        tool = card.get("tool", "")
+        if es:
+            return (f"La herramienta {tool} no se ha ejecutado todavía. "
+                    "Revisa qué hará y elige Ejecutar, Omitir o Detener.")
+        return (f"The tool {tool} has not run yet. Check what it will do, then "
+                "choose Run, Skip or Stop.")
+
+    def _agent_stop_text(self, reason: str, request: ActiveRequest) -> str:
+        es = str((self.config().get("language") or "en")).lower().startswith("es")
+        if reason == "max_steps":
+            return ("Se detuvo al alcanzar el máximo de pasos para un mensaje."
+                    if es else "Stopped at the maximum number of steps for one message.")
+        if reason == "max_tool_calls":
+            return ("Se detuvo al alcanzar el máximo de llamadas a herramientas."
+                    if es else "Stopped at the maximum number of tool calls.")
+        if reason == "stopped_by_user":
+            return "Detenido a tu petición." if es else "Stopped at your request."
+        if reason == "app_restarted":
+            return ("Se detuvo al reiniciar la app; vuelve a enviar la pregunta." if es
+                    else "Stopped when the app restarted; send the question again.")
+        if reason.startswith("generate_error"):
+            return ("El modelo no pudo continuar; no se ejecutó nada más." if es
+                    else "The model could not continue; nothing else ran.")
+        return ""
+
+    def _agent_answer(self, request: ActiveRequest, run: Any) -> str:
+        """The final answer, or the last tool data when the run stopped early."""
+        state = run.state
+        for step in reversed(getattr(state, "steps", []) or []):
+            action = step.action
+            if hasattr(action, "text") and not hasattr(action, "tool"):
+                return str(action.text)
+        note = self._agent_stop_text(
+            str(getattr(state, "stop_reason", "") or ""), request)
+        observation = None
+        for step in reversed(getattr(state, "steps", []) or []):
+            if step.observation is not None:
+                observation = step.observation
+                break
+        if observation is None:
+            reason = str(getattr(state, "stop_reason", "") or "")
+            if reason.startswith("generate_error"):
+                return f"{note}\n{reason}".strip()
+            return note or ("No answer was produced." if not str(
+                self.config().get("language") or "en").lower().startswith("es")
+                else "No se produjo una respuesta.")
+        label = (f"[tool result: {observation.tool}; "
+                 f"source={observation.source or 'unknown'}; "
+                 f"sha256={observation.sha256}")
+        if observation.truncated:
+            label += "; truncated"
+        label += "]"
+        return f"{note}\n\n{label}\n<<<\n{observation.content}\n>>>".strip()
 
     def _whole_small_documents(self, sources: list[dict[str, Any]], project_id: str,
                                named: list[str] | tuple[str, ...] = (),
@@ -2367,6 +2603,10 @@ class ChatService:
         if request is None:
             return False
         request.stop_event.set()
+        if request.use_tools and self.agent is not None:
+            run = self.agent.stop_request(request_id)
+            if run is not None:
+                self._agent_update(request, run)
         return True
 
     def active_requests(self) -> list[dict[str, Any]]:
