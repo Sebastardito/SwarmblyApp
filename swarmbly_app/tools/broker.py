@@ -38,6 +38,7 @@ PROVIDER_KINDS = frozenset({"builtin", "mcp_local", "mcp_remote", "author", "san
 DEFAULT_TOKEN_TTL = 60.0
 DEFAULT_MAX_RESULT_CHARS = 8000
 _ID_RE = re.compile(r"([a-z][a-z0-9_]*)/([A-Za-z0-9][A-Za-z0-9._-]{0,127})")
+_MCP_ID_RE = re.compile(r"mcp:([a-z0-9][a-z0-9._-]{0,63})/([A-Za-z0-9][A-Za-z0-9._-]{0,127})")
 
 
 class ToolDenied(egress.EgressDenied):
@@ -97,9 +98,16 @@ class ToolSpec:
             raise ValueError(f"provider must be one of {sorted(PROVIDER_KINDS)}")
         if not isinstance(self.id, str):
             raise ValueError("id must be a string")
-        match = _ID_RE.fullmatch(self.id)
-        if match is None or match.group(1) != self.provider:
-            raise ValueError("id must be '<provider>/<name>' and match the provider")
+        mcp_match = _MCP_ID_RE.fullmatch(self.id)
+        if mcp_match is not None:
+            # MCP tools keep the server in their id: mcp:<server>/<tool>. The
+            # provider still says where it runs (mcp_local or mcp_remote).
+            if self.provider not in ("mcp_local", "mcp_remote"):
+                raise ValueError("an id of the form 'mcp:<server>/<tool>' needs an MCP provider")
+        else:
+            match = _ID_RE.fullmatch(self.id)
+            if match is None or match.group(1) != self.provider:
+                raise ValueError("id must be '<provider>/<name>' and match the provider")
         if not isinstance(self.description, str):
             raise ValueError("description must be a string")
         destination = self.destination
@@ -302,6 +310,19 @@ class ToolBroker:
             self._handlers[spec.id] = self._adapt_handler(handler)
             self._drop_tokens(spec.id)
         return spec
+
+    def unregister(self, spec_id: str) -> bool:
+        """Remove a tool and its handler (MCP suspension uses this).
+
+        The approval record is left alone so a later re-registration is still
+        checked against the same contract; callers that want to revoke it use
+        :meth:`revoke` first or afterwards.
+        """
+        with self._lock:
+            existed = self._specs.pop(spec_id, None) is not None
+            self._handlers.pop(spec_id, None)
+            self._drop_tokens(spec_id)
+            return existed
 
     def _drop_tokens(self, spec_id: str) -> None:
         with self._lock:

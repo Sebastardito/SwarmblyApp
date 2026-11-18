@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- **MCP client core** (`swarmbly_app/tools/mcp.py`, `mcp_registry.py`). MCP
+  servers are configured per project in `settings/mcp_servers.json` with the
+  exact local command, arguments, working directory and environment-variable
+  names the user sees, or a remote URL; environment values are read at start
+  and never stored. A local server is spawned only when the user calls
+  `start`, with the allowlisted environment and the configured cwd. A remote
+  server is always a third party: it needs its host in `privacy.tool_hosts`
+  and passes `egress.check_call(kind=TOOL_REMOTE)` before connecting. The
+  client lists every tool with pagination, hashes the canonical manifest of
+  names, descriptions and schemas, and approves only a subset; each approved
+  tool is registered in the broker as `mcp:<server>/<tool>` with the broker's
+  strict schema (presentation-only annotations such as Pydantic's `title` are
+  ignored, validation keywords such as `pattern` still cannot be approved).
+  A changed manifest on reconnect or a `tools/list_changed` notification
+  suspends the server, unregisters its specs and records the reason until the
+  user approves again. Calls go through `broker.invoke`; text is concatenated,
+  structured content stays data, `isError` becomes `ok=False`, images, audio
+  and resources are reported as `omitted: <type>`, and the broker's result cap
+  applies. Remote calls whose arguments are long or contain an 8-word shingle
+  of the request's retrieved passages also need `privacy.third_party_passages`.
+  A local MCP server runs with the user's own rights and is not sandboxed; the
+  app says so in `describe()`. The SDK is an optional `[tools]` extra
+  (`mcp==2.3.0`), imported lazily with a clear error when missing.
+
 - **Python 3.11 is the minimum** (D-006). `pyproject.toml` now declares
   `requires-python = ">=3.11"` and lists 3.11–3.13; the doctor, the launchers,
   the README/INSTALL requirements and the CI matrix no longer accept 3.10
