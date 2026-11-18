@@ -14,7 +14,7 @@ from typing import Any
 
 import httpx
 
-from . import egress
+from . import egress, test_hosts
 
 OLLAMA_DEFAULT_URL = "http://127.0.0.1:11434"
 
@@ -81,7 +81,7 @@ class ModelManager:
     def probe_ollama(self, url: str = OLLAMA_DEFAULT_URL) -> BackendInfo:
         info = BackendInfo(name="ollama", url=url, available=False)
         try:
-            with httpx.Client(timeout=self._timeout) as client:
+            with test_hosts.httpx_client(timeout=self._timeout) as client:
                 resp = client.get(f"{url.rstrip('/')}/api/tags")
                 resp.raise_for_status()
                 data = resp.json()
@@ -113,7 +113,7 @@ class ModelManager:
         base = url.rstrip("/")
         info = BackendInfo(name="openai_compat", url=base, available=False)
         try:
-            with httpx.Client(timeout=self._timeout) as client:
+            with test_hosts.httpx_client(timeout=self._timeout) as client:
                 resp = client.get(f"{base}/models")
                 resp.raise_for_status()
                 data = resp.json()

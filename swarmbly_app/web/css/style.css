@@ -68,6 +68,15 @@ p { margin: 0 0 10px; }
 .skip:focus { left: 8px; }
 
 /* ---- shell ------------------------------------------------------------- */
+.test-mode-banner {
+  position: sticky; top: 0; z-index: 60;
+  padding: 7px 14px; text-align: center;
+  background: var(--pollen); color: var(--on-accent);
+  font-weight: 650; letter-spacing: .01em;
+  border-bottom: 1px solid rgba(0, 0, 0, .25);
+}
+.test-mode-banner[hidden] { display: none; }
+
 .shell { display: grid; grid-template-columns: var(--side) minmax(0, 1fr) var(--rail); height: 100vh; }
 .shell.activity-hidden { grid-template-columns: var(--side) minmax(0, 1fr) 0; }
 .shell.activity-hidden .activity { display: none; }

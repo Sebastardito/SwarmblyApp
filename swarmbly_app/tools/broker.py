@@ -29,7 +29,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from .. import egress
+from .. import egress, test_hosts
 from .approvals import ApprovalError, ApprovalStore
 from .schema import (SchemaError, canonical_json, sha256_canonical,
                      validate_arguments, validate_schema)
@@ -248,7 +248,7 @@ class ToolContext:
                  reason: str = "", timeout: float = 30.0) -> httpx.Response:
         target = str(httpx.URL(url, params=params)) if params else url
         self._send(target, self._url_bytes(target), reason)
-        with httpx.Client(timeout=timeout) as client:
+        with test_hosts.httpx_client(timeout=timeout) as client:
             return client.get(target, headers=headers)
 
     def http_post(self, url: str, *, json: Any = None, data: Any = None,
@@ -268,7 +268,7 @@ class ToolContext:
             else:
                 body = str(data).encode("utf-8")
         self._send(url, self._url_bytes(url) + len(body), reason)
-        with httpx.Client(timeout=timeout) as client:
+        with test_hosts.httpx_client(timeout=timeout) as client:
             return client.post(url, json=json, data=data, headers=headers)
 
 

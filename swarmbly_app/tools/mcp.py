@@ -43,7 +43,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
-from .. import egress
+from .. import egress, test_hosts
 from .broker import ToolBroker, ToolCall, ToolDenied, ToolResult, ToolSpec
 from .mcp_registry import (MCPApprovalError, MCPError, MCPNotRunning,
                            MCPProtocolError, MCPTimeout, MCPUnavailable,
@@ -365,8 +365,15 @@ class MCPClient:
                 read_stream, write_stream = await stack.enter_async_context(
                     sdk["stdio_client"](parameters))
             else:
+                # D-013: an active test host map redirects only the TCP
+                # connection; config.url (and every receipt/policy decision)
+                # stays the declared host.
+                http_client = None
+                if test_hosts.active():
+                    http_client = test_hosts.httpx2_async_client()
+                    await stack.enter_async_context(http_client)
                 read_stream, write_stream = await stack.enter_async_context(
-                    sdk["streamable_http_client"](config.url))
+                    sdk["streamable_http_client"](config.url, http_client=http_client))
             session = await stack.enter_async_context(
                 sdk["ClientSession"](
                     read_stream, write_stream,

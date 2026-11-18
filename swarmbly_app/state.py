@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import time
 
+from . import test_hosts
 from .chat import ChatService
 from .config import Config
 from .db import Database
@@ -510,7 +511,7 @@ class AppState:
         return hardware.detect_all(str(self.dirs.root))
 
     def health(self) -> dict:
-        return {
+        health = {
             "status": "ok",
             "version": __import__("swarmbly_app").__version__,
             "protocol_spec": __import__("swarmbly_app").PROTOCOL_SPEC_VERSION,
@@ -519,6 +520,11 @@ class AppState:
             "uptime_s": int(time.time() - self.started_at),
             "data_dir": str(self.dirs.root),
         }
+        if test_hosts.active():
+            # D-013: only in test mode; without the map this response is
+            # exactly what it always was. Never read from the configuration.
+            health["test_mode"] = test_hosts.describe()
+        return health
 
     def get_orchestrator(self):
         """Built lazily and rebuilt after any configuration change, so it

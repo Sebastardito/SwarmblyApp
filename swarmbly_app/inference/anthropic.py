@@ -20,7 +20,7 @@ from typing import Any, Callable
 
 import httpx
 
-from .. import egress
+from .. import egress, test_hosts
 from .base import BackendError, GenerationResult, Interrupted
 
 DEFAULT_URL = "https://api.anthropic.com"
@@ -109,7 +109,7 @@ class AnthropicBackend:
         url = self._models_url()
         try:
             self._check(url, 0, "comprobación de disponibilidad (Anthropic)")
-            with httpx.Client(timeout=2.0) as client:
+            with test_hosts.httpx_client(timeout=2.0) as client:
                 return client.get(url, params={"limit": 1},
                                   headers=self._headers()).status_code == 200
         except Exception:
@@ -120,7 +120,7 @@ class AnthropicBackend:
         names: list[str] = []
         after_id = ""
         try:
-            with httpx.Client(timeout=3.0) as client:
+            with test_hosts.httpx_client(timeout=3.0) as client:
                 for _ in range(50):
                     params: dict[str, Any] = {"limit": 100}
                     if after_id:
@@ -203,7 +203,7 @@ class AnthropicBackend:
         prompt_tokens = completion_tokens = None
         finish_reason = "stop"
         try:
-            with httpx.Client(timeout=self.timeout) as client:
+            with test_hosts.httpx_client(timeout=self.timeout) as client:
                 with client.stream("POST", url, json=payload,
                                    headers=self._headers()) as resp:
                     if resp.status_code >= 400:

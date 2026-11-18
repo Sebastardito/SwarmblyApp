@@ -35,6 +35,8 @@ import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator
 
+from . import test_hosts
+
 LOCAL = "local"
 OWN_NETWORK = "red_propia"
 THIRD_PARTY = "terceros"
@@ -319,18 +321,28 @@ def check_call(url: str, nbytes: int, reason: str, kind: str | None = None,
     """
     cls, host = classify_url(url)
     kind = kind or current_purpose()
+    # D-013: the map is known before the call; policy still sees only the
+    # declared host. A blocked call never opens the mapped connection, so it
+    # carries no ``simulado`` flag.
+    simulated = test_hosts.target_for(host) is not None
     if cls == LOCAL and kind != AUTHOR_QUERY:
         if kind in TOOL_KINDS:
-            record(destino="local", clase=LOCAL, tipo=kind, bytes=0,
-                   motivo=reason, **extra)
+            event: dict[str, Any] = {"destino": "local", "clase": LOCAL, "tipo": kind,
+                                     "bytes": 0, "motivo": reason}
+            if simulated:
+                event["simulado"] = True
+            record(**event, **extra)
         return
     ok, why = policy().allows(cls, host, kind)
     if not ok:
         record(destino=host, clase=cls, tipo=kind, bytes=0, motivo=reason,
                bloqueado=True, **extra)
         raise EgressDenied(why, host, kind)
-    record(destino=host, clase=cls, tipo=kind, bytes=int(nbytes), motivo=reason,
-           **extra)
+    event = {"destino": host, "clase": cls, "tipo": kind, "bytes": int(nbytes),
+             "motivo": reason}
+    if simulated:
+        event["simulado"] = True
+    record(**event, **extra)
 
 
 _QUERY_KEYS = ("q", "search", "srsearch", "term", "titles", "query", "ids", "id", "page")
@@ -397,6 +409,7 @@ def build_receipt(ledger: Ledger | None, *, lane: str, route: str, answer: str,
         else:
             kind_out = kind
         personal_name = bool(ev.get("personal_name"))
+        simulated = bool(ev.get("simulado"))
         entry = {"destino": ev.get("destino", ""), "clase": ev.get("clase", ""),
                  "tipo": kind_out, "valor": value if kind == PUBLIC_QUERY else f"({kind})",
                  "bytes": int(ev.get("bytes", 0) or 0), "motivo": ev.get("motivo", "")}
@@ -405,6 +418,11 @@ def build_receipt(ledger: Ledger | None, *, lane: str, route: str, answer: str,
             # egress kind stays AUTHOR_QUERY; this flag is what the UI and the
             # receipt use, the same way a detected personal name already is.
             entry["personal_name"] = True
+        if simulated:
+            # D-013: the declared host in the receipt was reached through the
+            # launch-time loopback map; the app says so instead of pretending
+            # the connection went to the real service.
+            entry["simulado"] = True
         was_blocked = bool(ev.get("bloqueado"))
         if was_blocked:
             blocked.append(entry)
@@ -426,6 +444,8 @@ def build_receipt(ledger: Ledger | None, *, lane: str, route: str, answer: str,
             }
             if personal_name:
                 tool_entry["personal_name"] = True
+            if simulated:
+                tool_entry["simulado"] = True
             tools.append(tool_entry)
     answer = answer or ""
     destinations = ["local"] + sorted({s["destino"] for s in sends if s["destino"]})

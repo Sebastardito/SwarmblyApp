@@ -28,7 +28,7 @@ from typing import Any, Iterable
 
 import httpx
 
-from .. import egress
+from .. import egress, test_hosts
 
 ANTHROPIC_NO_EMBEDDINGS = (
     "Anthropic has no embeddings endpoint; choose Ollama or an "
@@ -150,7 +150,7 @@ class EmbeddingClient:
                           reason=f"embeddings {self.model}",
                           kind=egress.QUESTION if kind == "query" else egress.PASSAGES)
         try:
-            with httpx.Client(timeout=self.timeout) as client:
+            with test_hosts.httpx_client(timeout=self.timeout) as client:
                 resp = client.post(self.endpoint, content=body, headers=self._headers())
                 if resp.status_code >= 400:
                     detail = resp.text[:400]

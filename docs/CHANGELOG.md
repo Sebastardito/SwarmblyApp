@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- **Launch-time test host map (D-013)** (`swarmbly_app/test_hosts.py`,
+  `cli.py`, `egress.py`, MCP/author/HTTP clients, `web/index.html`,
+  `web/js/app.js`). The sealed-bank v4 harness can now exercise third-party
+  paths without weakening the policy for real users. `swarmbly-app serve
+  --test-host-map FILE` (or `SWARMBLY_TEST_HOST_MAP=FILE` read once at process
+  start) loads a JSON object `{"declared.host": "http://127.0.0.1:PORT"}`.
+  Policy, classification, `privacy.tool_hosts`, `third_party_passages`,
+  `AUTHOR_QUERY` and `personal_name` are still computed on the declared host;
+  only the TCP connection is redirected, at the HTTP client factory / connect
+  step (the original `Host` header is kept). Remote MCP Streamable HTTP,
+  author tools and the other egress-checked HTTP clients share the same seam.
+  Only listed hosts are redirected; every target must be loopback
+  (`127.0.0.0/8`, `::1` or `localhost`) or the app refuses to start. A
+  redirected receipt entry carries `simulado: true`, the startup log prints
+  the map, and the UI shows the persistent banner “Test mode: some services
+  are simulated”. The map is deliberately not a setting: it cannot be set
+  from the UI, `/api/config` or the config file (unknown keys are refused by
+  the settings validation), and changing it requires a new process. Checked
+  for this task: `POST /api/projects` already exists with the UI's validation
+  (name, folder under the default projects root unless given) behind the local
+  API guard, so no duplicate project-creation route was added.
+
 - **Author search in the chat** (`swarmbly_app/author_search.py`,
   `api/__init__.py`, `web/js/chat.js`, i18n). When `tools.author.enabled` is
   on, the composer shows “Look up an author” and the research recipe has an
