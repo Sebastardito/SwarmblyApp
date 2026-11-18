@@ -26,6 +26,26 @@
   app says so in `describe()`. The SDK is an optional `[tools]` extra
   (`mcp==2.3.0`), imported lazily with a clear error when missing.
 
+- **Sandbox runner for recipe 5** (`swarmbly_app/sandbox/`, WebAssembly CPython
+  over `wasi-python==0.1.5` / `wasmtime==50.0.1`, D-010). `SandboxRunner.run()`
+  copies the selected project files into a fresh read-only `/data`, grants a
+  fresh writable `/out` and nothing else (no root, mounts, host, tools,
+  `import_path`, stdin or environment overlays), and returns stdout, stderr,
+  file name/size/SHA-256, a trap reason and the script hash. Every run gets a
+  disposable, pre-warmed child-process worker (pool size 1, one run then
+  recycle); a hard wall clock kills the worker's process group, and collection
+  never follows a symlink. Limits default to 10 s, 256 MiB, 4 MiB per stream,
+  256 MiB / 10 000 output entries and a 384 MiB file cap: `RLIMIT_FSIZE` plus
+  a soft watchdog on POSIX, watchdog only on Windows (`platform_guard:
+  "watchdog"`, R-006). The one-time compile is never paid at import; call
+  `warm_up()` for time and peak RSS (R-005), and `available()` degrades
+  cleanly when the optional `[sandbox]` extra is absent. The broker gets the
+  `sandbox/python` spec (kind `sandbox`, destination `local`, one-time token
+  required), with realpath containment to the current project folder; local
+  runs appear in the receipt's `tools` list and send nothing. New `sandbox`
+  pytest marker and a three-OS CI job run the escape tests. Recipe 5's flow,
+  approval UI and chat wiring are not part of this change.
+
 - **Python 3.11 is the minimum** (D-006). `pyproject.toml` now declares
   `requires-python = ">=3.11"` and lists 3.11–3.13; the doctor, the launchers,
   the README/INSTALL requirements and the CI matrix no longer accept 3.10

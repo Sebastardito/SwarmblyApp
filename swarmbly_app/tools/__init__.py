@@ -15,6 +15,19 @@ from .mcp_registry import (KINDS, LOCAL_RIGHTS_NOTE, MCP_SERVERS_FILE,
                            REMOTE_HOST_NOTE, STATUSES, ServerConfig, ServerRegistry,
                            UNTRUSTED_NOTE)
 
+
+def register_sandbox(broker: "ToolBroker", *, project_path, runner=None):
+    """Register the recipe-5 ``sandbox/python`` tool on ``broker``.
+
+    This is a thin registration helper kept here so callers have one import;
+    the sandbox package and its optional dependency are imported lazily, so
+    the tool foundation works without the ``[sandbox]`` extra.
+    """
+    from ..sandbox import register_tool
+
+    return register_tool(broker, project_path=project_path, runner=runner)
+
+
 __all__ = [
     "APPROVALS_SCHEMA",
     "ApprovalError",
@@ -53,6 +66,7 @@ __all__ = [
     "approval_hash_for",
     "as_quoted_block",
     "canonical_json",
+    "register_sandbox",
     "validate_arguments",
     "validate_schema",
 ]
