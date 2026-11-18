@@ -151,6 +151,15 @@ class AppState:
         # 3.1: projects — folders of their own, with their chats kept in them
         from .projects import ProjectRegistry
         self.projects = ProjectRegistry(self.config.all, self.config.update)
+        # 3.4: one broker for every tool call. Approvals are per project, or
+        # personal when no project is active; chat only receives the handle
+        # for the receipt, it does not invoke tools yet.
+        from .tools import ToolBroker
+        self.tools = ToolBroker(
+            self.dirs.root,
+            project_path=lambda pid: (project.path if (project := self.projects.get(pid))
+                                      else None))
+        self.chat.tools = self.tools
         self.chat.on_conversation_changed = self._copy_chat_to_project
         self.chat.on_conversation_deleted = self._remove_chat_from_project
         self.chat.project_name = lambda pid: (getattr(self.projects.get(pid), "name", "")

@@ -331,6 +331,14 @@
    "passages": "Passages of your documents sent",
    "nothing": "Nothing left this computer for this answer.",
    "blocked": "Blocked attempts (nothing left):",
+   "tools": "Tool calls",
+   "toolAllowed": "allowed",
+   "toolBlocked": "blocked",
+   "toolApprovedBy": "approved by",
+   "toolBy": {
+    "approval": "saved approval",
+    "token": "one-time approval"
+   },
    "lanes": {
     "personal": "personal",
     "sensible": "sensitive",
@@ -352,7 +360,10 @@
     "consulta_aprobada": "search text you approved",
     "palabra_suelta": "single word (review terms)",
     "id_resultado": "identifier of a result",
-    "parte_consulta": "part of the text you approved"
+    "parte_consulta": "part of the text you approved",
+    "herramienta_local": "local tool",
+    "herramienta_remota": "remote tool",
+    "consulta_autor": "author lookup"
    },
    "scope": "Scope",
    "project": "project",

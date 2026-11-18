@@ -1065,6 +1065,17 @@ const Explore = (() => {
       h("span", ` ${e.destino} · ${t(`explore.receipt.kind.${e.tipo}`, e.tipo)}`),
       ["entidad_publica", "consulta_aprobada", "parte_consulta", "palabra_suelta", "id_resultado"].includes(e.tipo)
         ? h("code", ` ${e.valor}`) : null))));
+    if ((r.tools || []).length) {
+      parts.push(h("p.muted", t("explore.receipt.tools")));
+      parts.push(h("ul.sources", r.tools.map((e) => h("li",
+        chip(t(`explore.receipt.class.${e.clase}`, e.clase), e.clase === "terceros" ? "warn" : ""),
+        h("span", ` ${e.spec_id} · ${t(`explore.receipt.kind.${e.tipo}`, e.tipo)} · ${e.bytes} B`),
+        chip(t(e.allowed ? "explore.receipt.toolAllowed" : "explore.receipt.toolBlocked"),
+          e.allowed ? "" : "warn"),
+        e.approved_by
+          ? h("span.muted", ` ${t("explore.receipt.toolApprovedBy")} ${t(`explore.receipt.toolBy.${e.approved_by}`, e.approved_by)}`)
+          : null))));
+    }
     if (r.consentimiento?.alcance) parts.splice(1, 0, h("p.muted",
       `${t("explore.receipt.consentScope")} ${r.consentimiento.alcance}`));
     if ((r.bloqueados || []).length) parts.push(h("p.note",

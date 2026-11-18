@@ -8,6 +8,19 @@
   (security support ended on 2026-10-01, and the MCP SDK and `wasi-python`
   require 3.11).
 
+- **Tool broker foundation** (`swarmbly_app/tools/`). One entry point for tool
+  calls: a strict JSON-Schema subset (no `jsonschema`, unsupported keywords
+  refused), per-project approvals stored as `{spec_id, approval_hash,
+  granted_at}` with atomic writes, "rug pull" protection when a description or
+  schema changes, and one-time approval tokens bound to the tool, canonical
+  arguments and request for `sandbox`/`author` tools. Tool results are quoted
+  data with their source and hash, capped at 8000 characters. Egress has the
+  new `TOOL_REMOTE`, `AUTHOR_QUERY` and `TOOL_LOCAL` kinds: remote tools need
+  their host in `privacy.tool_hosts`, author lookups need the fixed ORCID /
+  OpenAlex / PubMed allowlist plus a per-call consent, and local tools appear
+  in the receipt's new `tools` list. No MCP, author search, sandbox, approval
+  UI or tool-invoking chat path yet; those plug into this broker.
+
 - **Native Anthropic provider** (`swarmbly_app/inference/anthropic.py`). The
   conversation model and every role can now run on Anthropic's Messages API
   (`POST /v1/messages`, SSE) without the Anthropic SDK: httpx is enough. The

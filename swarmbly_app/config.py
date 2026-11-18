@@ -9,10 +9,13 @@ and reversible.
 from __future__ import annotations
 
 import copy
+import ipaddress
 import json
+import re
 import threading
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .paths import DataDirs
 
@@ -98,6 +101,10 @@ DEFAULTS: dict[str, Any] = {
         # of the user's documents need the second switch as well.
         "third_party_models": [],
         "third_party_passages": False,
+        # 3.4: hosts a tool may reach (TOOL_REMOTE). Empty = no remote tool
+        # host is authorised; a tool on this computer (destination "local")
+        # does not need an entry.
+        "tool_hosts": [],
         # 3.1: a public lookup made for a personal or sensitive question needs
         # the user's yes for that question ("ask"); "always" keeps the 3.0.x
         # behaviour (public evidence on = consent).
@@ -366,6 +373,32 @@ _RANGES = {
 # Never changeable from the browser: binding the admin API elsewhere is a
 # security decision made on the command line, by the machine's owner.
 _LOCKED_PREFIXES = ("api.",)
+_HOST_LABEL = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)$")
+
+
+def _normalise_host(value: Any, key: str) -> str:
+    """One host from ``privacy.tool_hosts``: a bare host or any URL."""
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(f"{key} items must be non-empty host names")
+    text = value.strip()
+    try:
+        return str(ipaddress.ip_address(text.strip("[]"))).lower()
+    except ValueError:
+        pass
+    try:
+        parsed = urlsplit(text if "://" in text else f"//{text}")
+    except ValueError as exc:
+        raise ConfigError(f"{key}: {value!r} is not a valid host name") from exc
+    host = (parsed.hostname or "").strip().lower().strip(".")
+    if not host:
+        raise ConfigError(f"{key}: {value!r} has no host")
+    try:
+        return str(ipaddress.ip_address(host)).lower()
+    except ValueError:
+        pass
+    if len(host) > 253 or any(not _HOST_LABEL.fullmatch(part) for part in host.split(".")):
+        raise ConfigError(f"{key}: {value!r} is not a valid host name")
+    return host
 
 
 def _flatten(prefix: str, value: Any, out: dict[str, Any]) -> None:
@@ -418,6 +451,8 @@ def validate_changes(changes: dict[str, Any]) -> dict[str, Any]:
             raise ConfigError(f"{key} must be a list")
         if key == "evidence.providers" and not set(value) <= _PROVIDERS:
             raise ConfigError(f"{key} items must be among {sorted(_PROVIDERS)}")
+        if key == "privacy.tool_hosts":
+            flat[key] = sorted({_normalise_host(h, key) for h in value})
     if flat.get("model.backend") == "anthropic" \
             and not str(flat.get("model.backend_url") or "").strip():
         flat["model.backend_url"] = ANTHROPIC_DEFAULT_URL
