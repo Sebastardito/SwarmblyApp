@@ -158,11 +158,14 @@ DEFAULTS: dict[str, Any] = {
     #   search_terms  the short generation that writes search terms
     #   fusion        answers that join the user's sources with public evidence
     #   verifier      reserved for the claim verifier of the recipes
+    #   embeddings    retrieval over the user's sources (C1), local or
+    #                 OpenAI-compatible; Anthropic has no embeddings endpoint
     # Older settings still work: compose.model (writer), lce.expansion_model
-    # (search_terms), evidence.fusion_model (fusion).
+    # (search_terms), evidence.fusion_model (fusion).  Empty embeddings role
+    # keeps the app's previous embedder: model.embed_model on model.backend_url.
     "roles": {
         role: {"model": "", "think": None, "backend": "", "backend_url": "", "api_key": ""}
-        for role in ("writer", "search_terms", "fusion", "verifier")
+        for role in ("writer", "search_terms", "fusion", "verifier", "embeddings")
     },
     "compose": {
         "inventory": False,           # F1: requirements read by code and checked (meta.requirements)
@@ -339,8 +342,9 @@ _ENUMS = {
     "profile": {"automatic", "custom", "advanced"},
     "model.backend": {"auto", "ollama", "openai_compat", "anthropic"},
     **{f"roles.{r}.backend": {"", "ollama", "openai_compat", "anthropic"}
-       for r in ("writer", "search_terms", "fusion", "verifier")},
-    **{f"roles.{r}.think": {None, True, False} for r in ("writer", "search_terms", "fusion", "verifier")},
+       for r in ("writer", "search_terms", "fusion", "verifier", "embeddings")},
+    **{f"roles.{r}.think": {None, True, False}
+       for r in ("writer", "search_terms", "fusion", "verifier", "embeddings")},
     "model.embedder": {"hash", "server"},
     "swarm.mode": {"local", "lan", "internet", "auto"},
     "privacy.tier": {"GLOBAL", "TRUSTED", "LOCAL"},
@@ -455,6 +459,10 @@ def validate_changes(changes: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(node, dict) or parts[-1] not in node:
             raise ConfigError(f"unknown setting {key!r}")
         default = node[parts[-1]]
+        if key == "roles.embeddings.backend" and value == "anthropic":
+            raise ConfigError(
+                "Anthropic has no embeddings endpoint; choose Ollama or an "
+                "OpenAI-compatible server for the embeddings role.")
         if key in _ENUMS and value not in _ENUMS[key]:
             raise ConfigError(f"{key} must be one of {sorted(map(str, _ENUMS[key]))}")
         if key in _RANGES:

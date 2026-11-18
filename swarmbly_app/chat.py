@@ -96,6 +96,7 @@ class ChatService:
         self.glossary: Callable[[str], str] | None = None
         self.glossary_entries: Callable[[], list] | None = None
         self.retrieval_candidates: Callable[[], list] | None = None
+        self.retrieval_meta: Callable[[], dict[str, Any]] | None = None
         self.self_node: str = ""          # this node's id prefix (set by AppState)
         # 3.1: called after a conversation changes (its project folder keeps a copy)
         self.on_conversation_changed: Callable[[str], None] | None = None
@@ -969,6 +970,13 @@ class ChatService:
                         extra["lce"]["candidates"] = self.retrieval_candidates()
                     except Exception:
                         pass
+            if lce_on and self.retrieval_meta is not None:
+                try:
+                    info = self.retrieval_meta()
+                    if info:
+                        extra.setdefault("lce", {})["embeddings"] = info
+                except Exception:
+                    pass
             if expansion is not None:
                 extra.setdefault("lce", {})["expansion"] = expansion.to_dict()
             if request.receipt_ctx.get("public_offer"):

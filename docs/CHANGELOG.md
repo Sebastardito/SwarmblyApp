@@ -40,6 +40,26 @@
   `max_results` (up to 25), PubMed keeps DOIs, and rate limits are plain
   errors. No UI, API route or chat wiring in this step.
 
+- **Embeddings role** (`swarmbly_app/inference/embeddings.py`, `roles.py`,
+  `lce_adapter.py`, `state.py`). Retrieval over the user's sources (C1 dense
+  fusion), the seam/agreement similarity of the orchestrator and direct
+  embedding calls now choose their embedder through `roles.choose("embeddings")`:
+  the app's previous Ollama `/api/embed` model by default, or a chosen Ollama
+  model / OpenAI-compatible `/v1/embeddings` server. Anthropic has no
+  embeddings endpoint, so selecting it is refused in validation and at
+  runtime with that message. Every embedding request passes
+  `egress.check_call` before a byte (`PASSAGES` for document batches,
+  `QUESTION` for the query). A third-party destination receives passages only
+  when its host is authorised **and** `privacy.third_party_passages` is on;
+  otherwise the call is refused (`meta.lce.embeddings.note` and the receipt's
+  `bloqueados`), the app's own local Ollama embedder takes over when
+  configured, and otherwise C1 keeps keyword retrieval. Changing the embedding
+  model or the vector dimension rebuilds the C1 index (a new `SourceIndex`, so
+  vectors from two models never share the text-keyed cache) and says so in
+  `meta.lce.embeddings` (`rebuilt`, `reason`, `previous_model`, `dimension`).
+  Settings → Models gains the role's model/server/URL/key fields (en/es). The
+  role's key is kept in the system keychain.
+
 - **MCP client core** (`swarmbly_app/tools/mcp.py`, `mcp_registry.py`). MCP
   servers are configured per project in `settings/mcp_servers.json` with the
   exact local command, arguments, working directory and environment-variable

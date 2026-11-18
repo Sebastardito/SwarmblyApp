@@ -1043,17 +1043,37 @@ class Orchestrator:
         return max(16, min(base, MAX_BUDGET_TOKENS))
 
     def _embedder(self):
-        cfg = self.config()["model"]
-        if cfg.get("embedder") == "server":
+        """Seam/agreement similarity: the ``embeddings`` role, else the old switch.
+
+        Generated fragments can quote the user's passages, so a role on a
+        third-party server follows the same two authorisations as retrieval
+        (and refuses before sending).  With no role configured the previous
+        behaviour is kept exactly: ``model.embedder=hash`` is lexical, and
+        ``server`` uses ``/v1/embeddings`` at ``model.backend_url``.
+        """
+        model_cfg = self.config()["model"]
+        from .. import roles
+        if roles.embeddings_configured(self.config()):
+            choice = roles.choose("embeddings", self.config(), None, "",
+                                  passages=True)
+            if choice.backend is not None:
+                from ..inference.embeddings import DocumentEmbedder
+                from swarmbly_v0 import HashEmbedder
+                suffix = " (fallback: local)" if choice.note else ""
+                return (DocumentEmbedder(choice.backend, HashEmbedder()),
+                        f"server:{choice.model}{suffix}")
+            from swarmbly_v0 import HashEmbedder
+            note = choice.note or "no embeddings backend"
+            return HashEmbedder(), f"hash (lexical, not semantic; {note})"
+        if model_cfg.get("embedder") == "server":
             try:
-                from swarmbly_v0.backends import OpenAICompatBackend, ServerEmbedder
-                url = (cfg.get("backend_url") or "http://127.0.0.1:11434").rstrip("/")
-                if not url.endswith("/v1"):
-                    url += "/v1"
-                emb = ServerEmbedder(backend=OpenAICompatBackend(
-                    base_url=url, api_key=cfg.get("api_key") or "not-needed",
-                    embed_model=cfg.get("embed_model") or "nomic-embed-text"))
-                return emb, "server:" + (cfg.get("embed_model") or "nomic-embed-text")
+                from swarmbly_v0 import HashEmbedder
+                from ..inference.embeddings import DocumentEmbedder, openai_embedder
+                model = str(model_cfg.get("embed_model") or "nomic-embed-text")
+                client = openai_embedder(
+                    model, str(model_cfg.get("backend_url") or "http://127.0.0.1:11434"),
+                    api_key=str(model_cfg.get("api_key") or "not-needed"))
+                return DocumentEmbedder(client, HashEmbedder()), "server:" + model
             except Exception:
                 pass
         from swarmbly_v0 import HashEmbedder

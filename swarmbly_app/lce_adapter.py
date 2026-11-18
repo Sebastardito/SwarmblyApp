@@ -60,8 +60,17 @@ class LCEAdapter:
     def __init__(self, dirs: DataDirs):
         self.dirs = dirs
         # The README the app writes into its own source folder is not a document
+        self.index = self._new_index()
+        # The embedding identity the index's vectors were built with.  The
+        # SourceIndex cache is keyed by text, so a different model (or a
+        # different vector size) must get a fresh index: zip() would silently
+        # truncate mismatched vectors instead of failing.
+        self._embedding: dict[str, Any] = {"identity": "", "model": "", "dim": 0}
+        self.last_embedding_meta: dict[str, Any] = {}
+
+    def _new_index(self) -> SourceIndex:
         from .projects import is_app_note
-        self.index = SourceIndex(
+        return SourceIndex(
             skip=lambda root, path: (path.name == "README.md" and path.parent == self.dirs.sources)
             or is_app_note(path))
 
@@ -137,6 +146,39 @@ class LCEAdapter:
             _ = policy.fingerprint("probe")
         except Exception as exc:  # upstream package is a dependency; report honestly
             raise RuntimeError(f"could not initialize LCE C1: {exc}") from exc
+
+    # -- embeddings (3.4, carried over from 3.3) --------------------------------
+    def prepare_embeddings(self, identity: str, model: str, dim: int = 0) -> dict[str, Any]:
+        """Make the index safe for ``identity``'s vectors; rebuild if needed.
+
+        ``identity`` names the backend, model and endpoint; ``dim`` is the
+        vector size last observed for it (0 before the first call).  A change
+        in either discards every cached vector by starting a new SourceIndex,
+        so vectors from two models never share a cache.  Returns what the
+        answer's meta should say.
+        """
+        previous = dict(self._embedding)
+        reason = ""
+        if previous["identity"] and previous["identity"] != identity:
+            reason = "model changed"
+        elif dim and previous["dim"] and dim != previous["dim"]:
+            reason = "dimension changed"
+        rebuilt = bool(reason)
+        if rebuilt:
+            self.index = self._new_index()
+        self._embedding = {"identity": identity, "model": model,
+                           "dim": dim or int(previous.get("dim") or 0)}
+        meta = {"model": model, "identity": identity,
+                "rebuilt": rebuilt, "dimension": self._embedding["dim"]}
+        if rebuilt:
+            meta["reason"] = reason
+            meta["previous_model"] = previous.get("model", "")
+        self.last_embedding_meta = meta
+        return dict(meta)
+
+    def note_embeddings(self, meta: dict[str, Any]) -> None:
+        """Record what this request did for its meta/receipt."""
+        self.last_embedding_meta = dict(meta)
 
     # -- C1 (swarmbly_lce.c1) ------------------------------------------------
     def personal_roots(self, extra_dirs: list[str] | tuple[str, ...] = ()) -> list[Path]:

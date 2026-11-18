@@ -575,11 +575,13 @@
    "system": "Sistema"
   },
   "sameModel": "Igual que la conversación",
+  "sameEmbedder": "El embedder actual de la app",
   "secretStored": {
    "keychain": "guardada en el llavero del sistema",
    "file": "guardada en un archivo protegido de esta computadora"
   },
   "sameServer": "El de la conversación",
+  "defaultEmbedder": "El de la app por defecto",
   "modelDefault": "Por defecto del modelo"
  },
  "profile": {
@@ -850,6 +852,22 @@
   "roles__fusion__model": {
    "label": "Modelo para respuestas con evidencia pública",
    "help": "Redacta las respuestas que combinan tus fuentes con evidencia pública. Vacío: el modelo de la conversación."
+  },
+  "roles__embeddings__model": {
+   "label": "Modelo de embeddings",
+   "help": "Calcula los vectores que la búsqueda usa para encontrar párrafos de tus documentos. Vacío: el embedder actual de la app (model.embed_model). Cambiarlo reconstruye el índice del proyecto; los vectores de dos modelos nunca se mezclan."
+  },
+  "roles__embeddings__backend": {
+   "label": "Servidor de embeddings",
+   "help": "Dónde se ejecutan las llamadas de embeddings. Anthropic no tiene endpoint de embeddings, por eso no se ofrece aquí. Un servidor fuera de tu red necesita el host autorizado y los pasajes permitidos; si no, la app se niega antes de enviar y usa el embedder local o solo la búsqueda por palabras."
+  },
+  "roles__embeddings__backend_url": {
+   "label": "Dirección del servidor de embeddings",
+   "help": "Ollama: http://127.0.0.1:11434. Compatible con OpenAI: http://127.0.0.1:8000/v1 (o solo el host y se añade /v1)."
+  },
+  "roles__embeddings__api_key": {
+   "label": "Clave del servidor de embeddings",
+   "help": "Se guarda en el llavero del sistema, no en el archivo de configuración."
   },
   "roles__writer__backend": {
    "label": "Servidor del redactor",

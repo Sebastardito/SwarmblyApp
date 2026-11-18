@@ -36,6 +36,15 @@ const Settings = (() => {
       { key: "roles.writer.think", type: "tri", group: "roles" },
       { key: "roles.search_terms.model", type: "model", allowEmpty: true, group: "roles" },
       { key: "roles.fusion.model", type: "model", allowEmpty: true, group: "roles" },
+      // 3.4: embeddings for retrieval. Empty keeps the app's previous embedder.
+      { key: "roles.embeddings.model", type: "embedding", allowEmpty: true, group: "roles",
+        textIf: (c) => c.roles?.embeddings?.backend === "openai_compat" },
+      { key: "roles.embeddings.backend", type: "select", group: "roles", advanced: true,
+        options: [["", "settings.defaultEmbedder"], ["ollama", "Ollama"], ["openai_compat", "backend.openai"]] },
+      { key: "roles.embeddings.backend_url", type: "text", group: "roles", advanced: true,
+        showIf: (c) => !!c.roles?.embeddings?.backend },
+      { key: "roles.embeddings.api_key", type: "password", group: "roles", advanced: true,
+        showIf: (c) => c.roles?.embeddings?.backend === "openai_compat" },
       { key: "roles.writer.backend", type: "select", group: "roles", advanced: true,
         options: [["", "settings.sameServer"], ["ollama", "Ollama"], ["openai_compat", "backend.openai"], ["anthropic", "backend.anthropic"]] },
       { key: "roles.writer.backend_url", type: "text", group: "roles", advanced: true,
@@ -166,7 +175,8 @@ const Settings = (() => {
     const save = (v) => {
       if (f.key === "language") return App.setLanguage(v);
       return App.saveConfig(nested(f.key, v)).then(() => {
-        if (["model.multi_model", "profile", "roles.writer.backend"].includes(f.key)) renderTab();
+        if (["model.multi_model", "profile", "roles.writer.backend",
+             "roles.embeddings.backend"].includes(f.key)) renderTab();
       }).catch(() => renderTab());
     };
     let control;
@@ -178,7 +188,7 @@ const Settings = (() => {
       control = select(opts.map(([v, l]) => ({ value: v, label: t(l, l) })),
         value === true ? "true" : value === false ? "false" : "",
         (v) => save(v === "" ? null : v === "true"), { "aria-label": label });
-    } else if (f.type === "model" && f.textIf && f.textIf(App.state.config || {})) {
+    } else if ((f.type === "model" || f.type === "embedding") && f.textIf && f.textIf(App.state.config || {})) {
       // a model on another server: its name is typed, this computer cannot list it
       control = h("input", { type: "text", "aria-label": label, autocomplete: "off" });
       control.value = value ?? "";
@@ -196,6 +206,14 @@ const Settings = (() => {
       if (value && !chat.some((o) => o.value === value)) chat.unshift({ value, label: `${value} (${t("settings.notInstalled")})` });
       if (f.allowEmpty) chat.unshift({ value: "", label: t("settings.sameModel") });
       control = select(chat.length ? chat : [{ value: "", label: t("chat.noModel") }], value, save,
+        { "aria-label": label });
+    } else if (f.type === "embedding") {
+      // embedding models only; an empty value keeps model.embed_model
+      const emb = installed.filter((m) => m.kind === "embedding").map((m) => ({ value: m.name,
+        label: m.remote ? `${m.name} (${t("settings.cloudModel").replace("{host}", m.remote)})` : m.name }));
+      if (value && !emb.some((o) => o.value === value)) emb.unshift({ value, label: `${value} (${t("settings.notInstalled")})` });
+      if (f.allowEmpty) emb.unshift({ value: "", label: t("settings.sameEmbedder") });
+      control = select(emb.length ? emb : [{ value: "", label: t("settings.sameEmbedder") }], value, save,
         { "aria-label": label });
     } else if (f.type === "models") {
       const chosen = new Set(value || []);

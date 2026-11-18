@@ -575,11 +575,13 @@
    "system": "System"
   },
   "sameModel": "Same as the conversation",
+  "sameEmbedder": "The app's current embedder",
   "secretStored": {
    "keychain": "stored in the system keychain",
    "file": "stored in a protected file on this computer"
   },
   "sameServer": "The conversation's",
+  "defaultEmbedder": "The app's default",
   "modelDefault": "Model default"
  },
  "profile": {
@@ -850,6 +852,22 @@
   "roles__fusion__model": {
    "label": "Model for answers with public evidence",
    "help": "Writes the answers that join your sources with public evidence. Empty: the conversation's model."
+  },
+  "roles__embeddings__model": {
+   "label": "Embedding model",
+   "help": "Computes the vectors retrieval uses to find paragraphs of your documents. Empty: the app's current embedder (model.embed_model). Changing it rebuilds the project's index; vectors from two models are never mixed."
+  },
+  "roles__embeddings__backend": {
+   "label": "Embeddings server",
+   "help": "Where embedding calls run. Anthropic has no embeddings endpoint, so it is not offered here. A server outside your network needs its host authorised and passages allowed; otherwise the app refuses before sending and falls back to the local embedder or to keyword search."
+  },
+  "roles__embeddings__backend_url": {
+   "label": "Address of the embeddings server",
+   "help": "Ollama: http://127.0.0.1:11434. OpenAI-compatible: http://127.0.0.1:8000/v1 (or just the host, and /v1 is added)."
+  },
+  "roles__embeddings__api_key": {
+   "label": "Key of the embeddings server",
+   "help": "Kept in the system keychain, not in the configuration file."
   },
   "roles__writer__backend": {
    "label": "Writer's server",
