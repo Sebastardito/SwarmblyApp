@@ -520,6 +520,10 @@ def main(argv: list[str] | None = None) -> int:
     if limits.fuel is not None:
         # A metered engine is a separate compile in wasi-python (spike §7.2):
         # pay it here, before RLIMIT_FSIZE, and never inside the measured run.
+        # The parent waits for ``metered-warm.json`` before it starts the hard
+        # wall clock, so a cold compile is not charged to the guest either.
+        metered_started = time.perf_counter()
+        metered_error: str | None = None
         try:
             metered_out = tmp_dir / "metered-warm-out"
             metered_out.mkdir(parents=True, exist_ok=True)
@@ -529,8 +533,16 @@ def main(argv: list[str] | None = None) -> int:
                      env={"HOME": "/nonexistent-home"}, cache_dir=cache_dir,
                      deadline_s=120, memory_bytes=512 * MIB,
                      output_bytes=1 * MIB, fuel=10_000_000)
-        except Exception:
-            pass
+        except Exception as exc:
+            # A pre-warm failure is not fatal: the guest run reports whatever
+            # the metered engine actually does.  The marker still releases the
+            # parent so the hard wall covers the guest, not the compile.
+            metered_error = f"{type(exc).__name__}: {exc}"
+        _write_json(job_dir / "metered-warm.json", {
+            "ok": metered_error is None,
+            "elapsed_s": round(time.perf_counter() - metered_started, 3),
+            "error": metered_error,
+        })
 
     if (os.name == "posix" and limits.max_file_bytes is not None):
         try:

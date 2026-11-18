@@ -38,6 +38,23 @@
   call, destination or setting changes. New routes `GET /api/skills`,
   `POST /api/skills/import`, `POST /api/skills/match`; English/Spanish UI.
 
+- **Sandbox tests: cold metered fuel compile and Windows links**
+  (`swarmbly_app/sandbox/runner.py`, `worker.py`, `tests/test_sandbox_runner.py`).
+  A fuel run needs wasi-python's separate metered module compile (a cold
+  compile is several seconds on a laptop and longer on a small runner). The
+  worker now writes `metered-warm.json` after paying it, and the parent starts
+  the guest's hard wall clock only after that marker, so the first fuel run on
+  a slow machine is not killed as a deadline. The wall still covers all guest
+  work; no limit or security check changed. The time checks are split into
+  `test_05a_deadline` (unchanged bounds) and `test_05b_optional_fuel`. The
+  symlink check now reads the guest's own row: on Windows wasmtime's
+  `path_symlink` refuses the relative link (it stats the target first, and the
+  target does not exist), so the follow-up write creates a regular file inside
+  `/out`; the test asserts that contained file, checks the host canaries, and
+  walks the retained output with `lstat` to prove no link is collected or
+  followed. It also records R-006 explicitly: Windows has only the watchdog,
+  POSIX has `RLIMIT_FSIZE` plus the watchdog.
+
 - **Sandbox tests: cold-compile timing** (`tests/test_sandbox_runner.py`).
   The deadline check now starts its wall clock only after a worker reports
   ready, and the sandbox runner tests share one session-scoped wasmtime cache

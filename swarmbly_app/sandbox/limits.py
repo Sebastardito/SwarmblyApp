@@ -30,7 +30,9 @@ class Limits:
 
     # How long the parent waits past ``deadline_s`` before killing the worker.
     hard_grace_s: float = 5.0
-    # Optional explicit wall-clock kill (tests); ``None`` means deadline + grace.
+    # Optional explicit wall-clock kill for the guest run (tests); ``None``
+    # means deadline + grace.  A fuel run's metered pre-warm is paid before
+    # this clock starts (see ``SandboxRunner.run``).
     hard_wall_s: float | None = None
     poll_s: float = 0.01
 
@@ -56,7 +58,12 @@ class Limits:
             raise ValueError("poll_s must be positive")
 
     def wall_s(self) -> float:
-        """How long the parent waits before killing the worker."""
+        """How long the parent waits for the guest before killing the worker.
+
+        A fuel run's separate metered compile is paid before this window
+        starts, so it is never charged to ``deadline_s``, ``hard_grace_s`` or
+        ``hard_wall_s``.
+        """
         if self.hard_wall_s is not None:
             return float(self.hard_wall_s)
         return float((self.deadline_s or 0.0) + self.hard_grace_s)

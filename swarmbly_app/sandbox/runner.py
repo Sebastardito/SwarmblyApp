@@ -11,11 +11,12 @@ cache and ``TMPDIR`` live in an app-owned 0700 directory outside every grant.
 
 A worker is a child process (``python -m swarmbly_app.sandbox.worker``).  It
 pays the one-time wasi-python warm-up before reporting ready, runs exactly one
-job, then exits.  The parent enforces the hard wall clock (``deadline_s`` plus
-grace) by killing the worker's process group, so a timed-out run leaves no
-orphan.  On POSIX the worker also applies ``RLIMIT_FSIZE`` before the guest
-starts; on Windows the soft watchdog is the only disk guard and the result
-says ``platform_guard: "watchdog"`` (R-006).
+job, then exits.  A fuel run also pays wasi-python's separate metered compile
+before the parent starts its wall clock.  The parent then enforces the hard wall
+clock (``deadline_s`` plus grace) by killing the worker's process group, so a
+timed-out run leaves no orphan.  On POSIX the worker also applies
+``RLIMIT_FSIZE`` before the guest starts; on Windows the soft watchdog is the
+only disk guard and the result says ``platform_guard: "watchdog"`` (R-006).
 
 Importing this module never imports ``wasi_python`` and never compiles the
 module; :func:`available` reports whether the optional extra is installed and
@@ -408,6 +409,14 @@ class SandboxRunner:
             try:
                 worker = self._take_worker()
                 self._submit(worker, run_dir)
+                if limits.fuel is not None:
+                    # wasi-python compiles a second, fuel-metered module (a cold
+                    # compile is several seconds on a laptop and longer on a
+                    # 2-4 vCPU runner).  The worker pays that cost before it
+                    # reports ``metered-warm.json``; only then does the parent
+                    # start the guest's hard wall clock, so a cold metered
+                    # compile can never be mistaken for an over-deadline run.
+                    self._await_metered_prewarm(worker, run_dir)
             except Exception as exc:
                 return self._result_from_payload(
                     None, script_sha256, 0.0, None, limits,
@@ -458,7 +467,8 @@ class SandboxRunner:
                 # Keep only /out: the copied inputs and the script are not
                 # needed once the result is recorded.
                 shutil.rmtree(data_dir, ignore_errors=True)
-                for name in ("script.py", "limits.json", "result.json"):
+                for name in ("script.py", "limits.json", "result.json",
+                             "metered-warm.json"):
                     try:
                         (run_dir / name).unlink()
                     except OSError:
@@ -468,6 +478,27 @@ class SandboxRunner:
             self._replenish_async()
 
     # -- helpers -------------------------------------------------------------
+    def _await_metered_prewarm(self, worker: _Worker, run_dir: Path) -> None:
+        """Wait until the worker has paid the separate metered compile.
+
+        The marker is written atomically after the worker's own fixed
+        ``print('warm')`` call and before it starts the guest.  The pre-warm is
+        bounded by ``warm_timeout_s``, not by the run's limits: it is fixed work
+        on the runner's own account, not guest work.  A worker that exits first
+        is left to the normal payload/exit handling.
+        """
+        marker = run_dir / "metered-warm.json"
+        deadline = time.monotonic() + self.warm_timeout_s
+        while time.monotonic() < deadline:
+            if marker.is_file():
+                return
+            if worker.process.poll() is not None:
+                return
+            time.sleep(0.02)
+        raise SandboxError(
+            "sandbox worker did not finish the metered pre-warm within "
+            f"{self.warm_timeout_s:g}s")
+
     @staticmethod
     def _limits_dict(limits: Limits) -> dict[str, Any]:
         return {
