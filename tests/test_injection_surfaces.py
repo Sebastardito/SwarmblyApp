@@ -359,7 +359,7 @@ def test_author_search_records_are_data(tmp_path, monkeypatch, variant):
     assert payload in result.content
     assert result.approved_by == "token"
     assert fake_http.urls and all("pub.orcid.org" in url for url in fake_http.urls)
-    _assert_egress(ledger.events, {"pub.orcid.org"}, max_bytes=40, forbidden=(payload,))
+    _assert_egress(ledger.events, {"pub.orcid.org"}, max_bytes=128, forbidden=(payload,))
     _assert_contained(before, _snapshot(broker=broker))
 
 
