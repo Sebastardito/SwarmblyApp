@@ -27,7 +27,11 @@ from pathlib import Path
 
 import psutil
 import pytest
-from fastapi.testclient import TestClient
+
+# Needs the [agent] and [tools] extras; CI installs both (tests.yml).
+pytest.importorskip("swarmbly_agent", reason="needs the [agent] extra (swarmbly-agent)")
+pytest.importorskip("mcp", reason="needs the [tools] extra (mcp)")
+from fastapi.testclient import TestClient  # noqa: E402
 
 from conftest import FakeBackend
 from swarmbly_app import egress

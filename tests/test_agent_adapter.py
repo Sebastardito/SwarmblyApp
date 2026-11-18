@@ -485,6 +485,7 @@ def test_third_party_model_is_refused_before_any_call(app_state):
     assert calls == []
 
 
+@needs_agent
 def test_standing_approval_is_bound_to_the_tool_contract(app_state):
     """A re-approved changed manifest must not revive the old standing yes."""
     from swarmbly_app.tools import ToolSpec
