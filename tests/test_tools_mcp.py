@@ -16,7 +16,9 @@ from pathlib import Path
 import psutil
 import pytest
 import uvicorn
-from mcp.server.mcpserver import MCPServer
+
+pytest.importorskip("mcp", reason="needs the [tools] extra (mcp)")
+from mcp.server.mcpserver import MCPServer  # noqa: E402
 
 from swarmbly_app import egress
 from swarmbly_app.tools import (MCPApprovalError, MCPClient, MCPNotRunning,

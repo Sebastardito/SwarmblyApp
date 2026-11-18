@@ -12,6 +12,8 @@ import psutil
 import pytest
 from fastapi.testclient import TestClient
 
+pytest.importorskip("mcp", reason="needs the [tools] extra (mcp)")
+
 from swarmbly_app.api import create_app
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"

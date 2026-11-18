@@ -7,6 +7,7 @@ test only needs to observe whether the handler ran.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -22,6 +23,13 @@ from swarmbly_app.tools import ToolSpec
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 AGENT = FIXTURES / "mcp_agent_server.py"
+
+# The runtime and the MCP SDK are optional extras ([agent], [tools]). Without
+# them these tests are skipped, not failed; CI installs both extras.
+needs_agent = pytest.mark.skipif(
+    not agent_available(), reason="needs the [agent] extra (swarmbly-agent)")
+needs_mcp = pytest.mark.skipif(
+    importlib.util.find_spec("mcp") is None, reason="needs the [tools] extra (mcp)")
 
 
 class ScriptedModel:
@@ -128,6 +136,7 @@ def _message(chat, conv_id: str) -> dict:
     return chat.get_messages(conv_id)[-1]
 
 
+@needs_agent
 def test_no_tool_runs_without_approval_and_run_approves(app_state):
     calls: list[dict] = []
     _approve_local(app_state, "mcp:test/add", calls)
@@ -173,6 +182,8 @@ def test_no_tool_runs_without_approval_and_run_approves(app_state):
     _close_mcp(app_state)
 
 
+@needs_agent
+@needs_mcp
 def test_real_mcp_fixture_add_through_the_approval_card(app_state, tmp_path):
     api = _api(app_state)
     _start_mcp(api, tmp_path, ["add"])
@@ -206,6 +217,7 @@ def test_real_mcp_fixture_add_through_the_approval_card(app_state, tmp_path):
     _close_mcp(app_state)
 
 
+@needs_agent
 def test_skip_sends_a_denial_and_stop_ends_the_run(app_state):
     calls: list[dict] = []
     _approve_local(app_state, "mcp:test/add", calls)
@@ -249,6 +261,7 @@ def test_skip_sends_a_denial_and_stop_ends_the_run(app_state):
     _close_mcp(app_state)
 
 
+@needs_agent
 def test_standing_is_local_only_and_a_remote_forged_flag_still_asks(app_state):
     calls: list[dict] = []
     spec = _approve_local(app_state, "mcp:test/add", calls)
@@ -315,6 +328,7 @@ def test_standing_is_local_only_and_a_remote_forged_flag_still_asks(app_state):
     _close_mcp(app_state)
 
 
+@needs_agent
 def test_unapproved_tool_is_denied_even_when_the_model_names_it(app_state):
     calls: list[dict] = []
     spec, handler = _local_spec("mcp:agent/secret", calls)
@@ -334,6 +348,7 @@ def test_unapproved_tool_is_denied_even_when_the_model_names_it(app_state):
     assert any("not approved in Settings" in text for text in tool_messages)
 
 
+@needs_agent
 def test_budget_stops_at_the_tool_call_ceiling(app_state):
     calls: list[dict] = []
     spec = _approve_local(app_state, "mcp:test/add", calls)
@@ -352,6 +367,8 @@ def test_budget_stops_at_the_tool_call_ceiling(app_state):
     assert "maximum number of tool calls" in message["meta"]["note"]
 
 
+@needs_agent
+@needs_mcp
 def test_tool_result_instructions_do_not_widen_permissions(app_state, tmp_path):
     api = _api(app_state)
     _start_mcp(api, tmp_path, ["inject", "danger"])
@@ -390,6 +407,8 @@ def test_optional_extra_is_reported_when_missing(monkeypatch):
     assert "pip install 'swarmbly-app[agent]'" in str(exc.value)
 
 
+@needs_agent
+@needs_mcp
 def test_agent_tools_endpoint_offers_the_toggle_only_with_an_approved_mcp_tool(
         app_state, tmp_path):
     api = _api(app_state)
@@ -423,6 +442,7 @@ def test_agent_ui_strings_exist_in_english_and_spanish():
             assert data["tools"][key], (language, key)
 
 
+@needs_agent
 def test_page_reload_keeps_the_card_and_restart_stops_the_run(app_state):
     calls: list[dict] = []
     _approve_local(app_state, "mcp:test/add", calls)
@@ -448,6 +468,7 @@ def test_page_reload_keeps_the_card_and_restart_stops_the_run(app_state):
     assert calls == []
 
 
+@needs_agent
 def test_third_party_model_is_refused_before_any_call(app_state):
     calls: list[dict] = []
     _approve_local(app_state, "mcp:test/add", calls)
