@@ -16,6 +16,9 @@ from typing import Any
 
 from .paths import DataDirs
 
+# Anthropic's public API root; inference/anthropic.py appends /v1/messages.
+ANTHROPIC_DEFAULT_URL = "https://api.anthropic.com"
+
 DEFAULTS: dict[str, Any] = {
     "language": "en",                 # en | es (UI default language)
     "theme": "dark",
@@ -30,9 +33,9 @@ DEFAULTS: dict[str, Any] = {
         "port": 8765,
     },
     "model": {
-        "backend": "auto",            # auto | ollama | openai_compat
+        "backend": "auto",            # auto | ollama | openai_compat | anthropic
         "backend_url": "",            # e.g. http://127.0.0.1:11434 (ollama) or .../v1
-        "api_key": "",                # only for OpenAI-compatible servers that need it
+        "api_key": "",                # for servers that need one (OpenAI-compatible, Anthropic)
         "model_name": "",             # empty -> auto pick
         "max_tokens": 1024,
         "temperature": 0.2,
@@ -221,6 +224,14 @@ def _deep_merge(base: dict, update: dict) -> dict:
     return out
 
 
+def _anthropic_default_url(data: dict[str, Any]) -> None:
+    """An Anthropic model with no address uses its public API, never Ollama."""
+    model = data.get("model") or {}
+    if model.get("backend") == "anthropic" \
+            and not str(model.get("backend_url") or "").strip():
+        model["backend_url"] = ANTHROPIC_DEFAULT_URL
+
+
 class Config:
     """Thread-safe JSON config with defaults and deep-merge updates."""
 
@@ -237,6 +248,7 @@ class Config:
                 raw = json.loads(path.read_text(encoding="utf-8"))
                 with self._lock:
                     self._data = _deep_merge(DEFAULTS, raw)
+                    _anthropic_default_url(self._data)
             except (json.JSONDecodeError, OSError) as exc:  # corrupt file -> defaults
                 path.rename(path.with_suffix(".json.bak"))
                 self.save()
@@ -279,6 +291,7 @@ class Config:
                 node[parts[-1]] = value
         with self._lock:
             self._data = _deep_merge(self._data, nested)
+            _anthropic_default_url(self._data)
             merged = copy.deepcopy(self._data)
         if save:
             self.save()
@@ -305,8 +318,8 @@ _ENUMS = {
     "language": {"en", "es"},
     "theme": {"dark", "light"},
     "profile": {"automatic", "custom", "advanced"},
-    "model.backend": {"auto", "ollama", "openai_compat"},
-    **{f"roles.{r}.backend": {"", "ollama", "openai_compat"}
+    "model.backend": {"auto", "ollama", "openai_compat", "anthropic"},
+    **{f"roles.{r}.backend": {"", "ollama", "openai_compat", "anthropic"}
        for r in ("writer", "search_terms", "fusion", "verifier")},
     **{f"roles.{r}.think": {None, True, False} for r in ("writer", "search_terms", "fusion", "verifier")},
     "model.embedder": {"hash", "server"},
@@ -405,6 +418,9 @@ def validate_changes(changes: dict[str, Any]) -> dict[str, Any]:
             raise ConfigError(f"{key} must be a list")
         if key == "evidence.providers" and not set(value) <= _PROVIDERS:
             raise ConfigError(f"{key} items must be among {sorted(_PROVIDERS)}")
+    if flat.get("model.backend") == "anthropic" \
+            and not str(flat.get("model.backend_url") or "").strip():
+        flat["model.backend_url"] = ANTHROPIC_DEFAULT_URL
     return flat
 
 

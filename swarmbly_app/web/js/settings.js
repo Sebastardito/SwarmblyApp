@@ -23,7 +23,7 @@ const Settings = (() => {
       { key: "log_retention_days", type: "number", min: 1, max: 3650, advanced: true },
     ],
     models: [
-      { key: "model.backend", type: "select", options: [["auto", "backend.auto"], ["ollama", "Ollama"], ["openai_compat", "backend.openai"]] },
+      { key: "model.backend", type: "select", options: [["auto", "backend.auto"], ["ollama", "Ollama"], ["openai_compat", "backend.openai"], ["anthropic", "backend.anthropic"]] },
       { key: "model.backend_url", type: "text", placeholder: "http://127.0.0.1:11434" },
       { key: "model.api_key", type: "password", advanced: true },
       // 3.2: shown for every backend: an Ollama on this computer forwards its cloud models
@@ -37,11 +37,11 @@ const Settings = (() => {
       { key: "roles.search_terms.model", type: "model", allowEmpty: true, group: "roles" },
       { key: "roles.fusion.model", type: "model", allowEmpty: true, group: "roles" },
       { key: "roles.writer.backend", type: "select", group: "roles", advanced: true,
-        options: [["", "settings.sameServer"], ["ollama", "Ollama"], ["openai_compat", "backend.openai"]] },
+        options: [["", "settings.sameServer"], ["ollama", "Ollama"], ["openai_compat", "backend.openai"], ["anthropic", "backend.anthropic"]] },
       { key: "roles.writer.backend_url", type: "text", group: "roles", advanced: true,
         showIf: (c) => !!c.roles?.writer?.backend },
       { key: "roles.writer.api_key", type: "password", group: "roles", advanced: true,
-        showIf: (c) => c.roles?.writer?.backend === "openai_compat" },
+        showIf: (c) => ["openai_compat", "anthropic"].includes(c.roles?.writer?.backend) },
       { key: "model.multi_model", type: "bool" },
       { key: "model.local_models", type: "models", showIf: (c) => c.model?.multi_model },
       { key: "model.local_parallel", type: "number", min: 1, max: 4, showIf: (c) => c.model?.multi_model },

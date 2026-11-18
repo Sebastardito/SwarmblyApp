@@ -1,9 +1,9 @@
 """Model manager: detect inference backends and their installed models.
 
 Supported backends (spec §3.3): Ollama, OpenAI-compatible servers (covers
-llama.cpp server and vLLM), and local llama.cpp detection. Never downloads
-anything: recommendation only, downloads require explicit user action outside
-the app (decision Q4).
+llama.cpp server and vLLM), Anthropic's API, and local llama.cpp detection.
+Never downloads anything: recommendation only, downloads require explicit user
+action outside the app (decision Q4).
 """
 
 from __future__ import annotations
@@ -132,10 +132,39 @@ class ModelManager:
             info.error = str(exc)
         return info
 
+    def probe_anthropic(self, url: str, api_key: str = "") -> BackendInfo:
+        """An Anthropic account's /v1/models (the key comes from the keychain)."""
+        from .inference.anthropic import DEFAULT_URL as ANTHROPIC_DEFAULT_URL
+        from .inference.anthropic import AnthropicBackend
+
+        base = (url or ANTHROPIC_DEFAULT_URL).rstrip("/")
+        info = BackendInfo(name="anthropic", url=base, available=False)
+        if not api_key:
+            try:
+                from .keystore import get_secret
+                api_key = get_secret("model.api_key") or ""
+            except Exception:
+                api_key = ""
+        backend = AnthropicBackend(base, api_key=api_key, timeout=self._timeout)
+        try:
+            info.available = backend.available()
+            if info.available:
+                info.models = [DetectedModel(
+                    name=name, backend="anthropic", source="anthropic /v1/models",
+                    kind=classify_kind(name)) for name in backend.list_models()]
+        except httpx.HTTPError as exc:
+            info.error = str(exc)
+        except Exception as exc:  # pragma: no cover - defensive
+            info.error = str(exc)
+        return info
+
     def detect(self, configured_backend: str = "auto",
-               configured_url: str = "") -> list[BackendInfo]:
+               configured_url: str = "", api_key: str = "") -> list[BackendInfo]:
         """Probe the configured backend; ``auto`` tries Ollama first."""
         infos: list[BackendInfo] = []
+        if configured_backend == "anthropic":
+            infos.append(self.probe_anthropic(configured_url, api_key))
+            return infos
         if configured_backend == "openai_compat" and configured_url:
             infos.append(self.probe_openai_compat(configured_url))
             return infos
@@ -151,13 +180,14 @@ class ModelManager:
             self._cache.clear()
 
     def detect_cached(self, configured_backend: str = "auto",
-                      configured_url: str = "", ttl: float = 15.0) -> list[BackendInfo]:
+                      configured_url: str = "", ttl: float = 15.0,
+                      api_key: str = "") -> list[BackendInfo]:
         with self._lock:
             now = __import__("time").time()
-            key = (configured_backend, configured_url)
+            key = (configured_backend, configured_url, api_key)
             if key in self._cache and now - self._cache_ts < ttl:
                 return self._cache[key]
-            infos = self.detect(configured_backend, configured_url)
+            infos = self.detect(configured_backend, configured_url, api_key)
             self._cache[key] = infos
             self._cache_ts = now
             return infos

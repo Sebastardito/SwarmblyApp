@@ -525,7 +525,8 @@
  },
  "backend": {
   "auto": "Automatic (Ollama first)",
-  "openai": "OpenAI-compatible server"
+  "openai": "OpenAI-compatible server",
+  "anthropic": "Anthropic (API, third party)"
  },
  "embedder": {
   "hash": "Word overlap (no download)",
@@ -564,15 +565,15 @@
   },
   "model__backend": {
    "label": "Model runner",
-   "help": "Ollama is recommended. Any OpenAI-compatible server (llama.cpp, vLLM) also works."
+   "help": "Ollama is recommended. Any OpenAI-compatible server (llama.cpp, vLLM) or Anthropic's API also works."
   },
   "model__backend_url": {
    "label": "Runner address",
-   "help": "Leave empty for Ollama on this computer."
+   "help": "Leave empty for Ollama on this computer. For Anthropic, empty uses https://api.anthropic.com."
   },
   "model__api_key": {
    "label": "API key",
-   "help": "Only for servers that ask for one. Stored in the system keychain (or a protected file when there is none), never in the configuration."
+   "help": "Only for servers that ask for one, including Anthropic. Stored in the system keychain (or a protected file when there is none), never in the configuration."
   },
   "model__model_name": {
    "label": "Chat model",

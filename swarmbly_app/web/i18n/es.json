@@ -525,7 +525,8 @@
  },
  "backend": {
   "auto": "Automático (Ollama primero)",
-  "openai": "Servidor compatible con OpenAI"
+  "openai": "Servidor compatible con OpenAI",
+  "anthropic": "Anthropic (API, terceros)"
  },
  "embedder": {
   "hash": "Coincidencia de palabras (sin descarga)",
@@ -564,15 +565,15 @@
   },
   "model__backend": {
    "label": "Ejecutor de modelos",
-   "help": "Se recomienda Ollama. También sirve cualquier servidor compatible con OpenAI (llama.cpp, vLLM)."
+   "help": "Se recomienda Ollama. También sirve cualquier servidor compatible con OpenAI (llama.cpp, vLLM) o la API de Anthropic."
   },
   "model__backend_url": {
    "label": "Dirección del ejecutor",
-   "help": "Déjalo vacío para Ollama en esta computadora."
+   "help": "Déjalo vacío para Ollama en esta computadora. Para Anthropic, vacío usa https://api.anthropic.com."
   },
   "model__api_key": {
    "label": "Clave de API",
-   "help": "Solo para servidores que la piden. Se guarda en el llavero del sistema (o en un archivo protegido si no hay llavero), nunca en la configuración."
+   "help": "Solo para servidores que la piden, incluido Anthropic. Se guarda en el llavero del sistema (o en un archivo protegido si no hay llavero), nunca en la configuración."
   },
   "model__model_name": {
    "label": "Modelo de chat",

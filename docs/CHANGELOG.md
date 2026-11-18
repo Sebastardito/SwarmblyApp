@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+- **Native Anthropic provider** (`swarmbly_app/inference/anthropic.py`). The
+  conversation model and every role can now run on Anthropic's Messages API
+  (`POST /v1/messages`, SSE) without the Anthropic SDK: httpx is enough. The
+  system prompt travels in the top-level `system` field and consecutive turns
+  of the same role are merged; the model list comes from `GET /v1/models` with
+  its `has_more`/`last_id` pagination. Streaming text deltas, stop reason and
+  token usage are read from `message_start`, `content_block_*`, `message_delta`
+  and `message_stop`; thinking deltas are ignored unless thinking is asked for,
+  in which case the request sends a budget below `max_tokens` and omits
+  `temperature`. HTTP 401/403, 404, 429, 5xx and `overloaded_error` become the
+  app's retryable `BackendError`. Anthropic is a third party: every request,
+  including the model list and the availability probe, passes
+  `egress.check_call`; nothing is sent unless `api.anthropic.com` is authorised
+  in `privacy.third_party_models`, passages need the second authorisation, and
+  a node whose conversation model is Anthropic never serves the swarm. The
+  backend is accepted by the registry, configuration validation and the
+  settings UI (with the existing key fields and i18n in English and Spanish).
+
 ## 0.6.0 — Roles and recipes (2026-11-17)
 
 Swarmbly AI 3.3. Models by role; the cards of "¿Qué quieres hacer?" with
