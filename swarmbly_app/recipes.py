@@ -686,7 +686,7 @@ def sample_document(path: Path | str, max_rows: int = 5,
     """
     path = Path(path)
     suffix = path.suffix.lower()
-    if suffix == ".csv":
+    if suffix in (".csv", ".tsv"):
         table = sample_csv(path, max_rows)
         return [table] if table else []
     if suffix in (".xlsx", ".xlsm"):

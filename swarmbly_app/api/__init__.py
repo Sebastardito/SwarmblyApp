@@ -1072,6 +1072,17 @@ def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
         return {"query": propose_query(text, glossary)}
 
     # ---- recipe 5: data with code (3.4) ---------------------------------------
+    @app.get("/api/recipes/code/sources")
+    def recipe_code_sources(project_id: str = "") -> list[dict[str, Any]]:
+        """Recipe 5's picker: C1 documents plus CSV/TSV/XLSX/XLSM sources."""
+        from ..recipes import CodeRecipeError
+        if project_id and state.projects.get(project_id) is None:
+            raise HTTPException(status_code=404, detail="unknown or unavailable project")
+        try:
+            return state.chat.code_sources(project_id)
+        except CodeRecipeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.get("/api/recipes/code/status")
     def recipe_code_status() -> dict:
         return state.chat.code_status()

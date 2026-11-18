@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import stat
 import sys
 
 import json
@@ -1495,6 +1496,8 @@ class ChatService:
             "max_script": number("code_max_script_chars", 20_000, 1000, 100_000),
             "max_corrections": number("code_max_corrections", 2, 0, 5),
             "max_rows": number("code_max_sample_rows", 5, 1, 20),
+            "max_file_bytes": number("code_max_file_bytes", 256 * 1024 * 1024,
+                                     1, 8 * 1024 ** 3),
         }
 
     @staticmethod
@@ -1545,6 +1548,116 @@ class ChatService:
         self._code_runner, self._code_tool_spec = runner, spec
         self._code_roots.setdefault("", runner.root)
 
+    _CODE_TABLE_SUFFIXES = (".csv", ".tsv", ".xlsx", ".xlsm")
+
+    def _code_sources_root(self, project_id: str) -> Path | None:
+        """The project's ``sources`` folder, or the personal one."""
+        approvals = getattr(self.tools, "approvals", None)
+        if project_id:
+            resolver = getattr(approvals, "_project_path", None)
+            root = resolver(project_id) if callable(resolver) else None
+            if not root:
+                return None
+            sources = Path(root).expanduser() / "sources"
+        else:
+            data_root = (getattr(approvals, "data_root", None)
+                         or self.config().get("data_dir"))
+            if not data_root:
+                return None
+            sources = Path(data_root).expanduser() / "sources"
+        # A linked sources folder is not a project source folder.
+        if sources.is_symlink():
+            return None
+        return sources.resolve()
+
+    @staticmethod
+    def _same_file_path(value: Any, path: Path) -> bool:
+        try:
+            return Path(str(value or "")).expanduser().resolve(strict=True) == path
+        except OSError:
+            return False
+
+    def code_sources(self, project_id: str = "") -> list[dict[str, Any]]:
+        """Recipe 5's file picker: C1 documents plus spreadsheet sources.
+
+        C1 (swarmbly_lce) does not list XLSX/XLSM, so the project's
+        ``sources`` folder is scanned directly for CSV/TSV/XLSX/XLSM.  Every
+        direct entry is a regular file, not a symlink, and its real path stays
+        inside that folder.  Files above ``code_max_file_bytes`` are shown as
+        too large and are refused at selection.
+        """
+        cfg = self._code_cfg()
+        cap = cfg["max_file_bytes"]
+        docs = list(self.document_list(project_id) or []) if self.document_list else []
+        out: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        root = self._code_sources_root(project_id)
+        if root is not None and root.is_dir():
+            for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+                # Never descend through a linked directory.
+                dirnames[:] = [name for name in sorted(dirnames)
+                               if not (Path(dirpath) / name).is_symlink()]
+                for name in sorted(filenames):
+                    path = Path(dirpath) / name
+                    if path.suffix.lower() not in self._CODE_TABLE_SUFFIXES:
+                        continue
+                    try:
+                        if path.is_symlink():
+                            continue
+                        info = path.lstat()
+                    except OSError:
+                        continue
+                    if not stat.S_ISREG(info.st_mode):
+                        continue
+                    try:
+                        resolved = path.resolve(strict=True)
+                    except OSError:
+                        continue
+                    if not resolved.is_relative_to(root):
+                        continue
+                    key = str(resolved)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    doc = next((item for item in docs
+                                if self._same_file_path(item.get("path"), resolved)), None)
+                    out.append({
+                        "name": resolved.name,
+                        "rel": resolved.relative_to(root).as_posix(),
+                        "path": str(resolved),
+                        "folder": str(root),
+                        "size_bytes": int(info.st_size),
+                        "doc_id": str((doc or {}).get("doc_id") or ""),
+                        "kind": "table",
+                        "too_large": int(info.st_size) > cap,
+                    })
+        for doc in docs:
+            path = Path(str(doc.get("path") or ""))
+            try:
+                if path.is_symlink():
+                    continue
+                resolved = path.resolve(strict=True)
+            except OSError:
+                continue
+            key = str(resolved)
+            if key in seen:
+                continue
+            seen.add(key)
+            size = int(doc.get("size_bytes") or 0)
+            out.append({
+                "name": str(doc.get("name") or resolved.name),
+                "rel": str(doc.get("rel") or resolved.name),
+                "path": str(resolved),
+                "folder": str(doc.get("folder") or resolved.parent),
+                "size_bytes": size,
+                "doc_id": str(doc.get("doc_id") or ""),
+                "kind": "document",
+                "too_large": bool(cap and size > cap),
+            })
+        out.sort(key=lambda item: (str(item.get("rel") or "").casefold(),
+                                   str(item.get("name") or "").casefold()))
+        return out
+
     def _code_selected(self, project_id: str, files: Any) -> tuple[list[dict[str, Any]], list[str]]:
         if self.document_list is None:
             raise CodeRecipeError("this conversation cannot list project sources")
@@ -1553,12 +1666,15 @@ class ChatService:
         cfg = self._code_cfg()
         if len(files) > cfg["max_files"]:
             raise CodeRecipeError(f"select at most {cfg['max_files']} files")
-        docs = list(self.document_list(project_id) or [])
+        docs = self.code_sources(project_id)
         by_rel: dict[str, list[dict[str, Any]]] = {}
+        by_path: dict[str, list[dict[str, Any]]] = {}
         for doc in docs:
             rel = str(doc.get("rel") or "")
             if rel:
                 by_rel.setdefault(rel, []).append(doc)
+            if doc.get("path"):
+                by_path.setdefault(str(doc.get("path")), []).append(doc)
         selected: list[dict[str, Any]] = []
         seen_names: set[str] = set()
         for raw in files:
@@ -1567,18 +1683,33 @@ class ChatService:
                 raise CodeRecipeError("each selected file needs a name")
             matches = list(by_rel.get(ref) or [])
             if not matches:
-                matches = [doc for doc in docs if str(doc.get("path") or "") == ref]
+                matches = list(by_path.get(ref) or [])
             if not matches:
                 raise CodeRecipeError(f"file {ref!r} is not in this project's sources")
             if len(matches) > 1:
                 raise CodeRecipeError(f"file {ref!r} is ambiguous; choose its path")
             doc = matches[0]
+            if doc.get("too_large"):
+                raise CodeRecipeError(
+                    f"file {ref!r} is larger than the "
+                    f"{self._code_cfg()['max_file_bytes']} byte limit")
+            raw_path = Path(str(doc.get("path") or ""))
             try:
-                path = Path(str(doc.get("path") or "")).expanduser().resolve(strict=True)
+                if raw_path.is_symlink():
+                    raise CodeRecipeError(f"file {ref!r} is a symlink, not a regular file")
+                path = raw_path.expanduser().resolve(strict=True)
+                info = path.lstat()
             except OSError as exc:
                 raise CodeRecipeError(f"file {ref!r} cannot be read: {exc}") from exc
-            if not path.is_file():
+            if not stat.S_ISREG(info.st_mode):
                 raise CodeRecipeError(f"file {ref!r} is not a regular file")
+            if int(info.st_size) > self._code_cfg()["max_file_bytes"]:
+                raise CodeRecipeError(
+                    f"file {ref!r} is larger than the "
+                    f"{self._code_cfg()['max_file_bytes']} byte limit")
+            folder = Path(str(doc.get("folder") or path.parent)).expanduser().resolve()
+            if not path.is_relative_to(folder):
+                raise CodeRecipeError(f"file {ref!r} is outside the project's sources")
             if path.name in seen_names:
                 raise CodeRecipeError("two selected files have the same name")
             seen_names.add(path.name)
@@ -1609,7 +1740,8 @@ class ChatService:
             path = item["path"]
             suffix = path.suffix.lower()
             try:
-                if suffix in (".csv", ".xlsx", ".xlsm", ".md", ".markdown", ".txt"):
+                if suffix in (".csv", ".tsv", ".xlsx", ".xlsm", ".md", ".markdown",
+                              ".txt"):
                     samples.extend(sample_document(path, max_rows))
                     continue
                 text = ""

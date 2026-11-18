@@ -744,11 +744,10 @@ const Chat = (() => {
     if (opts.correctionOf) {
       return proposeCode(opts.question || "", opts.files || [], opts.correctionOf);
     }
-    const p = activeProject();
     let sources = [];
     try {
-      sources = p ? await Api.get(`/api/projects/${encodeURIComponent(p.id)}/sources`)
-                  : await Api.get("/api/lce/sources");
+      sources = await Api.get(`/api/recipes/code/sources?project_id=${
+        encodeURIComponent(projects.active || "")}`);
     } catch (_) { sources = []; }
     if (!sources.length) {
       return UI.modal(t("chat.recipeCode"), h("p", t("chat.codeNoSources")), [

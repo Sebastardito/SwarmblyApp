@@ -102,6 +102,9 @@ DEFAULTS: dict[str, Any] = {
         "code_max_script_chars": 20000,
         "code_max_corrections": 2,
         "code_max_sample_rows": 5,
+        # A spreadsheet is copied into /data before the script runs; keep the
+        # source and its copy bounded independently of the guest's /out limit.
+        "code_max_file_bytes": 256 * 1024 * 1024,
     },
     # 3.4 tools. Author search is off until the user approves the exact name
     # for a call; MCP servers are configured and started from Settings.
@@ -410,6 +413,7 @@ _RANGES = {
     "tools.agent.max_steps": (1, 8),
     "tools.agent.max_tool_calls": (1, 8),
     "tools.agent.max_observation_chars": (500, 8000),
+    "recipes.code_max_file_bytes": (1, 8 * 1024 ** 3),
 }
 # Never changeable from the browser: binding the admin API elsewhere is a
 # security decision made on the command line, by the machine's owner.
