@@ -21,6 +21,29 @@
   in the receipt's new `tools` list. No MCP, author search, sandbox, approval
   UI or tool-invoking chat path yet; those plug into this broker.
 
+- **Skills loader** (`swarmbly_app/skills.py`). Agent Skills in the
+  `SKILL.md` format are read as instructions from a file, never as code:
+  loading, discovering, reading a reference and importing do not import, exec,
+  compile or run anything, do not add to `sys.path`, and never grant the
+  `allowed-tools` a skill requests (the parsed values are exposed as
+  `requested_tools` with a note). The frontmatter parser is deliberately
+  minimal and strict: only `key: value` scalars and one level of `metadata:`
+  string pairs, with anchors, aliases, tags, flow collections, multi-document
+  files, duplicate keys, non-string values, BOMs and tabs in indentation
+  rejected; unknown top-level keys are kept aside with a warning. A skill
+  directory is validated for its name (matching the directory) and
+  description, and its `SKILL.md` (100 KB), total readable text (2 MB), file
+  count (200) and body length are capped. `scripts/`, `assets/`, executables
+  (exec bit or shebang), binaries, archives, symlinks, junctions and hardlinks
+  are ignored or rejected with a reason, as are paths with `..`, absolute
+  paths, NUL bytes and invalid UTF-8. `read_reference` reads only `.md`/`.txt`
+  under `references/` or in the skill root. `import_skill` copies only
+  `SKILL.md` and allowed reference text into a temporary directory and renames
+  it into place, returns a manifest of what was copied and ignored, and never
+  copies or runs a script. `as_prompt_block` wraps the body as quoted,
+  labelled material that says the user activated it and that it cannot change
+  permissions or tools.
+
 - **Native Anthropic provider** (`swarmbly_app/inference/anthropic.py`). The
   conversation model and every role can now run on Anthropic's Messages API
   (`POST /v1/messages`, SSE) without the Anthropic SDK: httpx is enough. The
