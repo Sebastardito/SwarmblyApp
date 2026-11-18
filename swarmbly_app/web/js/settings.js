@@ -6,12 +6,13 @@
 
 const Settings = (() => {
   const { h, clear, t, chip, button, toggle, select, readout } = UI;
-  const TABS = ["recommended", "general", "models", "swarm", "privacy", "results", "permissions", "system"];
+  const TABS = ["recommended", "general", "models", "swarm", "privacy", "tools", "results", "permissions", "system"];
   let root;
   let tab = "recommended";
   const els = {};
   let installed = [];          // installed models (from /api/models)
   const pulls = {};            // name -> progress element
+  const toolProposals = new Map();   // server id -> live manifest shown for approval
 
   // key, type, options/range, advanced, tab
   const FIELDS = {
@@ -142,6 +143,7 @@ const Settings = (() => {
     clear(els.body);
     const fn = { recommended: renderRecommended, permissions: renderPermissions, system: renderSystem }[tab];
     if (fn) return fn();
+    if (tab === "tools") return renderTools();
     renderFields(FIELDS[tab] || []);
     if (tab === "models") renderModelsExtra();
     if (tab === "privacy") { renderWebSearch(); renderIdentity(); }
@@ -396,6 +398,262 @@ const Settings = (() => {
       const r = await Api.post("/api/evidence/web/test");
       if (r.ok) UI.toast(t("websearch.testOk").replace("{n}", r.results).replace("{engines}", (r.engines || []).join(", ")), "ok");
       else UI.toast(t("websearch.testFail").replace("{why}", r.error || (r.unresponsive || []).join(", ") || "0"), "error");
+    } catch (e) { UI.toast(e.message, "error"); }
+  }
+
+  // ---- tools: MCP servers and author search (3.4) -----------------------------------
+  function toolField(label, control, help) {
+    return h("div.field-row",
+      h("div.field-text", h("span.field-label", label),
+        help ? h("span.field-help", help) : null),
+      h("div.field-control", control));
+  }
+
+  function lines(value) {
+    return String(value || "").split(/\n/).map((s) => s.trim()).filter(Boolean);
+  }
+
+  function names(value) {
+    return String(value || "").split(/\n|,/).map((s) => s.trim()).filter(Boolean);
+  }
+
+  async function renderTools() {
+    clear(els.body);
+    els.body.appendChild(h("p.muted", t("tools.loading")));
+    let listing;
+    let projects;
+    try {
+      projects = await Api.get("/api/projects");
+      listing = await Api.get(`/api/mcp/servers?project=${encodeURIComponent(projects.active || "")}`);
+    } catch (e) {
+      if (tab === "tools") clear(els.body).appendChild(h("p.error", e.message));
+      return;
+    }
+    if (tab !== "tools") return;
+    clear(els.body);
+    const project = (projects.items || []).find((p) => p.id === projects.active);
+    const projectName = project ? project.name : t("tools.personal");
+    const projectId = listing.project_id || "";
+
+    els.body.appendChild(h("section.subpanel",
+      h("h3", t("tools.title")),
+      h("p.muted", t("tools.lede").replace("{project}", projectName)),
+      h("p.muted", t("tools.authorNote"))));
+
+    // Author search: off by default; it sends one exact name per call.
+    const authorOn = !!(App.state.config?.tools?.author?.enabled);
+    const author = h("div.field-row",
+      h("div.field-text", h("span.field-label", t("tools.author")),
+        h("span.field-help", t("tools.authorBody"))),
+      h("div.field-control", toggle(authorOn, async (on) => {
+        try {
+          await App.saveConfig({ "tools.author.enabled": on }, { quiet: true });
+          UI.toast(t("tools.saved"), "ok");
+          renderTools();
+        } catch (_) { renderTools(); }
+      }, null, { "aria-label": t("tools.author") })));
+    els.body.appendChild(h("div.fields", author));
+
+    // Add form. Nothing here starts a process; Start is an explicit button.
+    const id = h("input", { type: "text", autocomplete: "off", placeholder: "weather",
+      "aria-label": t("tools.id") });
+    const kind = select([
+      { value: "local_stdio", label: t("tools.kind.local_stdio") },
+      { value: "remote_http", label: t("tools.kind.remote_http") },
+    ], "local_stdio", (value) => {
+      localBox.hidden = value !== "local_stdio";
+      remoteBox.hidden = value !== "remote_http";
+    }, { "aria-label": t("tools.kind") });
+    const command = h("input", { type: "text", autocomplete: "off",
+      placeholder: "/usr/bin/python3", "aria-label": t("tools.command") });
+    const args = h("textarea", { rows: 2, "aria-label": t("tools.args"),
+      placeholder: "-m\nmy_server" });
+    const cwd = h("input", { type: "text", autocomplete: "off",
+      placeholder: App.state.health?.data_dir || "",
+      "aria-label": t("tools.cwd") });
+    const env = h("textarea", { rows: 2, "aria-label": t("tools.env"),
+      placeholder: "HOME\nMCP_TOKEN" });
+    const url = h("input", { type: "text", autocomplete: "off",
+      placeholder: "https://example.test/mcp", "aria-label": t("tools.url") });
+    const localBox = h("div",
+      toolField(t("tools.command"), command, t("tools.commandHint")),
+      toolField(t("tools.args"), args, t("tools.argsHint")),
+      toolField(t("tools.cwd"), cwd, t("tools.cwdHint")),
+      toolField(t("tools.env"), env, t("tools.envHint")));
+    const remoteBox = h("div",
+      toolField(t("tools.url"), url, t("tools.urlHint")));
+    remoteBox.hidden = true;
+    const add = button(t("tools.add"), async () => {
+      const body = {
+        project_id: projectId,
+        id: id.value.trim(),
+        kind: kind.value,
+      };
+      if (kind.value === "local_stdio") {
+        body.command = command.value.trim();
+        body.args = lines(args.value);
+        body.cwd = cwd.value.trim();
+        body.env_allowlist = names(env.value);
+      } else {
+        body.url = url.value.trim();
+      }
+      try {
+        await Api.post("/api/mcp/servers", body);
+        UI.toast(t("tools.added"), "ok");
+        renderTools();
+      } catch (e) { UI.toast(e.message, "error"); }
+    }, "primary");
+    els.body.appendChild(h("section.subpanel",
+      h("h3", t("tools.addTitle")),
+      h("p.muted", t("tools.addBody")),
+      h("div.fields",
+        toolField(t("tools.id"), id, t("tools.idHint")),
+        toolField(t("tools.kind"), kind),
+        localBox, remoteBox),
+      h("div.form-actions", add)));
+
+    if (!(listing.servers || []).length) {
+      els.body.appendChild(h("p.empty", t("tools.none")));
+      return;
+    }
+    for (const server of listing.servers) els.body.appendChild(toolCard(server, projectId));
+  }
+
+  function toolCard(server, projectId) {
+    const box = h("section.subpanel.mcp-server");
+    const running = !!server.running;
+    box.appendChild(h("div.inline-form",
+      h("h3", server.id),
+      chip(t(`tools.kind.${server.kind}`, server.kind)),
+      server.kind === "remote_http" ? chip(t("tools.thirdParty"), "warn") : null,
+      chip(t(`tools.status.${server.status}`, server.status),
+        server.status === "approved" ? "ok" : server.status === "suspended" ? "danger" : ""),
+      chip(running ? t("tools.running") : t("tools.stopped"), running ? "ok" : "")));
+
+    if (server.kind === "local_stdio") {
+      box.appendChild(h("p.caveat", t("tools.localNotice")));
+      box.appendChild(h("dl.facts",
+        h("dt", t("tools.command")), h("dd", h("code.path", server.command_line || "—")),
+        h("dt", t("tools.cwd")), h("dd", h("code.path", server.cwd || "—"))));
+    } else {
+      box.appendChild(h("p.caveat", t("tools.remoteNotice")));
+      box.appendChild(h("p", h("span.muted", t("tools.host") + " "),
+        h("code", server.host || "—")));
+      const hosts = new Set(App.state.config?.privacy?.tool_hosts || []);
+      const host = h("input", { type: "checkbox" });
+      host.checked = !!server.host_authorised;
+      host.addEventListener("change", async () => {
+        if (host.checked) hosts.add(server.host); else hosts.delete(server.host);
+        try {
+          await App.saveConfig({ "privacy.tool_hosts": [...hosts] }, { quiet: true });
+          UI.toast(t("tools.saved"), "ok");
+        } catch (_) { /* config error toast shown by saveConfig */ }
+        renderTools();
+      });
+      box.appendChild(h("label.check", host, h("span", t("tools.hostAuth"))));
+      box.appendChild(h("div.field-row",
+        h("div.field-text", h("span.field-label", t("tools.passagesAuth")),
+          h("span.field-help", t("tools.passagesHelp"))),
+        h("div.field-control", toggle(!!server.passages_authorised, async (on) => {
+          try {
+            await App.saveConfig({ "privacy.third_party_passages": on }, { quiet: true });
+            UI.toast(t("tools.saved"), "ok");
+            renderTools();
+          } catch (_) { renderTools(); }
+        }, null, { "aria-label": t("tools.passagesAuth") }))));
+    }
+
+    if (server.env_allowlist?.length) {
+      box.appendChild(h("p", h("strong", t("tools.envTitle"))));
+      box.appendChild(h("ul.plain", server.env_allowlist.map((name) => h("li",
+        h("code", name), " ",
+        chip(server.env?.[name] ? t("tools.envSet") : t("tools.envNotSet"),
+          server.env?.[name] ? "ok" : "")))));
+    } else {
+      box.appendChild(h("p.muted", t("tools.envNone")));
+    }
+
+    if (server.status === "suspended") {
+      box.appendChild(h("p.caveat", t("tools.suspended")
+        .replace("{reason}", server.suspension_reason || "")));
+      box.appendChild(h("p.muted", t("tools.reapproveHint")));
+    }
+    if (server.approved_tools?.length) {
+      box.appendChild(h("p.muted", `${t("tools.approved")}: ${server.approved_tools.join(", ")}`));
+    }
+
+    const actions = h("div.inline-form");
+    actions.appendChild(button(running ? t("tools.stop") : t("tools.start"), async () => {
+      try {
+        await Api.post(`/api/mcp/servers/${encodeURIComponent(server.id)}/${running ? "stop" : "start"}`,
+          { project_id: projectId });
+        toolProposals.delete(server.id);
+        renderTools();
+      } catch (e) { UI.toast(e.message, "error"); }
+    }, running ? "ghost" : "primary"));
+    if (running) {
+      actions.appendChild(button(t("tools.propose"), async () => {
+        try {
+          const manifest = await Api.post(
+            `/api/mcp/servers/${encodeURIComponent(server.id)}/propose`,
+            { project_id: projectId });
+          const live = new Set((manifest.tools || []).map((tool) => tool.name));
+          const selected = new Set((server.approved_tools || []).filter((name) => live.has(name)));
+          toolProposals.set(server.id, { manifest, selected });
+          renderTools();
+        } catch (e) { UI.toast(e.message, "error"); }
+      }, "small"));
+    }
+    actions.appendChild(button(t("tools.remove"), () => removeServer(server, projectId), "ghost small"));
+    box.appendChild(actions);
+
+    const proposal = toolProposals.get(server.id);
+    if (proposal) {
+      box.appendChild(h("h4", t("tools.toolsTitle")));
+      box.appendChild(h("p.caveat", t("tools.toolsHint")));
+      if (!(proposal.manifest.tools || []).length) {
+        box.appendChild(h("p.empty", t("tools.noTools")));
+      } else {
+        const checks = h("div.checks");
+        for (const tool of proposal.manifest.tools) {
+          const check = h("input", { type: "checkbox" });
+          check.checked = proposal.selected.has(tool.name);
+          check.addEventListener("change", () => {
+            if (check.checked) proposal.selected.add(tool.name);
+            else proposal.selected.delete(tool.name);
+          });
+          // h() appends a text node (textContent): a description is quoted
+          // data, never HTML or a Markdown link.
+          checks.appendChild(h("label.check", check,
+            h("div", h("strong", tool.name),
+              h("blockquote.tool-desc", tool.description))));
+        }
+        box.appendChild(checks);
+        box.appendChild(button(t("tools.approve"), async () => {
+          try {
+            await Api.post(`/api/mcp/servers/${encodeURIComponent(server.id)}/approve`,
+              { project_id: projectId, tools: [...proposal.selected].sort() });
+            toolProposals.delete(server.id);
+            UI.toast(t("tools.approvedOk"), "ok");
+            renderTools();
+          } catch (e) { UI.toast(e.message, "error"); }
+        }, "primary", { disabled: !proposal.selected.size }));
+      }
+    }
+    return box;
+  }
+
+  async function removeServer(server, projectId) {
+    const ok = await UI.modal(t("tools.removeTitle"),
+      h("p", t("tools.removeBody").replace("{id}", server.id)),
+      [{ label: t("common.cancel"), value: false, kind: "ghost" },
+       { label: t("tools.remove"), value: true, kind: "primary" }]);
+    if (!ok) return;
+    try {
+      await Api.del(`/api/mcp/servers/${encodeURIComponent(server.id)}?project=${encodeURIComponent(projectId)}`);
+      toolProposals.delete(server.id);
+      UI.toast(t("tools.removed"), "ok");
+      renderTools();
     } catch (e) { UI.toast(e.message, "error"); }
   }
 

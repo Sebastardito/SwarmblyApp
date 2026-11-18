@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+import shlex
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -13,10 +15,14 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from .. import egress
 from ..config import ConfigError, validate_changes
 from ..egress import host_of
-from ..keystore import SECRET_KEYS, delete_secret, redact, set_secret
+from ..keystore import SECRET_KEYS, delete_secret, get_secret, redact, set_secret
 from ..state import AppState
+from ..tools import (MCPApprovalError, MCPClient, MCPError, MCPNotFound,
+                     MCPNotRunning, MCPTimeout, MCPUnavailable, ServerConfig,
+                     ToolDenied)
 from .security import ApiGuard, GuardMiddleware
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -41,7 +47,20 @@ def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
         # The WebSocket bridge lives on this loop; chat/P2P publish from other
         # threads, so capture the loop for run_coroutine_threadsafe dispatch.
         state.bus.set_loop(asyncio.get_running_loop())
-        yield
+        try:
+            yield
+        finally:
+            # A local MCP server was started by an explicit request; app
+            # shutdown stops it and reaps it, never leaving a process behind.
+            client = getattr(state, "_mcp_client", None)
+            if client is not None:
+                try:
+                    client.close()
+                finally:
+                    try:
+                        delattr(state, "_mcp_client")
+                    except AttributeError:
+                        pass
 
     app = FastAPI(title="Swarmbly App", version="0.1.0",
                   docs_url="/api/docs", openapi_url="/api/openapi.json",
@@ -63,6 +82,228 @@ def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
 
     app.add_api_route("/", _index, methods=["GET"], include_in_schema=False)
     app.add_api_route("/index.html", _index, methods=["GET"], include_in_schema=False)
+
+    # ---- MCP servers (3.4) -----------------------------------------------------
+    def _mcp() -> MCPClient:
+        """One client per app, created lazily; it starts nothing by itself."""
+        client = getattr(state, "_mcp_client", None)
+        if client is None:
+            client = MCPClient(state.tools, data_root=state.dirs.root)
+            state._mcp_client = client
+        return client
+
+    def _project_id(project: str | None, body: dict[str, Any] | None = None) -> str:
+        if isinstance(body, dict) and "project_id" in body:
+            value = body.get("project_id")
+        elif project is not None:
+            value = project
+        else:
+            value = state.projects.active_id
+        pid = str(value or "")
+        if pid and state.projects.get(pid) is None:
+            raise HTTPException(status_code=404, detail="unknown or unavailable project")
+        return pid
+
+    def _env_names(body: dict[str, Any]) -> list[str]:
+        """The API accepts environment variable NAMES, never values."""
+        for key in ("env_values", "environment", "env_vars", "environment_values", "envValues"):
+            if key in body:
+                raise HTTPException(
+                    status_code=400,
+                    detail="environment variable values are not accepted; send names only")
+        for key in ("env", "env_allowlist"):
+            if key in body and isinstance(body[key], dict):
+                raise HTTPException(
+                    status_code=400,
+                    detail="environment variable values are not accepted; send names only")
+        raw = body.get("env_allowlist", body.get("env", []))
+        if raw is None:
+            raw = []
+        if isinstance(raw, dict):
+            raise HTTPException(
+                status_code=400,
+                detail="environment variable values are not accepted; send names only")
+        if isinstance(raw, str):
+            raw = [raw]
+        if not isinstance(raw, list):
+            raise HTTPException(status_code=400, detail="env_allowlist must be a list of names")
+        names: list[str] = []
+        for item in raw:
+            if not isinstance(item, str):
+                raise HTTPException(
+                    status_code=400,
+                    detail="environment entries must be names, not values")
+            names.append(item)
+        return names
+
+    def _server_config(body: dict[str, Any]) -> ServerConfig:
+        body = body or {}
+        kind = str(body.get("kind") or ("remote_http" if body.get("url") else "local_stdio"))
+        env_names = _env_names(body)
+        if kind == "local_stdio":
+            args = body.get("args") or []
+            if isinstance(args, str):
+                args = [args]
+            if not isinstance(args, list) or any(not isinstance(arg, str) for arg in args):
+                raise HTTPException(status_code=400,
+                                    detail="args must be a list of strings")
+            return ServerConfig(
+                id=str(body.get("id") or ""), kind=kind,
+                command=str(body.get("command") or ""),
+                args=tuple(args),
+                cwd=str(body.get("cwd") or state.dirs.root),
+                env_allowlist=tuple(env_names),
+            )
+        return ServerConfig(
+            id=str(body.get("id") or ""), kind="remote_http",
+            url=str(body.get("url") or ""),
+        )
+
+    def _env_is_set(server_id: str, name: str) -> bool:
+        if os.environ.get(name) is not None:
+            return True
+        try:
+            return bool(get_secret(f"mcp.{server_id}.{name}"))
+        except Exception:
+            return False
+
+    def _server_view(config: ServerConfig, project_id: str) -> dict[str, Any]:
+        out = config.describe()
+        out["project_id"] = project_id
+        out["running"] = _mcp().is_running(config.id, project_id)
+        # Names and whether they are set; a value is never read out to the API.
+        out["env"] = {name: _env_is_set(config.id, name)
+                      for name in config.env_allowlist}
+        if config.kind == "local_stdio":
+            out["command_line"] = shlex.join([config.command, *config.args])
+            out["third_party"] = False
+        else:
+            host = host_of(config.url)
+            cls, _ = egress.classify_url(config.url)
+            policy = egress.policy()
+            out["command_line"] = ""
+            out["host"] = host
+            out["host_class"] = cls
+            out["third_party"] = True
+            out["host_authorised"] = policy.tool_authorised(host)
+            out["passages_authorised"] = policy.third_party_passages
+        return out
+
+    def _http_status(exc: Exception) -> int:
+        if isinstance(exc, MCPNotFound):
+            return 404
+        if isinstance(exc, (ToolDenied, egress.EgressDenied)):
+            return 403
+        if isinstance(exc, MCPUnavailable):
+            return 503
+        if isinstance(exc, MCPTimeout):
+            return 504
+        if isinstance(exc, MCPNotRunning):
+            return 409
+        if isinstance(exc, (MCPError, ValueError, OSError)):
+            return 400
+        return 500
+
+    def _mcp_fail(exc: Exception) -> HTTPException:
+        return HTTPException(status_code=_http_status(exc), detail=str(exc))
+
+    @app.get("/api/mcp/servers")
+    def mcp_servers(project: str | None = None) -> dict[str, Any]:
+        pid = _project_id(project)
+        client = _mcp()
+        return {
+            "project_id": pid,
+            "active_project": state.projects.active_id,
+            "author_enabled": bool(state.config.get("tools.author.enabled")),
+            "servers": [_server_view(config, pid) for config in client.servers(pid)],
+        }
+
+    @app.post("/api/mcp/servers")
+    def mcp_add(body: dict[str, Any], project: str | None = None) -> dict[str, Any]:
+        pid = _project_id(project, body)
+        try:
+            config = _server_config(body)
+            config = _mcp().add_server(config, pid)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise _mcp_fail(exc) from exc
+        return _server_view(config, pid)
+
+    @app.delete("/api/mcp/servers/{server_id}")
+    def mcp_remove(server_id: str, project: str | None = None,
+                   body: dict[str, Any] | None = None) -> dict[str, Any]:
+        pid = _project_id(project, body)
+        try:
+            removed = _mcp().remove_server(server_id, pid)
+        except Exception as exc:
+            raise _mcp_fail(exc) from exc
+        if not removed:
+            raise HTTPException(status_code=404, detail=f"unknown MCP server {server_id!r}")
+        return {"removed": True, "id": server_id, "project_id": pid}
+
+    @app.get("/api/mcp/servers/{server_id}/status")
+    def mcp_status(server_id: str, project: str | None = None,
+                   body: dict[str, Any] | None = None) -> dict[str, Any]:
+        pid = _project_id(project, body)
+        try:
+            config = _mcp().server(server_id, pid)
+        except Exception as exc:
+            raise _mcp_fail(exc) from exc
+        return _server_view(config, pid)
+
+    @app.post("/api/mcp/servers/{server_id}/start")
+    def mcp_start(server_id: str, project: str | None = None,
+                  body: dict[str, Any] | None = None) -> dict[str, Any]:
+        pid = _project_id(project, body)
+        try:
+            config = _mcp().start(server_id, pid)
+        except Exception as exc:
+            raise _mcp_fail(exc) from exc
+        return _server_view(config, pid)
+
+    @app.post("/api/mcp/servers/{server_id}/stop")
+    def mcp_stop(server_id: str, project: str | None = None,
+                 body: dict[str, Any] | None = None) -> dict[str, Any]:
+        pid = _project_id(project, body)
+        try:
+            stopped = _mcp().stop(server_id, pid)
+            config = _mcp().server(server_id, pid)
+        except Exception as exc:
+            raise _mcp_fail(exc) from exc
+        view = _server_view(config, pid)
+        view["stopped"] = stopped
+        return view
+
+    @app.post("/api/mcp/servers/{server_id}/propose")
+    def mcp_propose(server_id: str, project: str | None = None,
+                    body: dict[str, Any] | None = None) -> dict[str, Any]:
+        pid = _project_id(project, body)
+        try:
+            manifest = _mcp().propose(server_id, pid)
+            view = _server_view(_mcp().server(server_id, pid), pid)
+        except Exception as exc:
+            raise _mcp_fail(exc) from exc
+        out = manifest.to_dict()
+        out.update(status=view["status"], running=view["running"],
+                   suspension_reason=view["suspension_reason"], server=view)
+        return out
+
+    @app.post("/api/mcp/servers/{server_id}/approve")
+    def mcp_approve(server_id: str, body: dict[str, Any] | None = None,
+                    project: str | None = None) -> dict[str, Any]:
+        body = body or {}
+        pid = _project_id(project, body)
+        tools = body.get("tools")
+        if tools is not None:
+            if not isinstance(tools, list) or any(not isinstance(name, str) for name in tools):
+                raise HTTPException(status_code=400,
+                                    detail="tools must be a list of tool names")
+        try:
+            config = _mcp().approve(server_id, tools, pid)
+        except Exception as exc:
+            raise _mcp_fail(exc) from exc
+        return _server_view(config, pid)
 
     # ---- health / system ------------------------------------------------------
     @app.get("/api/health")

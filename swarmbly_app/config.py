@@ -103,6 +103,13 @@ DEFAULTS: dict[str, Any] = {
         "code_max_corrections": 2,
         "code_max_sample_rows": 5,
     },
+    # 3.4 tools. Author search is off until the user approves the exact name
+    # for a call; MCP servers are configured and started from Settings.
+    "tools": {
+        "author": {
+            "enabled": False,
+        },
+    },
     "privacy": {
         "tier": "LOCAL",              # GLOBAL | TRUSTED | LOCAL
         "manual_tier": None,          # authoritative manual override, never downgraded

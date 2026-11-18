@@ -10,6 +10,26 @@
   is still outside every `/data`/`/out` grant and every run keeps its fresh
   per-run directories.
 
+- **MCP servers in Settings** (`swarmbly_app/api/__init__.py`,
+  `web/js/settings.js`). The new `/api/mcp/...` routes list, add, inspect,
+  start, stop, propose and approve MCP servers per project, behind the existing
+  host/origin/session-token guard. Adding or listing a server never starts it;
+  only the explicit Start route does, and app shutdown stops what it started.
+  Local entries show the exact command line, working folder and environment
+  variable names before the first start, with the plain notice that the server
+  runs with the user's own rights and is not sandboxed. Environment values are
+  never accepted by the API, stored, logged or returned: the UI only shows
+  whether each name is set in the environment or keychain. Remote entries are
+  labelled third party and show their host, with the `privacy.tool_hosts`
+  checkbox and the separate `privacy.third_party_passages` switch. Tool
+  descriptions are returned as plain JSON text and rendered as quoted text
+  through `textContent` (never HTML or Markdown links); approval is a subset of
+  checkboxes. A suspended server shows its reason and must be proposed and
+  approved again. The new Tools tab also has the `tools.author.enabled` switch
+  (default off, now a validated setting) with one sentence explaining that a
+  lookup sends the exact name approved for that call to ORCID, OpenAlex or
+  PubMed. English and Spanish strings were added.
+
 - **Recipe 5: data with code** (`swarmbly_app/recipes.py`, `chat.py`,
   `api/__init__.py`, web chat/i18n). The "Data with code" card lets the user
   pick project source files and ask a question. The writer model (role
