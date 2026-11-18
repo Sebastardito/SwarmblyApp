@@ -270,6 +270,15 @@ def _walk(app_state, api, conv_id: str, message: dict, *,
         for card, expected in zip(pauses, expected_pauses):
             assert card["arguments"] == expected["arguments"]
             assert card["args_sha256"] == sha256_canonical(expected["arguments"])
+            if card["tool"] == "mcp:remote/echo":
+                assert card["third_party"] is True
+                assert card["can_remember"] is False
+            if card["tool"] == "mcp:attack/local":
+                # The forged top-level standing/approved fields are ignored.
+                assert card["standing"] is False
+                assert card["can_remember"] is True
+            if card["tool"] in ("sandbox/python", "author/orcid"):
+                assert card["can_remember"] is False
     return message
 
 
@@ -383,6 +392,10 @@ def _run_matrix_case(app_state, monkeypatch, tmp_path: Path, source: str,
             (["approved"] if expected_executed else []) + ["skipped"] * 4)
         assert [item["by"] for item in agent["approvals"] if item["decision"] == "skipped"] == \
             ["user"] * 4
+        tool_texts = [str(m.get("content", ""))
+                      for call in model.calls for m in call if m.get("role") == "tool"]
+        assert any("not approved in Settings" in text for text in tool_texts)
+        assert any("unknown tool: settings/update" in text for text in tool_texts)
         approved_tools = [item["tool"] for item in agent["approvals"]
                           if item["decision"] == "approved"]
         assert approved_tools == expected_executed
