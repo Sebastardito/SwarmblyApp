@@ -338,7 +338,7 @@ const Chat = (() => {
     { id: "documents", available: true },
     { id: "table", available: true },
     { id: "research", available: true },
-    { id: "list", available: false },
+    { id: "list", available: true },
   ];
   const recipeKey = (id) => id.charAt(0).toUpperCase() + id.slice(1);
 
@@ -357,7 +357,8 @@ const Chat = (() => {
       h("p.muted.small", t("chat.recipesHint")));
   }
 
-  function pickRecipe(id) {
+  async function pickRecipe(id) {
+    if (id === "list") return openListRecipe();
     recipe = id;
     const template = t(`chat.recipe${recipeKey(id)}Template`);
     els.input.value = template;
@@ -378,6 +379,111 @@ const Chat = (() => {
       h("button.chip-x", { type: "button", title: t("chat.recipeClear"), "aria-label": t("chat.recipeClear"),
         onclick: () => { recipe = null; showRecipeTag(); } }, "×")));
     els.recipeTag.appendChild(h("span.muted.small", t(`chat.recipe${recipeKey(recipe)}Note`)));
+  }
+
+  /* Recipe 4: a pasted list or a CSV column, the operation, and a preview of
+     exactly what would leave before either choice is made. */
+  async function openListRecipe() {
+    recipe = null;
+    showRecipeTag();
+    const p = activeProject();
+    let sources = [];
+    try {
+      sources = p ? await Api.get(`/api/projects/${encodeURIComponent(p.id)}/sources`)
+                  : await Api.get("/api/lce/sources");
+    } catch (_) { sources = []; }
+    const csvs = sources.filter((d) => /\.csv$/i.test(String(d.rel || d.name || "")));
+    const items = h("textarea.text", { rows: 8, "aria-label": t("chat.listItems") });
+    const itemsLabel = h("label.stack", h("span", t("chat.listItems")), items);
+    const file = select([{ value: "", label: t("chat.listPaste") },
+      ...csvs.map((d) => ({ value: d.rel || d.name, label: d.rel || d.name }))], "",
+      null, { "aria-label": t("chat.listCsvFile") });
+    const column = h("input.text", { type: "text", placeholder: t("chat.listColumnHint"),
+      "aria-label": t("chat.listCsvColumn") });
+    const csvBox = h("div.form-stack",
+      h("label.stack", h("span", t("chat.listCsvColumn")), column));
+    csvBox.style.display = "none";
+    file.addEventListener("change", () => {
+      csvBox.style.display = file.value ? "" : "none";
+      itemsLabel.style.display = file.value ? "none" : "";
+    });
+    const operation = h("input.text", { type: "text", placeholder: t("chat.listOperationHint"),
+      "aria-label": t("chat.listOperation") });
+    const ok = await UI.modal(t("chat.recipeList"), h("div.form-stack",
+      h("p", t("chat.listIntro")),
+      itemsLabel,
+      csvs.length ? h("label.stack", h("span", t("chat.listOrCsv")), file) : null,
+      csvBox,
+      h("label.stack", h("span", t("chat.listOperation")), operation),
+      h("p.muted", t("chat.listPreviewHint"))), [
+      { label: t("common.cancel"), value: false, kind: "ghost" },
+      { label: t("chat.listPreview"), value: true, kind: "primary" }]);
+    if (!ok) return;
+    const op = operation.value.trim();
+    if (!op) { UI.toast(t("chat.listOperationEmpty"), "error"); return; }
+    const source = file.value ? { kind: "csv", file: file.value, column: column.value.trim() }
+      : { kind: "pasted" };
+    if (source.kind === "csv" && !source.column) {
+      UI.toast(t("chat.listColumnEmpty"), "error"); return;
+    }
+    if (source.kind === "pasted" && !items.value.trim()) {
+      UI.toast(t("chat.listItemsEmpty"), "error"); return;
+    }
+    let preview;
+    try {
+      preview = await Api.post("/api/recipes/list/preview", {
+        items: source.kind === "pasted" ? items.value : "", operation: op,
+        where: "local", source, project_id: projects.active || "" });
+    } catch (e) { UI.toast(e.message, "error"); return; }
+    return showListPreview(preview, { source });
+  }
+
+  async function showListPreview(preview, base) {
+    const swarm = h("input", { type: "radio", name: "list-where", value: "swarm" });
+    const local = h("input", { type: "radio", name: "list-where", value: "local" });
+    if (preview.default_where === "swarm") swarm.checked = true; else local.checked = true;
+    if (!preview.nodes_available) swarm.disabled = true;
+    const shown = preview.items.slice(0, 50);
+    const box = h("div.form-stack",
+      h("p", t("chat.listWhatLeaves")),
+      h("p", h("strong", preview.operation)),
+      h("p.muted", t("chat.listCount").replace("{n}", preview.count)
+        .replace("{d}", preview.duplicates)),
+      h("ul.sources", shown.map((item, i) => h("li", h("span.muted", `${i + 1}. `), item))),
+      preview.items.length > shown.length
+        ? h("p.muted", t("chat.listMore").replace("{n}", preview.items.length - shown.length)) : null,
+      h("p.muted", t("chat.listNodes").replace("{n}", preview.nodes_available)),
+      preview.local_only_reason ? h("p.note", preview.local_only_reason) : null,
+      h("div.form-stack",
+        h("label.inline", swarm, h("span", t("chat.listWhereSwarm"))),
+        h("label.inline", local, h("span", t("chat.listWhereLocal")))));
+    const ok = await UI.modal(t("chat.listPreviewTitle"), box, [
+      { label: t("common.cancel"), value: false, kind: "ghost" },
+      { label: t("chat.listSend"), value: true, kind: "primary" }]);
+    if (!ok) return;
+    const where = swarm.checked ? "swarm" : "local";
+    return sendListJob({ items: preview.items, operation: preview.operation,
+      where, source: base.source });
+  }
+
+  async function sendListJob(job) {
+    const mode = job.where === "swarm" ? "lan" : "local";
+    if (!active) {
+      const conv = await Api.post("/api/conversations", {
+        mode, model: els.model.value, project_id: projects.active || "" });
+      active = conv.id;
+    }
+    let res;
+    try {
+      res = await Api.post(`/api/conversations/${encodeURIComponent(active)}/messages`, {
+        text: job.operation, mode, model: els.model.value, recipe: "list",
+        list_job: job });
+    } catch (err) { UI.toast(err.message, "error"); return; }
+    els.thread.querySelector(".empty-state")?.remove();
+    track(res);
+    conversations = await Api.get(`/api/conversations${projectQuery()}`);
+    renderList();
+    els.title.textContent = conversations.find((c) => c.id === active)?.title || "";
   }
 
   /* Research: the query is proposed before the answer, and nothing is sent
@@ -695,11 +801,16 @@ const Chat = (() => {
       "", t("chat.evidenceTitle").replace("{n}", sw.evidence.used)));
     if (meta.lce?.sources?.length) chips.push(chip(t("chat.lceChip").replace("{n}", meta.lce.sources.length),
       "", t("chat.lceTitle")));
-    // 3.3: a table built by code, and cells of any table that are in no passage
-    if (meta.table && meta.table.by_code !== false) chips.push(chip(t("chat.tableBuilt"), "ok",
-      t("chat.tableBuiltTitle").replace("{rows}", meta.table.rows)
-        .replace("{docs}", (meta.table.documents || []).length)
-        .replace("{empty}", meta.table.empty).replace("{dropped}", (meta.table.dropped || []).length)));
+    // 3.3/3.4: a table built by code, and cells of any table that are in no passage
+    if (meta.table && meta.table.by_code !== false) {
+      if (meta.list) chips.push(chip(t("chat.listBuilt").replace("{n}", meta.list.count), "ok",
+        t("chat.listBuiltTitle").replace("{a}", meta.list.answered)
+          .replace("{m}", meta.list.missing).replace("{d}", meta.list.disagreement)));
+      else chips.push(chip(t("chat.tableBuilt"), "ok",
+        t("chat.tableBuiltTitle").replace("{rows}", meta.table.rows)
+          .replace("{docs}", (meta.table.documents || []).length)
+          .replace("{empty}", meta.table.empty).replace("{dropped}", (meta.table.dropped || []).length)));
+    }
     if (meta.table?.corrections?.length) chips.push(chip(
       t("chat.tableCorrected").replace("{n}", meta.table.corrections.length), "",
       t("chat.tableCorrectedTitle") + " " + meta.table.corrections

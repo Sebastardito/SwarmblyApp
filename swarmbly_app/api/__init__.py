@@ -323,7 +323,12 @@ def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
 
     @app.post("/api/conversations/{conv_id}/messages", status_code=202)
     def send_message(conv_id: str, body: dict[str, Any]) -> dict:
+        from ..recipes import ListJobError
+        recipe = str(body.get("recipe") or "")
+        list_job = body.get("list_job")
         text = str(body.get("text", "")).strip()
+        if not text and recipe == "list" and isinstance(list_job, dict):
+            text = str(list_job.get("operation") or "").strip()
         if not text:
             raise HTTPException(status_code=400, detail="empty message")
         try:
@@ -333,9 +338,11 @@ def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
                 model=body.get("model") or None,
                 allow_public=bool(body.get("allow_public")),
                 web_query=str(body.get("web_query") or ""),
-                recipe=str(body.get("recipe") or ""))
+                recipe=recipe, list_job=list_job)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ListJobError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"user_message": user_msg, "assistant_message": assistant_msg}
 
     # ---- recipes (3.3): "¿Qué quieres hacer?" ------------------------------------
@@ -343,6 +350,33 @@ def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
     def list_recipes() -> list[dict[str, Any]]:
         from ..recipes import listing
         return listing()
+
+    @app.post("/api/recipes/list/preview")
+    def recipe_list_preview(body: dict[str, Any]) -> dict:
+        """Validate a list and show what would leave. Nothing is sent."""
+        from ..recipes import ListJobError, normalise_list_job, preview_list
+        body = body or {}
+        project_id = str(body.get("project_id") or "")
+        if project_id:
+            project = state.projects.get(project_id)
+            if project is None:
+                raise HTTPException(status_code=404, detail="unknown or unavailable project")
+            roots = [project.sources]
+        else:
+            roots = state.c1_roots("")
+        cfg = state.config.all()
+        max_items = int((cfg.get("recipes") or {}).get("list_max_items", 200) or 200)
+        try:
+            job = normalise_list_job(body, max_items=max_items, roots=roots)
+        except ListJobError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        workers = state.nodes.available_workers() if state.nodes is not None else []
+        nodes = [{"node": str(w.node_id)[:12],
+                  "families": sorted({str(m.get("family") or "")
+                                      for m in (w.advertisement.get("models") or [])
+                                      if str(m.get("family") or "")})}
+                 for w in workers]
+        return preview_list(job, cfg=cfg, nodes_available=len(workers), nodes=nodes)
 
     @app.post("/api/recipes/query")
     def recipe_query(body: dict[str, Any]) -> dict:

@@ -91,6 +91,11 @@ DEFAULTS: dict[str, Any] = {
         # Two batch replicas that disagree on an item get a third (P3g).
         "tie_break": True,
     },
+    # 3.4 recipe 4: a pasted or CSV list is user-authored data. The ceiling is
+    # validated here, not in the web UI.
+    "recipes": {
+        "list_max_items": 200,
+    },
     "privacy": {
         "tier": "LOCAL",              # GLOBAL | TRUSTED | LOCAL
         "manual_tier": None,          # authoritative manual override, never downgraded
@@ -369,6 +374,7 @@ _RANGES = {
     "evidence.local_max_entities": (1, 6),
     "lce.retrieval_k": (1, 10),
     "log_retention_days": (1, 3650),
+    "recipes.list_max_items": (1, 2000),
 }
 # Never changeable from the browser: binding the admin API elsewhere is a
 # security decision made on the command line, by the machine's owner.

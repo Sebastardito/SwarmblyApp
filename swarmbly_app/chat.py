@@ -45,7 +45,8 @@ class ActiveRequest:
     allow_public: bool = False
     memory_saved: dict[str, Any] | None = None     # "Recuerda: …" saved before answering
     web_query: str = ""            # an online search the user approved for this question
-    recipe: str = ""               # 3.3: the recipe the user picked ("documents", "table", "research")
+    recipe: str = ""               # 3.3: the recipe the user picked ("documents", "table", "research", "list")
+    list_job: Any = None           # 3.4 recipe 4: the validated ListJob
 
 
 # Possessives and "about me" in es/en/pt (not French "mes", the Spanish month);
@@ -148,7 +149,8 @@ class ChatService:
              mode: str | None = None, model: str | None = None,
              run_async: bool = True,
              allow_public: bool = False,
-             web_query: str = "", recipe: str = "") -> tuple[dict[str, Any], dict[str, Any]]:
+             web_query: str = "", recipe: str = "",
+             list_job: Any = None) -> tuple[dict[str, Any], dict[str, Any]]:
         """Store the user message and start generation.
 
         Returns ``(user_message, assistant_message)``; when ``run_async`` the
@@ -160,6 +162,15 @@ class ChatService:
         cfg = self.config()
         mode = mode or conv["mode"] or cfg["swarm"]["mode"]
         model = model or conv["model"] or cfg["model"]["model_name"] or ""
+        from .recipes import ListJobError, normalise_list_job, valid as valid_recipe
+        recipe_id = valid_recipe(recipe)
+        list_ready = None
+        if recipe_id == "list":
+            max_items = int((cfg.get("recipes") or {}).get("list_max_items", 200) or 200)
+            if list_job is None:
+                raise ListJobError("a list job is required")
+            list_ready = normalise_list_job(list_job, max_items=max_items)
+            mode = "lan" if list_ready.where == "swarm" else "local"
 
         memory_saved = None
         if self.remember is not None and wants_memory(text):
@@ -185,13 +196,15 @@ class ChatService:
             mode=mode, model=model, project_id=str(conv.get("project_id") or ""),
             allow_public=bool(allow_public), memory_saved=memory_saved,
             web_query=" ".join((web_query or "").split())[:200])
-        from .recipes import valid as valid_recipe
-        request.recipe = valid_recipe(recipe)
+        request.recipe = recipe_id
+        request.list_job = list_ready
         if request.recipe == "documents":
             # ask your documents: no public lookup for this answer
             request.allow_public, request.web_query = False, ""
         if request.recipe:
             request.receipt_ctx["recipe"] = request.recipe
+        if request.recipe == "list" and request.list_job is not None:
+            request.receipt_ctx["list_where"] = request.list_job.where
         with self._lock:
             self._active[request.request_id] = request
         self.db.add_request(request.request_id, conversation_id,
@@ -374,6 +387,8 @@ class ChatService:
                 return self._fail(request, "no user message in context")
             user_text = context[-1]["content"]
             request.receipt_ctx.update(_lane_for_receipt(user_text))
+            if request.recipe == "list" and request.list_job is not None:
+                return self._run_list(request, user_text)
 
             # Distributed modes route through the swarm engine.
             local_reason = ""
@@ -1192,9 +1207,280 @@ class ChatService:
         except Exception as exc:  # never leave a request hanging in "running"
             self._fail(request, f"unexpected error: {exc}")
 
+    # -- recipe 4: process a list on the swarm (3.4) ---------------------------
+    def _run_list(self, request: ActiveRequest, user_text: str) -> None:
+        """Waves of items through the existing batch path, then a table by code.
+
+        ``where=swarm`` calls ``Orchestrator.run`` unchanged; a wave that the
+        orchestrator keeps local (privacy, no workers, too few items) is
+        processed on this device with the same local backend the orchestrator
+        uses. ``where=local`` never calls the swarm. The table is assembled
+        from the per-item votes; stable ids are the input positions.
+        """
+        from . import recipes, tables
+        job = request.list_job
+        cfg = self.config()
+        privacy = recipes.classify_list_job(job, cfg)
+        if privacy["sensitive"]:
+            request.receipt_ctx["lane"] = "sensible"
+        elif privacy["items_flagged"] or privacy["operation"]["lane"] != "PUBLIC":
+            request.receipt_ctx["lane"] = "personal"
+        request.receipt_ctx["list_privacy"] = privacy
+        lang = recipes.list_language(job.operation)
+        wave_size = recipes.list_wave_size(cfg)
+        waves = [job.items[i:i + wave_size] for i in range(0, len(job.items), wave_size)]
+        started = time.monotonic()
+        answers: dict[int, dict[str, Any]] = {}
+        attempts: list[dict[str, Any]] = []
+        tasks = 0
+        stages: list[dict[str, Any]] = []
+        wave_meta: list[dict[str, Any]] = []
+        local_reasons: list[str] = []
+        executed_waves: list[str] = []
+        offset = 0
+        try:
+            orchestrator = self.orchestrator() if self.orchestrator is not None else None
+        except Exception as exc:
+            orchestrator = None
+            local_reasons.append(f"the local model is unavailable: {exc}")
+        for wave_no, wave in enumerate(waves, 1):
+            if request.stop_event.is_set():
+                return self._finish(request, None, status="stopped",
+                                    note="interrupted by user",
+                                    extra={"recipe": "list"})
+            self.bus.publish("recipe.list.wave", request_id=request.request_id,
+                             conversation_id=request.conversation_id,
+                             message_id=request.message_id, wave=wave_no,
+                             waves=len(waves), done=offset, total=len(job.items))
+            prompt = recipes.build_list_prompt(job.operation, wave)
+            local_items = {n: item for n, item in enumerate(wave, 1)}
+            wave_exec = "local"
+            result_map: dict[int, dict[str, Any]] = {}
+            if job.where == "swarm" and orchestrator is not None:
+                try:
+                    with egress.purpose(egress.QUESTION):
+                        outcome = orchestrator.run(
+                            prompt, mode="lan", request_id=request.request_id,
+                            cancel=request.stop_event)
+                except Exception as exc:
+                    return self._fail(request, f"list wave {wave_no} failed: {exc}")
+                routed = outcome.get("routed")
+                if routed == "distributed":
+                    wave_exec = "distributed"
+                    metadata = outcome.get("metadata") or {}
+                    attempts.extend(metadata.get("attempts") or [])
+                    tasks += int(metadata.get("n_tasks") or 0)
+                    stages = outcome.get("stages") or stages
+                    result_map = self._list_swarm_results(
+                        metadata, str(outcome.get("text") or ""), local_items)
+                elif routed == "error":
+                    if outcome.get("status") == "stopped":
+                        return self._finish(request, None, status="stopped",
+                                            note="interrupted by user",
+                                            stages=outcome.get("stages"),
+                                            extra={"recipe": "list"})
+                    return self._fail(request, str(outcome.get("reason") or "list wave failed"),
+                                      stages=outcome.get("stages"),
+                                      swarm=outcome.get("metadata"))
+                else:
+                    local_reasons.append(str(outcome.get("reason") or
+                                             "the swarm path kept this wave local"))
+                    try:
+                        result_map, _model = self._list_local_wave(
+                            orchestrator, prompt, local_items, cfg, lang)
+                    except Exception as exc:
+                        return self._fail(request, f"local list wave {wave_no} failed: {exc}")
+            else:
+                if job.where == "swarm" and orchestrator is None:
+                    local_reasons.append("no orchestrator is available")
+                try:
+                    result_map, _model = self._list_local_wave(
+                        orchestrator, prompt, local_items, cfg, lang)
+                except Exception as exc:
+                    return self._fail(request, f"local list wave {wave_no} failed: {exc}")
+            for local_n in local_items:
+                answers[offset + local_n] = result_map.get(
+                    local_n, {"answer": "", "status": "missing", "agreement": 0.0})
+            executed_waves.append(wave_exec)
+            wave_meta.append({"wave": wave_no, "items": len(wave),
+                              "executed": wave_exec})
+            offset += len(wave)
+            self.bus.publish("recipe.list.wave", request_id=request.request_id,
+                             conversation_id=request.conversation_id,
+                             message_id=request.message_id, wave=wave_no,
+                             waves=len(waves), done=offset, total=len(job.items))
+
+        duplicates = recipes.duplicate_rows(job.items)
+        duplicate_map = {d["n"]: d["of"] for d in duplicates}
+        header = (["#", "Elemento", "Respuesta", "Estado"] if lang == "es"
+                  else ["#", "Item", "Answer", "Status"])
+        table_rows: list[dict[str, Any]] = []
+        rows_data: list[dict[str, Any]] = []
+        counts = {"answered": 0, "missing": 0, "disagreement": 0}
+        for n, item in enumerate(job.items, 1):
+            answer = answers.get(n) or {"answer": "", "status": "missing", "agreement": 0.0}
+            status = str(answer.get("status") or "missing")
+            if status not in counts:
+                status = "missing"
+            counts[status] += 1
+            value = str(answer.get("answer") or "").strip()
+            if status == "missing" or not value:
+                value = "—"
+            item_cell = item
+            if n in duplicate_map:
+                item_cell += (f" (duplicado de #{duplicate_map[n]})" if lang == "es"
+                              else f" (duplicate of #{duplicate_map[n]})")
+            cells = [str(n), item_cell, value, status]
+            table_rows.append({"cells": cells, "labels": []})
+            rows_data.append({"n": n, "item": item, "item_cell": item_cell,
+                              "answer": value, "status": status,
+                              "agreement": answer.get("agreement"),
+                              "duplicate_of": duplicate_map.get(n)})
+        markdown = tables.render(header, table_rows, lang, source=False)
+        summary = recipes.summary_line(len(job.items), counts["answered"],
+                                       counts["missing"], counts["disagreement"], lang)
+        answer_text = f"{markdown}\n\n{summary}"
+        executed = ("distributed" if executed_waves and all(
+            x == "distributed" for x in executed_waves)
+                    else "local" if not executed_waves or all(x == "local" for x in executed_waves)
+                    else "mixed")
+        list_meta = {"count": len(job.items), "answered": counts["answered"],
+                     "missing": counts["missing"], "disagreement": counts["disagreement"],
+                     "where": job.where, "waves": len(waves), "executed": executed,
+                     "wave_size": wave_size, "duplicates": len(duplicates),
+                     "partial_reasons": list(dict.fromkeys(local_reasons)),
+                     "privacy": {"tier": privacy["tier"], "lane": privacy["lane"],
+                                 "sensitive": privacy["sensitive"]}}
+        table_meta = {"by_code": True, "rows": len(job.items), "header": header,
+                      "cells": [r["cells"] for r in table_rows],
+                      "rows_data": rows_data, "documents": [],
+                      "empty": counts["missing"], "dropped": [], "computed": 0,
+                      "duplicates": len(duplicates)}
+        extra = {"recipe": "list", "table": table_meta, "list": list_meta}
+        if executed == "local" and not attempts:
+            model = (getattr(orchestrator, "local_model", "") if orchestrator else "") or ""
+            result = GenerationResult(text=answer_text, model=model,
+                                      total_ms=int((time.monotonic() - started) * 1000),
+                                      meta={"recipe": "list"})
+            return self._finish(request, result, extra=extra)
+        metadata = {"n_tasks": tasks or len(attempts), "attempts": attempts,
+                    "truncated_tasks": [], "mode": "lan", "list": list_meta,
+                    "waves": wave_meta, "partial_reasons": list_meta["partial_reasons"]}
+        return self._finish_distributed(request, answer_text, metadata, stages, extra=extra)
+
+    def _list_local_wave(self, orchestrator: Any, prompt: str,
+                         local_items: dict[int, str], cfg: dict[str, Any],
+                         lang: str) -> tuple[dict[int, dict[str, Any]], str]:
+        """One wave on this device, reusing the orchestrator's local backend
+        and, when enabled, its local model pool."""
+        from .engine.scheduler import Replica
+        from .engine.orchestrator import _vote_items
+        if orchestrator is None:
+            raise RuntimeError("no orchestrator is available")
+        stream = getattr(orchestrator, "local_stream", None)
+        if stream is None:
+            raise RuntimeError("no local model is configured")
+        from .inference.registry import endpoint
+        address = endpoint(stream)
+        if address and egress.classify_url(address)[0] != egress.LOCAL:
+            raise RuntimeError("the configured model is not on this computer; "
+                               "choose a local model for this list")
+        models: list[str] = []
+        factory = getattr(orchestrator, "local_pool_factory", None)
+        pool = None
+        if callable(factory):
+            try:
+                pool = factory()
+            except Exception:
+                pool = None
+        models = list(getattr(pool, "models", []) or [])
+        if not models:
+            model = str(getattr(orchestrator, "local_model", "") or "")
+            if model:
+                models = [model]
+            else:
+                try:
+                    models = list(stream.list_models() or [])
+                except Exception:
+                    models = []
+        models = list(dict.fromkeys(str(m) for m in models if m))
+        if not models:
+            raise RuntimeError("no local model is configured")
+        max_tokens = min(4096, max(512, 120 * len(local_items)))
+        temperature = float(((cfg.get("model") or {}).get("temperature", 0.2)))
+        replicas, errors = [], []
+        for model in models:
+            if egress.cloud_host_by_name(model):
+                raise RuntimeError(f"{model} runs at {egress.OLLAMA_CLOUD}, not on this computer")
+            try:
+                result = stream.stream_chat(
+                    [{"role": "user", "content": prompt}], model=model,
+                    max_tokens=max_tokens, temperature=temperature)
+                text = str(getattr(result, "text", "") or "")
+            except Exception as exc:
+                text = ""
+                errors.append(str(exc))
+            replicas.append(Replica(text, "local", model, model, 0))
+        if not any(r.text.strip() for r in replicas):
+            raise RuntimeError(errors[-1] if errors else "the local model returned no text")
+        vote = _vote_items(replicas, local_items,
+                           list(range(len(replicas))), lang)
+        report = vote[1] if vote is not None else {"items": [], "missing_items": list(local_items)}
+        out: dict[int, dict[str, Any]] = {}
+        for entry in report.get("items") or []:
+            n = int(entry.get("item") or 0)
+            if n not in local_items:
+                continue
+            agreement = float(entry.get("agreement") or 0.0)
+            distinct = int(entry.get("distinct_answers") or 1)
+            out[n] = {"answer": str(entry.get("value") or "").strip(),
+                      "status": "disagreement" if distinct > 1 or agreement < 0.999
+                      else "answered",
+                      "agreement": agreement}
+        for n in local_items:
+            out.setdefault(n, {"answer": "", "status": "missing", "agreement": 0.0})
+        return out, models[0]
+
+    @staticmethod
+    def _list_swarm_results(metadata: dict[str, Any], text: str,
+                            local_items: dict[int, str]) -> dict[int, dict[str, Any]]:
+        """Per-item results from the existing item-vote metadata, or from the
+        assembled text when there was one replica (no consensus block)."""
+        from .engine.orchestrator import _parse_items
+        selection: dict[int, dict[str, Any]] = {}
+        consensus = (metadata or {}).get("consensus") or {}
+        for task in (consensus.get("per_task") or {}).values():
+            for entry in ((task or {}).get("selection") or {}).get("items") or []:
+                try:
+                    n = int(entry.get("item"))
+                except (TypeError, ValueError):
+                    continue
+                if n in local_items:
+                    selection[n] = entry
+        if selection:
+            out: dict[int, dict[str, Any]] = {}
+            for n in local_items:
+                entry = selection.get(n)
+                if entry is None:
+                    out[n] = {"answer": "", "status": "missing", "agreement": 0.0}
+                    continue
+                agreement = float(entry.get("agreement") or 0.0)
+                distinct = int(entry.get("distinct_answers") or 1)
+                out[n] = {"answer": str(entry.get("value") or "").strip(),
+                          "status": "disagreement" if distinct > 1 or agreement < 0.999
+                          else "answered",
+                          "agreement": agreement}
+            return out
+        parsed = _parse_items(text or "", local_items)
+        return {n: {"answer": str(parsed.get(n) or "").strip(),
+                    "status": "answered" if parsed.get(n) else "missing",
+                    "agreement": 1.0 if parsed.get(n) else 0.0}
+                for n in local_items}
+
     def _finish_distributed(self, request: ActiveRequest, text: str,
                             metadata: dict[str, Any],
-                            stages: list[dict[str, Any]]) -> None:
+                            stages: list[dict[str, Any]],
+                            extra: dict[str, Any] | None = None) -> None:
         """Complete a distributed request: assembled text + SPEC §19 metadata."""
         truncated = metadata.get("truncated_tasks") or []
         note = (f"output reached its token budget in {len(truncated)} task(s); the "
@@ -1203,6 +1489,7 @@ class ChatService:
                                 "mode": request.mode, "model": request.model,
                                 "request_id": request.request_id,
                                 "executed": "distributed", "swarm": metadata}
+        meta.update(extra or {})
         self._attach_receipt(request, meta, text, distributed=metadata)
         try:
             self.db.update_message(request.message_id, content=text,
@@ -1348,6 +1635,15 @@ class ChatService:
                 {"tipo": "proyecto", "id": request.project_id,
                  "nombre": self.project_name(request.project_id)}
                 if request.project_id else {"tipo": "personal"})
+            # 3.4: the receipt says which recipe ran and, for a list, the
+            # choice the user made (the counts are in meta.list).
+            if request.recipe:
+                meta["receipt"]["recipe"] = request.recipe
+                if request.recipe == "list":
+                    meta["receipt"]["recipe_where"] = str(
+                        request.receipt_ctx.get("list_where") or "")
+                    if isinstance(meta.get("list"), dict):
+                        meta["receipt"]["list"] = dict(meta["list"])
             if dest.get("clase") != egress.LOCAL and meta.get("executed") == "local":
                 meta["computed_at"] = dest.get("host", "")
         except Exception as exc:          # a receipt problem never loses the answer

@@ -9,8 +9,8 @@ from test_api_lce import make_client
 
 def test_recipes_are_listed_and_only_known_ones_run():
     assert [r["id"] for r in R.listing()] == ["documents", "table", "research", "list"]
-    assert {r["id"]: r["available"] for r in R.listing()}["list"] is False
-    assert R.valid("Table") == "table" and R.valid("list") == "" and R.valid("whatever") == ""
+    assert {r["id"]: r["available"] for r in R.listing()}["list"] is True
+    assert R.valid("Table") == "table" and R.valid("list") == "list" and R.valid("whatever") == ""
 
 
 def test_the_research_query_is_proposed_before_anything_leaves(app_state, monkeypatch):

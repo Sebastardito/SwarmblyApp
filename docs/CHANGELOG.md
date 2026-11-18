@@ -52,6 +52,20 @@
   (security support ended on 2026-10-01, and the MCP SDK and `wasi-python`
   require 3.11).
 
+- **Recipe 4: process a list on the swarm.** The disabled card is available:
+  paste one item per line or pick a CSV file from the project's sources and a
+  column (real CSV, quoted multi-line fields included), write the operation,
+  and see exactly what would leave — operation, items, duplicate count and
+  available nodes — before choosing "On the swarm" or "Only on this computer".
+  Personal or sensitive items default to local (the user can still choose the
+  swarm explicitly), and the receipt records the recipe and the choice. Waves
+  are sized from `swarm.n_fragments_max` × `swarm.min_items_per_fragment`
+  (default 12 items) and run sequentially through the existing batch path;
+  the answer is a code-built table (#, item, answer, status) with
+  answered/missing/disagreement, duplicates kept and marked, and nothing
+  invented for a missing item. `recipes.list_max_items` (default 200) is
+  validated in the config.
+
 - **Tool broker foundation** (`swarmbly_app/tools/`). One entry point for tool
   calls: a strict JSON-Schema subset (no `jsonschema`, unsupported keywords
   refused), per-project approvals stored as `{spec_id, approval_hash,

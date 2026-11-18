@@ -1,0 +1,234 @@
+"""Recipe 4: process a list on the swarm (3.4)."""
+
+from __future__ import annotations
+
+import time
+
+import pytest
+from fastapi.testclient import TestClient
+
+from swarmbly_app import egress
+from swarmbly_app import recipes
+from swarmbly_app.config import ConfigError, validate_changes
+from swarmbly_app.recipes import (ListJobError, MAX_ITEM_CHARS, build_list_prompt,
+                                   duplicate_rows, list_wave_size, normalise_list_job,
+                                   preview_list, read_csv_column)
+from tests.conftest import FakeBackend
+from tests.test_p2p_two_nodes import connect, make_node
+
+
+def _job(items, operation="Give the status of this item", where="local", source=None):
+    return normalise_list_job({"items": items, "operation": operation, "where": where,
+                               "source": source or {"kind": "pasted"}}, max_items=200)
+
+
+# --- validation and CSV ---------------------------------------------------------------
+
+def test_validation_limits_and_empty_items():
+    with pytest.raises(ListJobError, match="no items"):
+        normalise_list_job({"items": "\n\n", "operation": "x"})
+    with pytest.raises(ListJobError, match="maximum"):
+        normalise_list_job({"items": ["a", "b", "c"], "operation": "x"}, max_items=2)
+    with pytest.raises(ListJobError, match="longer than"):
+        normalise_list_job({"items": "x" * (MAX_ITEM_CHARS + 1), "operation": "x"})
+    with pytest.raises(ListJobError, match="operation is empty"):
+        normalise_list_job({"items": ["a"], "operation": " "})
+    with pytest.raises(ListJobError, match="where"):
+        normalise_list_job({"items": ["a"], "operation": "x", "where": "somewhere"})
+
+
+def test_duplicates_are_kept_and_marked():
+    items = ["Lontra felina", "Puma concolor", "lontra FELINA"]
+    assert duplicate_rows(items) == [{"n": 3, "of": 1}]
+    job = _job(items)
+    assert job.items == items
+    preview = preview_list(job, cfg={"privacy": {"tier": "GLOBAL"}, "swarm": {}},
+                           nodes_available=0)
+    assert preview["count"] == 3 and preview["duplicates"] == 1
+
+
+def test_csv_multiline_quoted_fields_and_missing_column(tmp_path):
+    path = tmp_path / "species.csv"
+    path.write_text('name,status\n"Lontra\nfelina",NT\n"Puma concolor",LC\n',
+                    encoding="utf-8")
+    assert read_csv_column(path, "name", 200) == ["Lontra felina", "Puma concolor"]
+    with pytest.raises(ListJobError, match="no column"):
+        read_csv_column(path, "missing", 200)
+    with pytest.raises(ListJobError, match="more than 1"):
+        read_csv_column(path, "name", 1)
+
+
+def test_csv_is_resolved_inside_project_sources(app_state, tmp_path):
+    project = app_state.projects.create("CSV project", parent=tmp_path / "projects")
+    (project.sources / "species.csv").write_text(
+        "name,status\nLontra felina,NT\nPuma concolor,LC\n", encoding="utf-8")
+    job = normalise_list_job({
+        "items": "", "operation": "Give the IUCN status", "where": "local",
+        "source": {"kind": "csv", "file": "species.csv", "column": "name"}},
+        max_items=200, roots=[project.sources])
+    assert job.items == ["Lontra felina", "Puma concolor"]
+    with pytest.raises(ListJobError, match="not in the project's sources"):
+        normalise_list_job({
+            "items": "", "operation": "Give the IUCN status", "where": "local",
+            "source": {"kind": "csv", "file": "../outside.csv", "column": "name"}},
+            max_items=200, roots=[project.sources])
+
+
+def test_config_validates_list_max_items():
+    assert validate_changes({"recipes": {"list_max_items": 5}})["recipes.list_max_items"] == 5
+    with pytest.raises(ConfigError):
+        validate_changes({"recipes": {"list_max_items": 0}})
+    with pytest.raises(ConfigError):
+        validate_changes({"recipes": {"list_max_items": 5000}})
+
+
+# --- preview ---------------------------------------------------------------------------
+
+def test_preview_sends_nothing_and_shows_what_leaves():
+    job = _job(["Lontra felina", "Puma concolor"], where="swarm")
+    with egress.request_ledger("preview") as ledger:
+        preview = preview_list(job, cfg={"privacy": {"tier": "GLOBAL"}, "swarm": {}},
+                               nodes_available=2, nodes=[{"node": "abc"}])
+    assert ledger.events == []
+    assert preview["count"] == 2 and preview["what_leaves"]["count"] == 2
+    assert preview["what_leaves"]["operation"] == "Give the status of this item"
+    assert preview["what_leaves"]["items"] == job.items
+    assert "Lontra felina" in preview["what_leaves"]["prompt"]
+    assert preview["nodes_available"] == 2 and preview["default_where"] == "swarm"
+    assert list_wave_size({"swarm": {"n_fragments_max": 4,
+                                     "min_items_per_fragment": 3}}) == 12
+
+
+def test_personal_items_default_to_local_even_with_nodes():
+    job = _job(["my salary", "my diagnosis"], where="swarm")
+    preview = preview_list(job, cfg={"privacy": {"tier": "GLOBAL"}, "swarm": {}},
+                           nodes_available=2)
+    assert preview["privacy"]["sensitive"] is True
+    assert preview["default_where"] == "local"
+    assert preview["local_only_reason"]
+    assert preview["privacy"]["items_flagged"]
+
+
+def test_list_prompt_is_an_enumerated_batch():
+    prompt = build_list_prompt("Give the IUCN status of this species", ["a", "b", "c"])
+    assert "1. a" in prompt and "3. c" in prompt
+    assert "Items:" in prompt
+
+
+def test_api_preview_returns_what_leaves_without_egress(app_state, monkeypatch):
+    from swarmbly_app.api import create_app
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("preview must not call egress")
+
+    monkeypatch.setattr(egress, "check_call", forbidden)
+    app = create_app(app_state)
+    c = TestClient(app, base_url="http://127.0.0.1:8765")
+    c.headers["X-Swarmbly-Token"] = app.state.guard.token
+    out = c.post("/api/recipes/list/preview", json={
+        "items": "alpha\nbeta\nalpha", "operation": "Give the IUCN status",
+        "where": "local", "source": {"kind": "pasted"}})
+    assert out.status_code == 200, out.text
+    body = out.json()
+    assert body["count"] == 3 and body["duplicates"] == 1
+    assert body["what_leaves"]["items"] == ["alpha", "beta", "alpha"]
+
+
+def test_api_send_accepts_a_list_job(app_state):
+    from swarmbly_app.api import create_app
+
+    app_state.backends.resolve = lambda cfg=None: FakeBackend(reply="1. A")
+    app = create_app(app_state)
+    c = TestClient(app, base_url="http://127.0.0.1:8765")
+    c.headers["X-Swarmbly-Token"] = app.state.guard.token
+    conv = app_state.chat.create_conversation(mode="local")
+    out = c.post(f"/api/conversations/{conv['id']}/messages", json={
+        "text": "Give the status of this item", "mode": "local", "recipe": "list",
+        "list_job": {"items": ["alpha"], "operation": "Give the status of this item",
+                     "where": "local", "source": {"kind": "pasted"}}})
+    assert out.status_code == 202, out.text
+    message = None
+    for _ in range(50):
+        message = app_state.chat.get_messages(conv["id"])[-1]
+        if message["meta"].get("status") != "running":
+            break
+        time.sleep(0.05)
+    assert message["meta"]["status"] == "done", message["meta"]
+    assert message["meta"]["table"]["rows_data"][0]["status"] == "answered"
+
+
+# --- local execution -------------------------------------------------------------------
+
+def _send_list(app_state, job, reply, items_text="list"):
+    fake = FakeBackend(reply=reply)
+    app_state.backends.resolve = lambda cfg=None: fake
+    conv = app_state.chat.create_conversation(mode="local")
+    app_state.chat.send(conv["id"], job.operation, recipe="list",
+                        list_job=job.to_dict(), run_async=False)
+    return app_state.chat.get_messages(conv["id"])[-1], fake
+
+
+def _multi_nodes(nodes):
+    return {"swarm": {"k_min": 2, "k_max": 2, "n_fragments_max": 4,
+                      "min_items_per_fragment": 3, "timeout_ms": 8000,
+                      "hedge_fallback_ms": 3000},
+            "privacy": {"tier": "GLOBAL"}}
+
+
+def test_local_run_builds_the_table_in_order_with_missing_and_duplicate(app_state):
+    job = _job(["alpha", "alpha", "beta", "gamma"])
+    msg, _ = _send_list(app_state, job, "1. A\n2. A\n3. B")
+    table = msg["meta"]["table"]
+    assert table["by_code"] is True
+    assert msg["meta"]["list"]["count"] == 4
+    assert msg["meta"]["list"]["answered"] == 3
+    assert msg["meta"]["list"]["missing"] == 1
+    assert [r["status"] for r in table["rows_data"]] == [
+        "answered", "answered", "answered", "missing"]
+    assert "duplicate of #1" in table["rows_data"][1]["item_cell"]
+    assert table["rows_data"][3]["answer"] == "—"
+    assert msg["content"].index("| 1 |") < msg["content"].index("| 2 |") < \
+        msg["content"].index("| 3 |") < msg["content"].index("| 4 |")
+    assert msg["meta"]["receipt"]["recipe"] == "list"
+    assert msg["meta"]["receipt"]["recipe_where"] == "local"
+
+
+def test_local_long_list_is_processed_in_waves(app_state):
+    items = [f"item {i}" for i in range(1, 26)]
+    reply = "\n".join(f"{i}. answer {i}" for i in range(1, 13))
+    msg, fake = _send_list(app_state, _job(items), reply)
+    assert msg["meta"]["list"]["waves"] == 3
+    assert msg["meta"]["list"]["answered"] == 25
+    assert len(msg["meta"]["table"]["rows_data"]) == 25
+    assert msg["meta"]["table"]["rows_data"][-1]["n"] == 25
+    assert len(fake.calls) == 3
+
+
+# --- swarm execution -------------------------------------------------------------------
+
+def test_swarm_run_reports_agreement_and_disagreement(tmp_path):
+    worker1, _ = make_node(tmp_path, "W1", worker=True, model="llama3.2:3b",
+                           reply="1. A\n2. A\n3. A")
+    worker2, _ = make_node(tmp_path, "W2", worker=True, model="qwen2.5:3b",
+                           reply="1. A\n2. B\n3. A")
+    client, _ = make_node(tmp_path, "C", model="fake-model:1b",
+                          extra=_multi_nodes(None))
+    connect(client, worker1)
+    connect(client, worker2)
+    items = [f"item {i}" for i in range(1, 7)]
+    job = _job(items, where="swarm")
+    client.chat.send(client.chat.create_conversation(mode="lan")["id"],
+                     job.operation, recipe="list", list_job=job.to_dict(),
+                     run_async=False)
+    msg = client.chat.get_messages(client.chat.list_conversations()[0]["id"])[-1]
+    assert msg["meta"]["status"] == "done", msg["meta"]
+    assert msg["meta"]["list"]["executed"] == "distributed", msg["meta"]["list"]
+    assert msg["meta"]["list"]["where"] == "swarm"
+    assert msg["meta"]["list"]["answered"] == 4
+    assert msg["meta"]["list"]["disagreement"] == 2
+    statuses = [r["status"] for r in msg["meta"]["table"]["rows_data"]]
+    assert statuses.count("disagreement") == 2
+    assert msg["meta"]["receipt"]["recipe"] == "list"
+    assert msg["meta"]["receipt"]["recipe_where"] == "swarm"
+    assert msg["meta"]["receipt"]["envios"], "distributed fragments must be in the receipt"
+    client.stop(); worker1.stop(); worker2.stop()
