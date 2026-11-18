@@ -698,3 +698,91 @@ def test_prior_conversation_surfaces_are_not_attached_to_the_agent_task(
                        for call in model.calls for m in call)
     assert payload not in prompt
     assert message["meta"]["agent"]["tool_calls"] == 0
+
+
+def test_short_tool_result_passage_is_blocked_for_remote_mcp(app_state, monkeypatch):
+    """A passage returned by one tool cannot be forwarded to a remote tool.
+
+    The broker's size rule only catches long arguments; the shingle rule needs
+    the app to mark what the model saw. The agent adapter must supply prior
+    observations, not just the task.
+    """
+    try:
+        import mcp  # noqa: F401
+    except ImportError:  # pragma: no cover
+        pytest.skip("the MCP SDK is not installed")
+    api = _api(app_state)
+    passage = ("the apiary is at the north fence and the queen is marked blue "
+               "in the harvest log")
+    local = ToolSpec("mcp:local/notes", "mcp_local", "local",
+                     {"type": "object", "properties": {}},
+                     "Return the private notes")
+    app_state.tools.register(local, lambda call, ctx: passage)
+    app_state.tools.approve(local.id)
+    app_state.standing.grant(local)
+    _add_synthetic_tools(app_state, include_remote=False)
+    monkeypatch.setattr(egress, "classify_url",
+                        lambda target: (egress.THIRD_PARTY, "mcp.example.test"))
+    app_state.config.update({"privacy.tool_hosts": ["mcp.example.test"],
+                             "privacy.third_party_models": ["mcp.example.test"]})
+    with _remote_server("remote echo") as url:
+        assert api.post("/api/mcp/servers", json={
+            "id": "remote", "kind": "remote_http", "url": url}).status_code == 200
+        assert api.post("/api/mcp/servers/remote/start").status_code == 200
+        assert api.post("/api/mcp/servers/remote/propose").status_code == 200
+        assert api.post("/api/mcp/servers/remote/approve",
+                        json={"tools": ["echo"]}).status_code == 200
+        try:
+            model = AgentAttackModel([
+                _tool("mcp:local/notes", {}),
+                _tool("mcp:remote/echo", {"text": passage}),
+                _final("not sent")])
+            conv = app_state.chat.create_conversation(mode="local",
+                                                     model="fake-model:1b")
+            app_state.backends.resolve = lambda config=None: model
+            app_state.chat.send(conv["id"], "Read the notes and use the tool.",
+                                use_tools=True, run_async=False)
+            message = app_state.chat.get_messages(conv["id"])[-1]
+            assert message["meta"]["status"] == "awaiting_approval"
+            card = message["meta"]["agent"]["pending"]
+            assert card["tool"] == "mcp:remote/echo"
+            approved = api.post(
+                f"/api/conversations/{conv['id']}/messages/{message['id']}/approve",
+                json={"decision": "run", "args_sha256": card["args_sha256"]})
+            assert approved.status_code == 200, approved.text
+            final = approved.json()["message"]
+            tools = final["meta"]["receipt"]["tools"]
+            remote_tools = [entry for entry in tools
+                            if entry["spec_id"] == "mcp:remote/echo"]
+            assert remote_tools and remote_tools[0]["blocked"] is True, \
+                "the local tool's passage was forwarded to the remote tool"
+            assert final["meta"]["receipt"]["envios"] == []
+            assert passage not in json.dumps(final["meta"]["receipt"])
+
+            # With privacy.third_party_passages on, the same short passage may
+            # leave, but only after a fresh per-call approval.
+            app_state.config.update({"privacy.third_party_passages": True})
+            model2 = AgentAttackModel([
+                _tool("mcp:local/notes", {}),
+                _tool("mcp:remote/echo", {"text": passage}),
+                _final("sent")])
+            conv2 = app_state.chat.create_conversation(mode="local",
+                                                      model="fake-model:1b")
+            app_state.backends.resolve = lambda config=None: model2
+            app_state.chat.send(conv2["id"], "Read the notes and use the tool.",
+                                use_tools=True, run_async=False)
+            waiting = app_state.chat.get_messages(conv2["id"])[-1]
+            assert waiting["meta"]["status"] == "awaiting_approval"
+            card2 = waiting["meta"]["agent"]["pending"]
+            sent = api.post(
+                f"/api/conversations/{conv2['id']}/messages/{waiting['id']}/approve",
+                json={"decision": "run", "args_sha256": card2["args_sha256"]})
+            assert sent.status_code == 200, sent.text
+            ok = sent.json()["message"]
+            ok_tools = [entry for entry in ok["meta"]["receipt"]["tools"]
+                        if entry["spec_id"] == "mcp:remote/echo"]
+            assert ok_tools and ok_tools[0]["blocked"] is False
+            assert ok_tools[0]["bytes"] > 0
+            assert ok["meta"]["receipt"]["envios"]
+        finally:
+            _close_mcp(app_state)

@@ -340,7 +340,19 @@ class AgentAdapter:
                 purpose=request.why,
             )
             try:
-                result = self.broker.invoke(call)
+                prior = [step.observation.content
+                         for step in getattr(run.state, "steps", []) or []
+                         if step.observation is not None]
+                if spec.provider == "mcp_remote" and prior:
+                    # A tool result is data the model has seen. Mark it for the
+                    # broker's shingle guard so a passage returned by a local
+                    # tool cannot be forwarded to a remote one without
+                    # privacy.third_party_passages.
+                    from .tools import mcp as mcp_module
+                    with mcp_module.passages(prior):
+                        result = self.broker.invoke(call)
+                else:
+                    result = self.broker.invoke(call)
             except ToolDenied as exc:
                 content = f"denied: {exc}"
                 observation = module.Observation(

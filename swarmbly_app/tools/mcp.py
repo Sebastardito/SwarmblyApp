@@ -75,6 +75,21 @@ _passages: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
 _sdk_cache: dict[str, Any] | None = None
 
 
+@contextlib.contextmanager
+def passages(texts: Iterable[str]) -> Iterator[None]:
+    """Mark retrieved/user text for the remote-tool shingle guard.
+
+    The agent adapter enters this context with the tool observations the model
+    has already seen, so a passage returned by one tool cannot be forwarded to
+    a remote MCP tool unless ``privacy.third_party_passages`` is on.
+    """
+    token = _passages.set(tuple(str(text) for text in texts if text is not None))
+    try:
+        yield
+    finally:
+        _passages.reset(token)
+
+
 def _sdk() -> dict[str, Any]:
     """Import the optional SDK once, with a clear error when it is absent."""
     global _sdk_cache
@@ -263,14 +278,9 @@ class MCPClient:
         with self._lock:
             return sorted(server_id for _, server_id in self._runtimes)
 
-    @contextlib.contextmanager
     def passages(self, texts: Iterable[str]) -> Iterator[None]:
         """Mark the retrieved passages of the current request for the guard."""
-        token = _passages.set(tuple(str(text) for text in texts if text is not None))
-        try:
-            yield
-        finally:
-            _passages.reset(token)
+        return passages(texts)
 
     # -- lifecycle ----------------------------------------------------------
     def start(self, server_id: str, project_id: str = "") -> ServerConfig:
