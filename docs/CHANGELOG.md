@@ -21,6 +21,25 @@
   in the approval box (R-006). Recipe 5's earlier runner, extra and escape
   tests are unchanged; this adds the flow, approval and chat wiring.
 
+- **Author search with consent** (`swarmbly_app/tools/author.py`). Three
+  broker tools, `author/orcid`, `author/openalex` and `author/pubmed`, look up
+  a person's public works only after the user approves the exact name string
+  and the services. Each call needs a one-time token bound to those arguments,
+  so a different name is refused before anything is sent. The tools are
+  registered only when `tools.author.enabled` is true (absent means off). The
+  name is sent exactly as approved, never stripped, and every request goes
+  through the fixed `AUTHOR_QUERY` egress kind (never `PUBLIC_QUERY`); the
+  receipt entry now carries `personal_name: true` and
+  `nombres_personales_enviados` counts it. Results are normalised
+  `{title, year, venue, doi, source, url}` lists, deduplicated by DOI and then
+  by normalised title, and wrapped as quoted data by the broker. ORCID first
+  searches people; when several plausible matches remain it returns
+  `candidates` (name, ORCID iD, affiliation) instead of choosing one, while an
+  optional ORCID iD skips the search and an optional affiliation hint narrows
+  candidates locally without being sent. OpenAlex and PubMed honour
+  `max_results` (up to 25), PubMed keeps DOIs, and rate limits are plain
+  errors. No UI, API route or chat wiring in this step.
+
 - **MCP client core** (`swarmbly_app/tools/mcp.py`, `mcp_registry.py`). MCP
   servers are configured per project in `settings/mcp_servers.json` with the
   exact local command, arguments, working directory and environment-variable

@@ -7,6 +7,9 @@ from .broker import (DEFAULT_MAX_RESULT_CHARS, DEFAULT_TOKEN_TTL, PROVIDER_KINDS
                      ToolBroker, ToolCall, ToolContext, ToolDenied, ToolResult,
                      ToolSpec, approval_hash_for, as_quoted_block)
 from .schema import SchemaError, canonical_json, validate_arguments, validate_schema
+from .author import (AUTHOR_HOSTS, AUTHOR_INPUT_SCHEMA, AUTHOR_SERVICES,
+                     AuthorError, AuthorRateLimited, author_enabled, author_specs,
+                     dedupe_works, normalise_works, register_author_tools)
 from .mcp import (MCPClient, ManifestTool, ToolManifest)
 from .mcp_registry import (KINDS, LOCAL_RIGHTS_NOTE, MCP_SERVERS_FILE,
                            MCP_SERVERS_SCHEMA, MCPApprovalError, MCPConfigError,
@@ -30,8 +33,13 @@ def register_sandbox(broker: "ToolBroker", *, project_path, runner=None):
 
 __all__ = [
     "APPROVALS_SCHEMA",
+    "AUTHOR_HOSTS",
+    "AUTHOR_INPUT_SCHEMA",
+    "AUTHOR_SERVICES",
     "ApprovalError",
     "ApprovalStore",
+    "AuthorError",
+    "AuthorRateLimited",
     "DEFAULT_MAX_RESULT_CHARS",
     "DEFAULT_TOKEN_TTL",
     "KINDS",
@@ -65,7 +73,12 @@ __all__ = [
     "ToolSpec",
     "approval_hash_for",
     "as_quoted_block",
+    "author_enabled",
+    "author_specs",
     "canonical_json",
+    "dedupe_works",
+    "normalise_works",
+    "register_author_tools",
     "register_sandbox",
     "validate_arguments",
     "validate_schema",

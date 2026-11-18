@@ -396,9 +396,15 @@ def build_receipt(ledger: Ledger | None, *, lane: str, route: str, answer: str,
             kind_out = "fragmento"
         else:
             kind_out = kind
+        personal_name = bool(ev.get("personal_name"))
         entry = {"destino": ev.get("destino", ""), "clase": ev.get("clase", ""),
                  "tipo": kind_out, "valor": value if kind == PUBLIC_QUERY else f"({kind})",
                  "bytes": int(ev.get("bytes", 0) or 0), "motivo": ev.get("motivo", "")}
+        if personal_name:
+            # An author lookup carries a person's name as its payload. The
+            # egress kind stays AUTHOR_QUERY; this flag is what the UI and the
+            # receipt use, the same way a detected personal name already is.
+            entry["personal_name"] = True
         was_blocked = bool(ev.get("bloqueado"))
         if was_blocked:
             blocked.append(entry)
@@ -407,7 +413,7 @@ def build_receipt(ledger: Ledger | None, *, lane: str, route: str, answer: str,
             # sends are ordinary sends as well as tool entries.
             sends.append(entry)
         if is_tool:
-            tools.append({
+            tool_entry = {
                 "spec_id": str(ev.get("spec_id") or ""),
                 "destino": ev.get("destino", ""),
                 "clase": ev.get("clase", ""),
@@ -417,7 +423,10 @@ def build_receipt(ledger: Ledger | None, *, lane: str, route: str, answer: str,
                 "blocked": was_blocked,
                 "approved_by": str(ev.get("aprobado_por") or ""),
                 "motivo": ev.get("motivo", ""),
-            })
+            }
+            if personal_name:
+                tool_entry["personal_name"] = True
+            tools.append(tool_entry)
     answer = answer or ""
     destinations = ["local"] + sorted({s["destino"] for s in sends if s["destino"]})
     return {
@@ -433,7 +442,8 @@ def build_receipt(ledger: Ledger | None, *, lane: str, route: str, answer: str,
         "bloqueados": blocked,
         "tools": tools,
         "pasajes_enviados": sum(1 for s in sends if s["tipo"] == "pasaje"),
-        "nombres_personales_enviados": sum(1 for s in sends if s["tipo"] == "nombre_personal"),
+        "nombres_personales_enviados": sum(
+            1 for s in sends if s["tipo"] == "nombre_personal" or s.get("personal_name")),
         "bytes_salientes": sum(s["bytes"] for s in sends),
         "fragmentos_creados": int(fragments),
         "respuesta_sintetica": answer,
