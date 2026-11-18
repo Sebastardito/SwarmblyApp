@@ -42,13 +42,19 @@ MIB = 1024 * 1024
 # --------------------------------------------------------------------------- fixtures
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def sandbox_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """One app-owned root for the module: the wasm cache is expensive once."""
+    """One app-owned root for the whole session.
+
+    The wasmtime ``.cwasm`` file is the expensive part; paying it once per
+    session keeps CI time bounded.  Sharing it does not share user data: every
+    run still gets a fresh ``runs/<uuid>/data`` and ``runs/<uuid>/out``, and
+    the cache is a separate directory that is never granted to the guest.
+    """
     return tmp_path_factory.mktemp("sandbox-root")
 
 
-@pytest.fixture(scope="module", autouse=True)
+@pytest.fixture(scope="session", autouse=True)
 def _warm_cache(sandbox_root: Path) -> None:
     runner = SandboxRunner(sandbox_root)
     try:
@@ -418,12 +424,19 @@ def test_04_no_process_thread_or_native_escape(runner: SandboxRunner,
 
 
 def test_05_deadline_and_optional_fuel(runner: SandboxRunner) -> None:
+    # Start the clock with a ready worker: the first call would otherwise
+    # include worker spawn + warm-up (minutes on a cold, small Linux runner).
+    # The upper bound still catches a missing hard wall clock.
+    runner._ensure_pool()
+    limits = Limits(deadline_s=2.0)
     started = time.perf_counter()
-    result = runner.run("while True: pass", [], Limits(deadline_s=2.0), "pytest")
+    result = runner.run("while True: pass", [], limits, "pytest")
     elapsed = time.perf_counter() - started
     assert result.trapped == "deadline", result
-    assert result.elapsed_s < 2.0 + 2.5, f"deadline overshoot: {result.elapsed_s}s"
-    assert elapsed < 10.0
+    assert result.elapsed_s < limits.deadline_s + 2.5, \
+        f"deadline overshoot: {result.elapsed_s}s"
+    assert elapsed < limits.deadline_s + limits.hard_grace_s + 2.0, \
+        f"deadline wall {elapsed:.2f}s exceeds deadline + grace + margin"
 
     fueled = runner.run("while True: pass", [],
                         Limits(deadline_s=30, fuel=100_000_000), "pytest")
@@ -566,6 +579,35 @@ def test_09_functional_pandas_and_openpyxl(runner: SandboxRunner,
     assert {"result.csv", "xlsx.json"} <= set(files)
     assert files["result.csv"]["size"] > 0 and files["xlsx.json"]["size"] > 0
     assert len(files["result.csv"]["sha256"]) == 64
+
+
+def test_09b_shared_cache_has_no_user_data(sandbox_root: Path,
+                                           runner: SandboxRunner,
+                                           tmp_path: Path) -> None:
+    """The session cache is compiled code only, never a run's input/output."""
+    sentinel = "CACHE-LEAK-SENTINEL-7f3c"
+    source = tmp_path / "input.csv"
+    source.write_text(f"hive,apiary,weight\n{sentinel},A,1\n", encoding="utf-8")
+    result = runner.run("print(open('/data/input.csv').read())", [source],
+                        Limits(deadline_s=30), "pytest")
+    assert result.ok and sentinel in result.stdout
+    runner.close()
+
+    cache = sandbox_root / "cache" / "wasi-python"
+    files = [path for path in cache.rglob("*") if path.is_file()]
+    assert files, "the worker did not write a compiled module cache"
+    assert all(path.suffix == ".cwasm" for path in files), \
+        f"unexpected files in the compile cache: {[p.name for p in files]}"
+    runs = sandbox_root / "runs"
+    assert all(not path.is_relative_to(runs) for path in files)
+    needle = sentinel.encode("utf-8")
+    tail = b""
+    for path in files:
+        with open(path, "rb") as handle:
+            while chunk := handle.read(MIB):
+                haystack = tail + chunk
+                assert needle not in haystack, f"user data found in {path}"
+                tail = haystack[-len(needle):]
 
 
 # --------------------------------------------------------------------------- 10. warm-up/latency

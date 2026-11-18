@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Sandbox tests: cold-compile timing** (`tests/test_sandbox_runner.py`).
+  The deadline check now starts its wall clock only after a worker reports
+  ready, and the sandbox runner tests share one session-scoped wasmtime cache
+  (the `.cwasm` file only, never run data). A cold compile on a small CI
+  runner no longer counts against the deadline assertion; the session cache
+  is still outside every `/data`/`/out` grant and every run keeps its fresh
+  per-run directories.
+
 - **Recipe 5: data with code** (`swarmbly_app/recipes.py`, `chat.py`,
   `api/__init__.py`, web chat/i18n). The "Data with code" card lets the user
   pick project source files and ask a question. The writer model (role
