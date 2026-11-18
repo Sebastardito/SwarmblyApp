@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Python 3.11 is the minimum** (D-006). `pyproject.toml` now declares
+  `requires-python = ">=3.11"` and lists 3.11–3.13; the doctor, the launchers,
+  the README/INSTALL requirements and the CI matrix no longer accept 3.10
+  (security support ended on 2026-10-01, and the MCP SDK and `wasi-python`
+  require 3.11).
+
 - **Native Anthropic provider** (`swarmbly_app/inference/anthropic.py`). The
   conversation model and every role can now run on Anthropic's Messages API
   (`POST /v1/messages`, SSE) without the Anthropic SDK: httpx is enough. The
