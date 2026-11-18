@@ -10,8 +10,8 @@ module supplies the four injected pieces and nothing else:
 * ``execute_tool`` calls :meth:`~swarmbly_app.tools.broker.ToolBroker.invoke`
   with the one-time token that the approval endpoint issued. No other code
   path issues a token.
-* ``policy`` applies D-011: a local MCP tool with a standing approval in this
-  project runs (``Allow``); every other call needs the user's yes
+* ``policy`` applies D-011: a local MCP tool with a standing approval for its
+  current contract runs (``Allow``); every other call needs the user's yes
   (``NeedsApproval``); a tool whose Settings approval is missing or stale is
   denied (``Deny``). Sandbox and author search always ask.
 * Observations are built from the broker's result, so they carry the source
@@ -205,6 +205,11 @@ class AgentAdapter:
             approved = self.broker.approvals.is_approved(spec, project_id)
             if spec.provider in ("mcp_local", "mcp_remote") and approved:
                 mcp_approved = True
+            try:
+                current_hash = spec.current_hash()
+            except Exception:
+                current_hash = ""
+            can_stand = spec.provider == "mcp_local" and spec.destination == "local"
             tools.append({
                 "id": spec.id,
                 "provider": spec.provider,
@@ -212,8 +217,9 @@ class AgentAdapter:
                 "remote": spec.destination != "local",
                 "destination": spec.destination,
                 "approved": approved,
-                "standing": bool(self.standing.is_standing(spec.id, project_id)),
-                "can_stand": spec.provider == "mcp_local" and spec.destination == "local",
+                "standing": bool(can_stand and self.standing.is_standing(
+                    spec.id, project_id, current_hash)),
+                "can_stand": can_stand,
                 "description": spec.description,
             })
         return {"available": available, "reason": reason,
@@ -260,8 +266,13 @@ class AgentAdapter:
         if not approved:
             return module.Deny(
                 f"tool {spec.id} is not approved in Settings for this project")
+        try:
+            current_hash = spec.current_hash()
+        except Exception:
+            current_hash = ""
         if spec.provider == "mcp_local" and spec.destination == "local" \
-                and self.standing.is_standing(spec.id, project_id):
+                and current_hash \
+                and self.standing.is_standing(spec.id, project_id, current_hash):
             return module.Allow()
         if spec.provider in ("sandbox", "author"):
             return module.NeedsApproval(
@@ -528,6 +539,10 @@ class AgentAdapter:
                                 sort_keys=True, default=str)
         except (TypeError, ValueError):
             pretty = repr(arguments)
+        try:
+            current_hash = spec.current_hash()
+        except Exception:
+            current_hash = ""
         return {
             "run_id": run.run_id,
             "message_id": run.message_id,
@@ -545,7 +560,10 @@ class AgentAdapter:
             "why": request.why,
             "reason": str(getattr(run.state, "pending_reason", "") or ""),
             "can_remember": spec.provider == "mcp_local" and local,
-            "standing": bool(self.standing.is_standing(spec.id, run.project_id)),
+            "standing": bool(spec.provider == "mcp_local" and local
+                             and current_hash
+                             and self.standing.is_standing(
+                                 spec.id, run.project_id, current_hash)),
         }
 
     def receipt(self, run: AgentRun, answer: str) -> dict[str, Any]:

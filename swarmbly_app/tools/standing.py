@@ -6,6 +6,11 @@ approved in Settings (``settings/tools.json``), and the broker still checks
 that approval and the argument schema on every call. It only lets the agent
 policy skip the per-call approval card for that tool in that project.
 
+Each record carries the hash of the tool contract it was granted for. A
+manifest change (a new description or schema) invalidates it: the user may
+approve the new contract in Settings, but the next call asks again until a new
+standing yes is given.
+
 Only a local MCP tool can be marked this way. Remote MCP tools, the sandbox and
 author search always ask. That rule is enforced twice: :meth:`StandingStore.grant`
 refuses anything else, and the agent policy checks the live spec's provider
@@ -27,7 +32,7 @@ from typing import Any, Callable
 
 from .approvals import SETTINGS_DIR
 
-STANDING_SCHEMA = "swarmbly.agent_standing/1"
+STANDING_SCHEMA = "swarmbly.agent_standing/2"
 STANDING_FILE = "agent_standing.json"
 
 
@@ -71,6 +76,7 @@ class StandingStore:
             spec_id = str(item.get("spec_id") or "")
             if spec_id:
                 clean.append({"spec_id": spec_id,
+                              "approval_hash": str(item.get("approval_hash") or ""),
                               "granted_at": str(item.get("granted_at") or "")})
         clean.sort(key=lambda item: item["spec_id"])
         return clean
@@ -78,8 +84,21 @@ class StandingStore:
     def records(self, project_id: str = "") -> list[dict[str, str]]:
         return list(self._load(project_id))
 
-    def is_standing(self, spec_id: str, project_id: str = "") -> bool:
-        return any(item["spec_id"] == spec_id for item in self._load(project_id))
+    def is_standing(self, spec_id: str, project_id: str = "",
+                    approval_hash: str | None = None) -> bool:
+        """Whether this exact tool contract has a standing approval.
+
+        ``approval_hash`` is the live spec's current hash. When it is given, a
+        record for another contract (or a legacy record without a hash) does
+        not count: a manifest change invalidates the standing yes even after
+        the user approves the new contract.
+        """
+        for item in self._load(project_id):
+            if item["spec_id"] != spec_id:
+                continue
+            if approval_hash is None or item.get("approval_hash") == approval_hash:
+                return True
+        return False
 
     def grant(self, spec: Any, project_id: str = "",
               granted_at: str | None = None) -> dict[str, str]:
@@ -97,9 +116,15 @@ class StandingStore:
         spec_id = str(getattr(spec, "id", "") or "")
         if not spec_id:
             raise StandingError("a standing approval needs a tool id")
+        try:
+            approval_hash = spec.current_hash()
+        except Exception as exc:
+            raise StandingError(
+                f"cannot read the current contract of {spec_id}: {exc}") from exc
         records = self._load(project_id)
         stamp = granted_at or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        record = {"spec_id": spec_id, "granted_at": stamp}
+        record = {"spec_id": spec_id, "approval_hash": approval_hash,
+                  "granted_at": stamp}
         records = [item for item in records if item["spec_id"] != spec_id]
         records.append(record)
         records.sort(key=lambda item: item["spec_id"])

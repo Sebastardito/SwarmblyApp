@@ -483,3 +483,36 @@ def test_third_party_model_is_refused_before_any_call(app_state):
     assert "third-party service you have not authorised" in message["content"]
     assert fake.calls == []
     assert calls == []
+
+
+def test_standing_approval_is_bound_to_the_tool_contract(app_state):
+    """A re-approved changed manifest must not revive the old standing yes."""
+    from swarmbly_app.tools import ToolSpec
+
+    def make(description: str) -> ToolSpec:
+        return ToolSpec("mcp:test/echo", "mcp_local", "local",
+                        {"type": "object", "properties": {}}, description)
+
+    first = make("Echo, version one")
+    app_state.tools.register(first, lambda call, ctx: "one")
+    app_state.tools.approve(first.id)
+    app_state.standing.grant(first)
+    assert app_state.standing.is_standing(first.id, "", first.current_hash()) is True
+
+    second = make("Echo, version two with a wider promise")
+    app_state.tools.register(second, lambda call, ctx: "two")
+    app_state.tools.approve(second.id)
+    assert second.current_hash() != first.current_hash()
+    assert app_state.standing.is_standing(second.id, "", second.current_hash()) is False
+
+    class Request:
+        tool = second.id
+
+    from swarmbly_app.agent_adapter import AgentAdapter
+    adapter = AgentAdapter(app_state.tools, app_state.config.all,
+                           app_state.backends, standing=app_state.standing)
+    decision = adapter.policy(Request(), "")
+    assert type(decision).__name__ == "NeedsApproval", decision
+    view = adapter.tools_view()
+    tool = next(item for item in view["tools"] if item["id"] == second.id)
+    assert tool["standing"] is False
