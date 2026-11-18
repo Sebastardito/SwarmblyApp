@@ -716,6 +716,149 @@ def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
         has_model = bool(state.config.get("model.model_name"))
         return levels(hw, memory_budget(hw), has_model)
 
+    # ---- author search (3.4) -----------------------------------------------------
+    # The only path to an author lookup: the user presses Run in the consent
+    # box, the API issues one token per chosen service and invokes it. No
+    # model turn reaches this code, and no request is made before it.
+    def _author_enabled() -> bool:
+        from ..tools import author_enabled
+        return author_enabled(state.config.all())
+
+    def _author_status() -> dict[str, Any]:
+        from ..tools import AUTHOR_HOSTS, AUTHOR_SERVICES
+        enabled = _author_enabled()
+        return {
+            "enabled": enabled,
+            "author_enabled": enabled,
+            "services": [{"id": service, "host": AUTHOR_HOSTS[service]}
+                         for service in AUTHOR_SERVICES],
+            "hosts": {service: AUTHOR_HOSTS[service]
+                      for service in AUTHOR_SERVICES},
+        }
+
+    @app.get("/api/author/status")
+    @app.get("/api/author")
+    def author_status() -> dict[str, Any]:
+        return _author_status()
+
+    @app.post("/api/author/cancel")
+    def author_cancel(body: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Cancel closes the consent box; it never sends anything."""
+        return {"cancelled": True, "sent": 0}
+
+    @app.post("/api/author/lookup")
+    @app.post("/api/author/approve")
+    def author_lookup(body: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Approve one exact name and the chosen services, then look them up."""
+        from ..author_search import (AuthorSearchDisabled, AuthorSearchError,
+                                     lookup)
+        from ..tools import AUTHOR_HOSTS
+        body = body or {}
+        conversation_id = str(body.get("conversation_id") or "")
+        conv = None
+        if conversation_id:
+            conv = state.db.get_conversation(conversation_id)
+            if conv is None:
+                raise HTTPException(status_code=404,
+                                    detail="conversation not found")
+            project_id = str(conv.get("project_id") or "")
+        else:
+            # A scripts/CLI caller can ask without a chat message; the UI
+            # always sends the conversation so the table lands in the answer.
+            project_id = str(body.get("project_id") or "")
+            if project_id and state.projects.get(project_id) is None:
+                raise HTTPException(status_code=404,
+                                    detail="unknown or unavailable project")
+        lang = str(state.config.get("language") or "en")
+        try:
+            result = lookup(
+                state.tools, state.config.all(),
+                name=body.get("name"), services=body.get("services"),
+                project_id=project_id, orcid=str(body.get("orcid") or ""),
+                affiliation=str(body.get("affiliation") or ""),
+                max_results=body.get("max_results"), lang=lang,
+                candidates_shown=body.get("candidates_shown"))
+        except AuthorSearchDisabled as exc:
+            detail = ("La búsqueda de autores está desactivada. Actívala en "
+                      "Ajustes → Herramientas." if lang.lower().startswith("es")
+                      else str(exc))
+            raise HTTPException(status_code=403, detail=detail) from exc
+        except AuthorSearchError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except (ToolDenied, egress.EgressDenied) as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+        if result["ambiguous"]:
+            # A name search came back with several people: show them and stop.
+            # No works are fetched and no message is added before the pick.
+            return {
+                "ambiguous": True,
+                "conversation_id": conversation_id,
+                "project_id": project_id,
+                "candidates": result["candidates"],
+                "works": [],
+                "author": result["author"],
+                "receipt": result["receipt"],
+                "message": ("ORCID encontró más de una persona. Elige una; "
+                            "todavía no se buscaron obras."
+                            if lang.lower().startswith("es") else
+                            "ORCID found more than one person. Pick one; no works "
+                            "have been fetched yet."),
+            }
+
+        es = lang.lower().startswith("es")
+        services = list(result["author"]["services"])
+        exact_name = str(body.get("name") or "")
+        answer = {
+            "ambiguous": False,
+            "conversation_id": conversation_id,
+            "project_id": project_id,
+            "works": result["works"],
+            "candidates": [],
+            "author": result["author"],
+            "receipt": result["receipt"],
+            "hosts": {service: AUTHOR_HOSTS[service] for service in services},
+        }
+        if conv is None:
+            return answer
+        user_text = ((f"Buscar las obras de {exact_name} en "
+                      f"{', '.join(services)}") if es else
+                     f"Look up the works of {exact_name} in "
+                     f"{', '.join(services)}")
+        meta = {
+            "status": "done", "mode": "local", "model": "author",
+            "executed": "local",
+            "author": result["author"],
+            "receipt": result["receipt"],
+            "recipe": "author",
+        }
+        request_id = result["request_id"]
+        meta["request_id"] = request_id
+        user_msg = state.db.add_message(conversation_id, "user", user_text,
+                                        meta={"kind": "author_lookup"})
+        if str(conv.get("title") or "") in ("", "New conversation"):
+            title = user_text[:56]
+            state.db.update_conversation(
+                conversation_id,
+                title=(title + "…") if len(user_text) > 56 else title)
+        assistant_msg = state.db.add_message(
+            conversation_id, "assistant", result["content"], meta=meta)
+        state.db.add_request(request_id, conversation_id,
+                             assistant_msg["id"], "local", "author")
+        state.db.finish_request(request_id, "done", meta)
+        state.db.touch_conversation(conversation_id)
+        try:
+            state.chat._changed(conversation_id)
+        except Exception:
+            pass
+        state.bus.publish("chat.done", request_id=request_id,
+                          conversation_id=conversation_id,
+                          message_id=assistant_msg["id"], status="done",
+                          content=result["content"], meta=meta)
+        answer.update({"user_message": user_msg,
+                       "assistant_message": assistant_msg})
+        return answer
+
     # ---- conversations -----------------------------------------------------------
     @app.get("/api/conversations")
     def list_conversations(project: str | None = None) -> list[dict]:

@@ -60,6 +60,8 @@ const Chat = (() => {
     els.model = h("select", { "aria-label": t("chat.model") });
     els.send = button(t("chat.send"), send, "primary");
     els.stop = button(t("chat.stop"), stop, "danger", { disabled: true });
+    els.author = button(t("chat.authorLookup"), () => openAuthorConsent(), "ghost small",
+      { title: t("chat.authorLookupHint"), id: "author-lookup" });
     els.hint = h("p.composer-hint");
     els.mode.addEventListener("change", updateHint);
     els.recipeTag = h("div.recipe-tag", { hidden: true });
@@ -84,6 +86,7 @@ const Chat = (() => {
       h("div.composer-bar",
         button(t("chat.attach"), () => els.file.click(), "ghost small", { title: t("chat.attachHint") }),
         els.file,
+        els.author,
         h("label.inline", h("span", t("chat.mode")), els.mode),
         h("label.inline", h("span", t("chat.model")), els.model),
         h("label.inline", h("span", t("skills.pick")), els.skill),
@@ -488,6 +491,25 @@ const Chat = (() => {
     if (mode === "local" && cfg.model?.multi_model) key = "chat.hint.localMulti";
     if (mode !== "local" && (cfg.privacy?.tier || "LOCAL") === "LOCAL") key = "chat.hint.tierLocal";
     els.hint.textContent = t(key);
+    updateAuthorButton();
+  }
+
+  /* 3.4: the author action exists only when tools.author.enabled is true.
+     The API refuses too, so a stale page cannot send a name. */
+  const AUTHOR_SERVICES = ["orcid", "openalex", "pubmed"];
+  // Same handler as /api/author/lookup: the approval route issues the tokens.
+  const AUTHOR_APPROVE = "/api/author/approve";
+  const AUTHOR_HOSTS = {
+    orcid: "pub.orcid.org",
+    openalex: "api.openalex.org",
+    pubmed: "eutils.ncbi.nlm.nih.gov",
+  };
+  function authorEnabled() {
+    const cfg = App.state.config || {};
+    return !!(cfg.tools?.author?.enabled || cfg["tools.author.enabled"]);
+  }
+  function updateAuthorButton() {
+    if (els.author) els.author.hidden = !authorEnabled();
   }
 
   async function refreshModels() {
@@ -810,22 +832,173 @@ const Chat = (() => {
   }
 
   /* Research: the query is proposed before the answer, and nothing is sent
-     until the user approves it (and may edit it). */
+     until the user approves it (and may edit it). The optional author field
+     opens the same consent box an author lookup always uses. */
   async function approveResearch(text) {
     let proposed = "";
     try {
       proposed = (await Api.post("/api/recipes/query", { text, project_id: projects.active || "" })).query || "";
     } catch (e) { proposed = ""; }
     const q = h("input.text", { type: "text", value: proposed, "aria-label": t("chat.webQuery") });
+    const author = h("input.text", { type: "text", value: "",
+      "aria-label": t("chat.recipeResearchAuthor"),
+      placeholder: t("chat.recipeResearchAuthorHint") });
+    const authorBox = authorEnabled()
+      ? h("label.stack.author-research", h("span", t("chat.recipeResearchAuthor")), author,
+          h("span.muted.small", t("chat.recipeResearchAuthorHelp")))
+      : null;
     setTimeout(() => q.focus(), 50);
     const ok = await UI.modal(t("chat.recipeResearch"), h("div.form-stack",
       h("p", t("chat.recipeResearchAsk")),
       h("label.stack", h("span", t("chat.webQuery")), q),
+      authorBox,
       h("p.muted", t("chat.webHint"))), [
       { label: t("common.cancel"), value: false, kind: "ghost" },
       { label: t("chat.recipeResearchSend"), value: true, kind: "primary" }]);
     if (!ok || !q.value.trim()) return null;
-    return q.value.trim();
+    return { query: q.value.trim(),
+      author: authorBox ? author.value.trim() : "" };
+  }
+
+  /* 3.4 author search: the consent box is the only way a lookup starts.
+     The name stays exactly as written; services default to all three. */
+  async function openAuthorConsent(initialName = "") {
+    if (!authorEnabled()) {
+      UI.toast(t("chat.authorDisabled"), "error");
+      return false;
+    }
+    const name = h("input.text", { type: "text", value: initialName || "",
+      maxlength: "200", "aria-label": t("chat.authorName") });
+    const boxes = {};
+    const sentence = h("p.note.author-consent-sentence");
+    const chosen = () => AUTHOR_SERVICES.filter((service) => boxes[service].checked);
+    const refreshSentence = () => {
+      const hosts = chosen().map((service) => AUTHOR_HOSTS[service]).join(", ");
+      sentence.textContent = t("chat.authorConsent").replace("{hosts}",
+        hosts || t("chat.authorNoService"));
+    };
+    const serviceRows = AUTHOR_SERVICES.map((service) => {
+      const box = h("input", { type: "checkbox" });
+      box.checked = true;                       // default: all three
+      box.addEventListener("change", refreshSentence);
+      boxes[service] = box;
+      return h("label.author-service", box,
+        h("span", t(`chat.authorService.${service}`)),
+        h("span.muted", AUTHOR_HOSTS[service]));
+    });
+    refreshSentence();
+    setTimeout(() => name.focus(), 50);
+    const ok = await UI.modal(t("chat.authorTitle"), h("div.form-stack",
+      h("p", t("chat.authorIntro")),
+      h("label.stack", h("span", t("chat.authorName")), name),
+      h("fieldset.author-services", h("legend", t("chat.authorServices")), serviceRows),
+      sentence,
+      h("p.muted.small", t("chat.authorNote"))), [
+      { label: t("common.cancel"), value: false, kind: "ghost" },
+      { label: t("chat.authorRun"), value: "run", kind: "primary" }]);
+    if (ok !== "run") return false;             // Cancel sends nothing at all
+    if (!name.value.trim()) {
+      UI.toast(t("chat.authorNameEmpty"), "error");
+      return false;
+    }
+    const services = chosen();
+    if (!services.length) {
+      UI.toast(t("chat.authorChooseService"), "error");
+      return false;
+    }
+    const conversationId = await ensureConversation();
+    if (!conversationId) return false;
+    let response;
+    try {
+      response = await Api.post(AUTHOR_APPROVE, {
+        conversation_id: conversationId,
+        name: name.value,                        // the exact text in the box
+        services,
+      });
+    } catch (err) {
+      UI.toast(err.message, "error");
+      return false;
+    }
+    return handleAuthorResponse(response, conversationId, name.value, services);
+  }
+
+  async function ensureConversation() {
+    if (active) return active;
+    try {
+      const conv = await Api.post("/api/conversations", { mode: els.mode.value,
+        model: els.model.value, project_id: projects.active || "" });
+      active = conv.id;
+      els.title.textContent = conv.title || t("chat.untitled");
+      conversations = await Api.get(`/api/conversations${projectQuery()}`);
+      renderList();
+      return active;
+    } catch (err) {
+      UI.toast(err.message, "error");
+      return null;
+    }
+  }
+
+  /* The first ORCID answer had several people: no works were fetched. Ask
+     which person, then make a new call with that iD only after the pick. */
+  async function pickAuthorCandidate(response, name, services) {
+    const radios = [];
+    const rows = (response.candidates || []).map((candidate, index) => {
+      const radio = h("input", { type: "radio", name: "author-candidate",
+        value: candidate.orcid || "" });
+      if (index === 0) radio.checked = true;
+      radios.push(radio);
+      return h("label.author-candidate", radio,
+        h("span.author-candidate-name", candidate.name || t("chat.authorNoName")),
+        h("code", candidate.orcid || ""),
+        candidate.affiliation ? h("span.muted", candidate.affiliation) : null);
+    });
+    const ok = await UI.modal(t("chat.authorPickTitle"), h("div.form-stack",
+      h("p", t("chat.authorPickIntro")),
+      h("p.muted", t("chat.authorPickName").replace("{name}", name)),
+      h("div.author-candidates", rows.length ? rows : h("p.note", t("chat.authorNoCandidates")))),
+      [
+        { label: t("common.cancel"), value: false, kind: "ghost" },
+        { label: t("chat.authorPick"), value: "pick", kind: "primary" }]);
+    if (ok !== "pick") return false;            // no works fetched until a pick
+    const radio = radios.find((item) => item.checked);
+    if (!radio || !radio.value) {
+      UI.toast(t("chat.authorPickOne"), "error");
+      return false;
+    }
+    let picked;
+    try {
+      picked = await Api.post(AUTHOR_APPROVE, {
+        conversation_id: response.conversation_id || active,
+        name, services, orcid: radio.value,
+        candidates_shown: response.author?.candidates_shown || 0,
+      });
+    } catch (err) {
+      UI.toast(err.message, "error");
+      return false;
+    }
+    return handleAuthorResponse(picked, response.conversation_id || active,
+      name, services);
+  }
+
+  /* Results are already an assistant message built by the server; append it
+     without pretending the model is still writing. */
+  async function handleAuthorResponse(response, conversationId, name, services) {
+    if (response.ambiguous) {
+      return pickAuthorCandidate({ ...response, conversation_id: conversationId },
+        name, services);
+    }
+    els.thread.querySelector(".empty-state")?.remove();
+    if (response.user_message) els.thread.appendChild(messageEl(response.user_message));
+    if (response.assistant_message) {
+      els.thread.appendChild(messageEl(response.assistant_message));
+    }
+    try {
+      conversations = await Api.get(`/api/conversations${projectQuery()}`);
+      renderList();
+      els.title.textContent = conversations.find((c) => c.id === conversationId)?.title || "";
+    } catch (_) { /* the answer is already on screen */ }
+    scroll();
+    return true;
   }
 
   async function open(id) {
@@ -912,16 +1085,19 @@ const Chat = (() => {
     if (recipe) extra.recipe = recipe;
     if (skill) extra.skill = skill.name;
     if (els.useTools.checked) extra.use_tools = true;
+    let researchAuthor = "";
     if (recipe === "research") {
-      const query = await approveResearch(els.input.value.trim());
-      if (!query) return;
+      const approved = await approveResearch(els.input.value.trim());
+      if (!approved) return;
       extra.allow_public = true;
-      extra.web_query = query;
+      extra.web_query = approved.query;
+      researchAuthor = approved.author || "";
     }
-    if (!active) {
-      const conv = await Api.post("/api/conversations", { mode: els.mode.value, model: els.model.value,
-        project_id: projects.active || "" });
-      active = conv.id;
+    if (!(await ensureConversation())) return;
+    if (researchAuthor) {
+      // Optional "Also look up an author": its own consent box, its own
+      // approval endpoint. Cancelling it does not cancel the research.
+      await openAuthorConsent(researchAuthor);
     }
     els.input.value = "";
     attachments = [];
@@ -1210,6 +1386,14 @@ const Chat = (() => {
       if (meta.code.corrections) chips.push(chip(t("chat.codeCorrectedChip")
         .replace("{n}", meta.code.corrections), ""));
     }
+    if (meta.author) {
+      const counts = meta.author.counts || {};
+      const found = Object.values(counts).reduce((sum, n) => sum + (Number(n) || 0), 0);
+      chips.push(chip(t("chat.authorChip").replace("{n}", found), "ok",
+        t("chat.authorChipTitle")
+          .replace("{services}", (meta.author.services || []).join(", "))
+          .replace("{candidates}", meta.author.candidates_shown || 0)));
+    }
     if (meta.recipe) chips.push(chip(t(`chat.recipe${meta.recipe.charAt(0).toUpperCase()}${meta.recipe.slice(1)}`), "ok",
       t("chat.recipeChipTitle")));
     if (meta.skill?.name) chips.push(chip(
@@ -1273,7 +1457,7 @@ const Chat = (() => {
     if (ms) chips.push(chip(UI.fmtMs(ms)));
     if (meta.completion_tokens) chips.push(chip(t("chat.tokens").replace("{n}", meta.completion_tokens)));
     const actions = [];
-    if ((m.stages && m.stages.length) || meta.swarm || meta.lce) {
+    if ((m.stages && m.stages.length) || meta.swarm || meta.lce || meta.author) {
       actions.push(button(t("chat.explore"), () => Explore.open(m), "ghost small"));
     }
     if (meta.status === "failed" || meta.status === "stopped") {
@@ -1622,6 +1806,7 @@ const Explore = (() => {
         h("span", ` ${e.spec_id} · ${t(`explore.receipt.kind.${e.tipo}`, e.tipo)} · ${e.bytes} B`),
         chip(t(e.allowed ? "explore.receipt.toolAllowed" : "explore.receipt.toolBlocked"),
           e.allowed ? "" : "warn"),
+        e.personal_name ? chip(t("explore.receipt.personalName"), "warn") : null,
         e.approved_by
           ? h("span.muted", ` ${t("explore.receipt.toolApprovedBy")} ${t(`explore.receipt.toolBy.${e.approved_by}`, e.approved_by)}`)
           : null))));

@@ -188,17 +188,25 @@ def _quiet_get(url: str, timeout: float = AUTHOR_TIMEOUT_S) -> Any:
 
 def _author_get(ctx: Any, service: str, name: str, url: str, *,
                 personal_name: bool, timeout: float = AUTHOR_TIMEOUT_S) -> Any:
+    # ``valor`` is the name only when the name itself is in the query; a
+    # works-by-ORCID request carries an iD, not the text. The ledger still
+    # marks every send of an author lookup with ``personal_name=True``: the
+    # receipt says this call is about a person, and its bytes are the real
+    # path+query bytes of the request, not just the name's length.
     valor = name if personal_name else ""
+    parts = urllib.parse.urlsplit(url)
+    nbytes = (len((parts.path or "").encode("utf-8"))
+              + len((parts.query or "").encode("utf-8")))
     # Mark the attempt before the policy check, as ToolContext._send does:
     # a denied check already records its blocked event, and the broker's
     # finally block must not add a second, non-blocked zero-byte one.
     ctx.attempted = True
     try:
         egress.check_call(
-            url, len(valor.encode("utf-8")), reason=f"author search ({service})",
+            url, nbytes, reason=f"author search ({service})",
             kind=egress.AUTHOR_QUERY, spec_id=ctx.spec.id,
             aprobado_por=ctx.approved_by, valor=valor,
-            personal_name=bool(personal_name),
+            personal_name=True,
         )
     except egress.EgressDenied:
         raise

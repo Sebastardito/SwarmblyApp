@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- **Author search in the chat** (`swarmbly_app/author_search.py`,
+  `api/__init__.py`, `web/js/chat.js`, i18n). When `tools.author.enabled` is
+  on, the composer shows “Look up an author” and the research recipe has an
+  optional “Also look up an author” field. Both open one consent box with the
+  exact editable name, ORCID/OpenAlex/PubMed checkboxes (all on by default),
+  the sentence “This name will be sent to: … It is a person's name.” and
+  Run/Cancel. Cancel sends nothing. `POST /api/author/lookup` (alias
+  `/api/author/approve`) is the only route that issues the per-service broker
+  tokens and invokes the tools; with the switch off it refuses with a plain
+  message and registers nothing. The answer is a Markdown table built in code
+  from `normalise_works` (title, year, venue, DOI link, source) with `[A1]`,
+  `[A2]` labels; ambiguous ORCID stops after the people search, returns
+  candidates (name, iD, affiliation) and fetches no works until the user picks
+  one. `meta.author` records `{name_sha256, services, counts,
+  candidates_shown}`; the receipt lists each send with its host, real bytes,
+  `AUTHOR_QUERY` and `personal_name: true`. Titles stay text: the UI's Markdown
+  escapes HTML and the app never reads a title as an instruction. New routes
+  `GET /api/author/status`, `POST /api/author/cancel`; English/Spanish UI.
+
 - **Skills in the app: import, offer and activation** (`api/__init__.py`,
   `chat.py`, `web/js/chat.js`). A project gets a `skills/` folder; importing a
   skill copies only `SKILL.md` and its `.md`/`.txt` references, and the answer
