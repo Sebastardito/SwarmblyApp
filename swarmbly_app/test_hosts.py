@@ -324,8 +324,10 @@ class _MappedHTTPHandler(urllib.request.HTTPHandler):
 
 class _MappedHTTPSHandler(urllib.request.HTTPSHandler):
     def https_open(self, req: urllib.request.Request) -> Any:
-        return self.do_open(_MappedHTTPSConnection, req, context=self._context,
-                            check_hostname=self._check_hostname)
+        # Only the SSL context: Python 3.12 removed HTTPSHandler's
+        # ``_check_hostname`` and HTTPSConnection's ``check_hostname`` argument;
+        # host-name checking lives on the context in every supported version.
+        return self.do_open(_MappedHTTPSConnection, req, context=self._context)
 
 
 def _mapped_opener() -> urllib.request.OpenerDirector:
