@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shlex
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .. import egress
+from .. import skills
 from ..config import ConfigError, validate_changes
 from ..egress import host_of
 from ..keystore import SECRET_KEYS, delete_secret, get_secret, redact, set_secret
@@ -39,6 +41,122 @@ class _RevalidatedStatic(StaticFiles):
         resp = super().file_response(*args, **kwargs)
         resp.headers["Cache-Control"] = "no-cache"
         return resp
+
+
+# ---------------------------------------------------------------------------
+# Skills (3.4): per-project folders under <project>/skills/
+# ---------------------------------------------------------------------------
+# The loader (skills.py) owns safety. The API only lists, imports and matches;
+# the body is never returned in list responses and never executed.
+
+_SKILL_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
+_SKILL_MANIFESTS = ".imports.json"
+
+
+def _skills_root(project: Any) -> Path:
+    return Path(project.path) / "skills"
+
+
+def _read_skill_manifests(root: Path) -> dict[str, dict[str, Any]]:
+    path = root / _SKILL_MANIFESTS
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_skill_manifests(root: Path, data: dict[str, dict[str, Any]]) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / _SKILL_MANIFESTS
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _skill_size(root: Path) -> int:
+    total = 0
+    try:
+        for path in root.rglob("*"):
+            if path.is_file() and not path.is_symlink():
+                total += path.stat().st_size
+    except OSError:
+        return total
+    return total
+
+
+def _skill_info(skill: Any, manifests: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Listing metadata; the body is deliberately not sent to the browser."""
+    saved = manifests.get(skill.name) or {}
+    return {
+        "name": skill.name,
+        "description": skill.description,
+        "source": str(saved.get("source") or skill.root),
+        "destination": str(skill.root),
+        "size": _skill_size(skill.root),
+        "sha256": skill.sha256,
+        "license": skill.license,
+        "compatibility": skill.compatibility,
+        "allowed_tools": list(skill.allowed_tools),
+        "requested_tools": list(skill.requested_tools),
+        "tools_note": skill.tools_note,
+        "warnings": list(skill.warnings),
+        "copied": list(saved.get("copied") or []),
+        "ignored": list(saved.get("ignored") or []),
+        "imported_at": str(saved.get("imported_at") or ""),
+    }
+
+
+_TOKEN_RE = re.compile(r"[0-9a-záéíóúñü]+", re.I)
+_STOP = frozenset("""
+a an and are as at be by can did do does for from has have how i if in into is it
+its me my no not of on or our should than that the their them then there these
+they this to up us was we were what when where which who why will with would you
+your al algo como con cual cuando de del desde donde dos el ella ellas ellos en
+entre era es esa ese eso esta este esto fue ha han hasta hay la las le les lo los
+más me mi mis muy no nos o para pero por porque que qué se sea ser si sin sobre su
+sus te tiene todo tu tus un una uno unos y ya
+""".split())
+
+
+def _match_tokens(text: str) -> set[str]:
+    return {word for word in _TOKEN_RE.findall((text or "").lower())
+            if len(word) >= 3 and word not in _STOP}
+
+
+def _skill_suggestions(items: list[dict[str, Any]], text: str,
+                       limit: int = 3) -> list[dict[str, Any]]:
+    """Simple lexical offer: name + description words against the message.
+
+    Two shared meaningful words, or any of the skill's name words, offer the
+    skill. The score is the share of the first six description words found,
+    plus 0.2 when the name matches. This only proposes; activation is the
+    user's click (or the explicit selector).
+    """
+    words = _match_tokens(text)
+    if len(words) < 2:
+        return []
+    out: list[dict[str, Any]] = []
+    for item in items:
+        description = _match_tokens(f"{item.get('name', '')} {item.get('description', '')}")
+        if not description:
+            continue
+        overlap = description & words
+        name_overlap = _match_tokens(str(item.get("name") or "")) & words
+        if len(overlap) < 2 and not name_overlap:
+            continue
+        score = len(overlap) / max(1, min(len(description), 6))
+        if name_overlap:
+            score += 0.2
+        if score < 0.25:
+            continue
+        out.append({"name": item.get("name", ""),
+                    "description": item.get("description", ""),
+                    "score": round(min(score, 1.0), 3),
+                    "matched": sorted(overlap)})
+    out.sort(key=lambda item: (-item["score"], item["name"]))
+    return out[:limit]
+
 
 
 def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
@@ -572,6 +690,19 @@ def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
             text = str(list_job.get("operation") or "").strip()
         if not text:
             raise HTTPException(status_code=400, detail="empty message")
+        skill_name = str(body.get("skill") or "").strip()
+        skill_obj = None
+        if skill_name:
+            conv = state.db.get_conversation(conv_id)
+            if conv is None:
+                raise HTTPException(status_code=404,
+                                    detail=f"unknown conversation {conv_id}")
+            project_id = str(conv.get("project_id") or "")
+            if not project_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="skills belong to a project; open a project first")
+            skill_obj = _load_skill(project_id, skill_name)
         try:
             user_msg, assistant_msg = state.chat.send(
                 conv_id, text,
@@ -579,12 +710,101 @@ def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
                 model=body.get("model") or None,
                 allow_public=bool(body.get("allow_public")),
                 web_query=str(body.get("web_query") or ""),
-                recipe=recipe, list_job=list_job)
+                recipe=recipe, list_job=list_job, skill=skill_obj)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ListJobError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"user_message": user_msg, "assistant_message": assistant_msg}
+
+    # ---- skills (3.4): import, list and offer, never a tool ---------------------
+    def _project_or_404(project_id: str):
+        project = state.projects.get(project_id)
+        if project is None:
+            raise HTTPException(status_code=404, detail="project not found")
+        return project
+
+    def _discover(project_id: str):
+        project = _project_or_404(project_id)
+        root = _skills_root(project)
+        errors: list[tuple[Path, str]] = []
+        found = skills.discover(root, errors=errors) if root.is_dir() else []
+        manifests = _read_skill_manifests(root)
+        return project, root, found, [(str(path), reason) for path, reason in errors], manifests
+
+    @app.get("/api/skills")
+    def list_skills(project_id: str = "") -> dict:
+        if not project_id:
+            return {"project_id": "", "skills": [], "errors": []}
+        _project, _root, found, errors, manifests = _discover(project_id)
+        return {"project_id": project_id,
+                "skills": [_skill_info(skill, manifests) for skill in found],
+                "errors": [{"path": path, "reason": reason}
+                           for path, reason in errors]}
+
+    @app.post("/api/skills/import")
+    def import_skill(body: dict[str, Any]) -> dict:
+        project_id = str(body.get("project_id") or "")
+        _project_or_404(project_id)
+        raw = str(body.get("path") or "").strip()
+        if not raw:
+            raise HTTPException(status_code=400,
+                                detail="choose the skill folder to import")
+        source = Path(raw).expanduser()
+        if source.is_symlink() or not source.is_dir():
+            raise HTTPException(status_code=400,
+                                detail=f"{source}: not a folder")
+        _project, root, _found, _errors, _manifests = _discover(project_id)
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            imported = skills.import_skill(source, root,
+                                           overwrite=bool(body.get("overwrite")))
+        except skills.SkillError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=400,
+                                detail=f"cannot import {source}: {exc}") from exc
+        manifests = _read_skill_manifests(root)
+        manifest = imported.manifest
+        manifests[imported.name] = {
+            "source": manifest.source if manifest else str(source),
+            "copied": list(manifest.copied) if manifest else [],
+            "ignored": ([{"path": path, "reason": reason}
+                         for path, reason in manifest.ignored] if manifest else []),
+            "imported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        _write_skill_manifests(root, manifests)
+        return {"imported": True, "skill": _skill_info(imported, manifests)}
+
+    @app.post("/api/skills/match")
+    def match_skills(body: dict[str, Any]) -> dict:
+        """Offer skills whose name/description share words with the message.
+
+        Two shared meaningful words, or a name word, are enough. The route
+        only offers; a skill starts only when the user picks it.
+        """
+        project_id = str(body.get("project_id") or "")
+        text = str(body.get("text") or "")
+        if not project_id or not text.strip():
+            return {"suggestions": [], "errors": []}
+        _project, _root, found, errors, manifests = _discover(project_id)
+        items = [_skill_info(skill, manifests) for skill in found]
+        return {"suggestions": _skill_suggestions(items, text),
+                "errors": [{"path": path, "reason": reason}
+                           for path, reason in errors]}
+
+    def _load_skill(project_id: str, name: str) -> Any:
+        if not name or not _SKILL_NAME_RE.fullmatch(name) or "--" in name:
+            raise HTTPException(status_code=400, detail=f"invalid skill name {name!r}")
+        _project, _root, found, errors, _manifests = _discover(project_id)
+        skill = next((item for item in found if item.name == name), None)
+        if skill is None:
+            detail = f"no skill named {name!r}"
+            if errors:
+                detail += ": " + "; ".join(f"{path}: {reason}"
+                                           for path, reason in errors[:3])
+            raise HTTPException(status_code=404, detail=detail)
+        return skill
 
     # ---- recipes (3.3): "¿Qué quieres hacer?" ------------------------------------
     @app.get("/api/recipes")

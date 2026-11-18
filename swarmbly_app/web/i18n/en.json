@@ -440,7 +440,9 @@
    "unknown": "Labels without a source",
    "mismatched": "Labels with another file",
    "note": "A simple measure: it counts sentences carrying a label; it does not check that the label supports the sentence (that is 3.2's verifier)."
-  }
+  },
+  "skill": "Skill",
+  "skillSha": "Skill SHA-256"
  },
  "monitor": {
   "title": "Swarm",
@@ -1180,5 +1182,42 @@
    "approved": "approved",
    "suspended": "suspended"
   }
+ },
+ "skills": {
+  "title": "Skills",
+  "manage": "Skills",
+  "installed": "Skills in this project",
+  "empty": "No skills imported yet.",
+  "noneAvailable": "No skills imported",
+  "noSkill": "No skill",
+  "needProject": "Skills belong to a project: open or create one first.",
+  "pick": "Skill",
+  "active": "Skill active",
+  "activeNote": "Its body goes to the model as quoted third-party instructions on answers produced on this computer; it cannot change permissions, tools or destinations.",
+  "clear": "Clear the active skill",
+  "dismiss": "Dismiss the suggestion",
+  "hashTitle": "SHA-256 of SKILL.md: {sha}",
+  "offer": "This looks like “{name}”. Use the skill?",
+  "use": "Use skill",
+  "selected": "Skill “{name}” selected. It activates only for your next messages; nothing runs by itself.",
+  "source": "Source",
+  "allowed": "Tools requested by the skill",
+  "none": "none",
+  "notGranted": "requested by the skill — not granted",
+  "compatibility": "Compatibility",
+  "license": "Licence",
+  "warnings": "Warnings",
+  "ignored": "Ignored files · {n}",
+  "nothingIgnored": "No files were ignored on import.",
+  "errors": "Folders that could not be read · {n}",
+  "folder": "Skill folder to import",
+  "importTitle": "Import a skill folder",
+  "importHelp": "The app copies only SKILL.md and its .md/.txt references into this project's skills/ folder. Scripts, executables, binaries, archives and links are left out and listed here; nothing is run or imported as code.",
+  "import": "Import",
+  "overwrite": "Replace it if a skill with the same name exists",
+  "imported": "Skill “{name}” imported.",
+  "copied": "{n} files copied.",
+  "usedChip": "Skill: {name}",
+  "usedTitle": "The model saw this skill's body as quoted material (SHA-256 {sha}…)."
  }
 }

@@ -11,6 +11,10 @@ const Chat = (() => {
   let conversations = [];
   let attachments = [];
   let recipe = null;             // 3.3: the recipe picked for the next message
+  let skills = [];               // 3.4: the active project's imported skills
+  let skill = null;              // the skill the user picked (never automatic)
+  let skillOffer = null;         // a suggestion, shown as a chip, not activated
+  let skillOfferTimer = null;
   let projects = { items: [], active: "", default_parent: "", default_parent_warning: "" };
   const pending = {};           // message_id -> {el, partial}
   const early = {};             // message_id -> events that arrived before the element
@@ -46,6 +50,7 @@ const Chat = (() => {
     els.input.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
     });
+    els.input.addEventListener("input", scheduleSkillOffer);
     els.file = h("input", { type: "file", accept: ATTACH_TYPES, multiple: true, hidden: true });
     els.file.addEventListener("change", addFiles);
     els.attachList = h("div.attach-list");
@@ -57,15 +62,25 @@ const Chat = (() => {
     els.hint = h("p.composer-hint");
     els.mode.addEventListener("change", updateHint);
     els.recipeTag = h("div.recipe-tag", { hidden: true });
+    els.skillTag = h("div.skill-tag", { hidden: true });
+    els.skillOffer = h("div.skill-offer", { hidden: true });
+    els.skill = select([{ value: "", label: t("skills.noSkill") }], "",
+      (value) => {
+        const found = skills.find((s) => s.name === value);
+        if (found) selectSkill(found); else clearSkill();
+      }, { "aria-label": t("skills.pick") });
     const composer = h("div.composer",
       els.attachList,
       els.recipeTag,
+      els.skillTag,
+      els.skillOffer,
       els.input,
       h("div.composer-bar",
         button(t("chat.attach"), () => els.file.click(), "ghost small", { title: t("chat.attachHint") }),
         els.file,
         h("label.inline", h("span", t("chat.mode")), els.mode),
         h("label.inline", h("span", t("chat.model")), els.model),
+        h("label.inline", h("span", t("skills.pick")), els.skill),
         h("span.spacer"), els.stop, els.send),
       els.hint);
     els.projectStrip = h("div.project-strip");
@@ -85,6 +100,7 @@ const Chat = (() => {
   async function loadProjects() {
     try { projects = await Api.get("/api/projects"); } catch (_) { /* keep the last list */ }
     renderProjects();
+    await loadSkills();
   }
 
   function renderProjects() {
@@ -115,6 +131,7 @@ const Chat = (() => {
       actions.push(h("label.inline.small", { title: t("project.includePersonalHint") }, incl,
         h("span", t("project.includePersonal"))));
       actions.push(button(t("project.documents"), showDocuments, "ghost small"));
+      actions.push(button(t("skills.manage"), showSkills, "ghost small"));
       actions.push(button(t("project.export"), exportProject, "ghost small"));
       actions.push(button(t("project.close"), closeProject, "ghost small"));
     }
@@ -124,6 +141,178 @@ const Chat = (() => {
       els.projectStrip.appendChild(h("p.project-path", { title: p.path }, p.path));
       if (p.cloud_warning) els.projectStrip.appendChild(h("p.note.project-warning", t("project.cloudWarning")));
     }
+  }
+
+  // ---- skills (3.4): offer, pick, import; never run anything -------------------
+  async function loadSkills() {
+    if (!projects.active) {
+      skills = [];
+      if (skill) { skill = null; renderSkillTag(); }
+      renderSkillSelector();
+      renderSkillOffer();
+      return;
+    }
+    try {
+      const data = await Api.get(`/api/skills?project_id=${encodeURIComponent(projects.active)}`);
+      skills = data.skills || [];
+    } catch (_) { skills = []; }
+    if (skill && !skills.some((s) => s.name === skill.name)) {
+      skill = null;
+      renderSkillTag();
+    }
+    renderSkillSelector();
+    renderSkillOffer();
+  }
+
+  function renderSkillSelector() {
+    if (!els.skill) return;
+    clear(els.skill);
+    const first = projects.active
+      ? (skills.length ? t("skills.noSkill") : t("skills.noneAvailable"))
+      : t("skills.needProject");
+    els.skill.appendChild(h("option", { value: "" }, first));
+    for (const s of skills) {
+      const opt = h("option", { value: s.name }, s.name);
+      if (skill && skill.name === s.name) opt.selected = true;
+      els.skill.appendChild(opt);
+    }
+    els.skill.disabled = !projects.active || !skills.length;
+  }
+
+  function selectSkill(s) {
+    if (!s || !s.name) return;
+    skill = { name: s.name, description: s.description || "", sha256: s.sha256 || "" };
+    skillOffer = null;
+    renderSkillTag();
+    renderSkillOffer();
+    renderSkillSelector();
+  }
+
+  function clearSkill() {
+    skill = null;
+    renderSkillTag();
+    renderSkillOffer();
+    renderSkillSelector();
+  }
+
+  function renderSkillTag() {
+    if (!els.skillTag) return;
+    clear(els.skillTag);
+    els.skillTag.hidden = !skill;
+    if (!skill) return;
+    els.skillTag.appendChild(h("span.chip.ok", { title: skill.sha256 ? t("skills.hashTitle").replace("{sha}", skill.sha256) : "" },
+      `${t("skills.active")}: ${skill.name}`,
+      h("button.chip-x", { type: "button", onclick: clearSkill,
+        "aria-label": t("skills.clear") }, "×")));
+    els.skillTag.appendChild(h("span.muted.small", t("skills.activeNote")));
+  }
+
+  function scheduleSkillOffer() {
+    clearTimeout(skillOfferTimer);
+    skillOfferTimer = null;
+    if (!projects.active || skill) {
+      skillOffer = null;
+      renderSkillOffer();
+      return;
+    }
+    const text = els.input.value.trim();
+    if (text.length < 3) {
+      skillOffer = null;
+      renderSkillOffer();
+      return;
+    }
+    skillOfferTimer = setTimeout(() => fetchSkillOffer(text), 350);
+  }
+
+  async function fetchSkillOffer(text) {
+    try {
+      const data = await Api.post("/api/skills/match", {
+        project_id: projects.active, text });
+      if (skill || els.input.value.trim() !== text) return;
+      skillOffer = (data.suggestions || [])[0] || null;
+    } catch (_) { skillOffer = null; }
+    renderSkillOffer();
+  }
+
+  function renderSkillOffer() {
+    if (!els.skillOffer) return;
+    clear(els.skillOffer);
+    els.skillOffer.hidden = !skillOffer;
+    if (!skillOffer) return;
+    els.skillOffer.appendChild(h("div.skill-offer-row",
+      h("span", t("skills.offer").replace("{name}", skillOffer.name)),
+      h("span.muted.small", skillOffer.description || ""),
+      button(t("skills.use"), () => selectSkill(skillOffer), "primary small"),
+      h("button.chip-x", { type: "button", onclick: () => { skillOffer = null; renderSkillOffer(); },
+        "aria-label": t("skills.dismiss") }, "×")));
+  }
+
+  async function showSkills() {
+    if (!projects.active) { UI.toast(t("skills.needProject"), "error"); return; }
+    let data;
+    try {
+      data = await Api.get(`/api/skills?project_id=${encodeURIComponent(projects.active)}`);
+    } catch (e) { UI.toast(e.message, "error"); return; }
+    const list = h("div.skill-list");
+    if (!(data.skills || []).length) list.appendChild(h("p.muted", t("skills.empty")));
+    for (const s of data.skills || []) {
+      const ignored = s.ignored || [];
+      list.appendChild(h("div.skill-row",
+        h("div.skill-head", h("strong", s.name), chip(UI.fmtBytes(s.size))),
+        h("p.skill-desc", s.description || ""),
+        h("p.muted.small", `${t("skills.source")}: ${s.source}`),
+        h("p.muted.small", `${t("skills.allowed")}: ${(s.allowed_tools || []).join(", ") || t("skills.none")} — ${t("skills.notGranted")}`),
+        s.compatibility ? h("p.muted.small", `${t("skills.compatibility")}: ${s.compatibility}`) : null,
+        s.license ? h("p.muted.small", `${t("skills.license")}: ${s.license}`) : null,
+        s.warnings && s.warnings.length
+          ? h("p.note", `${t("skills.warnings")}: ${s.warnings.join("; ")}`) : null,
+        ignored.length
+          ? h("details", h("summary", t("skills.ignored").replace("{n}", ignored.length)),
+              h("ul", ignored.map((i) => h("li", `${i.path} — ${i.reason}`))))
+          : h("p.muted.small", t("skills.nothingIgnored")),
+        h("div.inline-form", button(t("skills.use"), () => {
+          selectSkill(s);
+          UI.toast(t("skills.selected").replace("{name}", s.name), "ok");
+        }, "small"))));
+    }
+    const errors = data.errors || [];
+    const path = h("input.text", { type: "text", placeholder: "~/Downloads/my-skill",
+      "aria-label": t("skills.folder") });
+    const overwrite = h("input", { type: "checkbox" });
+    const result = h("div.skill-import-result");
+    const importBtn = button(t("skills.import"), async () => {
+      if (!path.value.trim()) return;
+      importBtn.disabled = true;
+      try {
+        const res = await Api.post("/api/skills/import", {
+          project_id: projects.active, path: path.value.trim(),
+          overwrite: overwrite.checked });
+        const imported = res.skill || {};
+        clear(result);
+        result.appendChild(h("p.ok", t("skills.imported").replace("{name}", imported.name || "")));
+        result.appendChild(h("p.muted.small", t("skills.copied").replace("{n}", (imported.copied || []).length)));
+        if (imported.ignored && imported.ignored.length) {
+          result.appendChild(h("details", { open: true },
+            h("summary", t("skills.ignored").replace("{n}", imported.ignored.length)),
+            h("ul", imported.ignored.map((i) => h("li", `${i.path} — ${i.reason}`)))));
+        }
+        await loadSkills();
+      } catch (e) {
+        clear(result);
+        result.appendChild(h("p.error", e.message));
+      }
+      importBtn.disabled = false;
+    }, "primary small");
+    UI.modal(t("skills.title"), h("div.skill-panel",
+      h("h3", t("skills.installed")), list,
+      errors.length ? h("details", h("summary", t("skills.errors").replace("{n}", errors.length)),
+        h("ul", errors.map((e) => h("li", `${e.path} — ${e.reason}`)))) : null,
+      h("section.skill-import",
+        h("h3", t("skills.importTitle")),
+        h("p.muted", t("skills.importHelp")),
+        h("div.inline-form", path, importBtn),
+        h("label.inline.small", overwrite, h("span", t("skills.overwrite"))),
+        result)), [{ label: t("common.close"), value: null, kind: "primary" }]);
   }
 
   async function onProjectChoice(value) {
@@ -697,6 +886,7 @@ const Chat = (() => {
     }
     const extra = {};
     if (recipe) extra.recipe = recipe;
+    if (skill) extra.skill = skill.name;
     if (recipe === "research") {
       const query = await approveResearch(els.input.value.trim());
       if (!query) return;
@@ -940,6 +1130,9 @@ const Chat = (() => {
     }
     if (meta.recipe) chips.push(chip(t(`chat.recipe${meta.recipe.charAt(0).toUpperCase()}${meta.recipe.slice(1)}`), "ok",
       t("chat.recipeChipTitle")));
+    if (meta.skill?.name) chips.push(chip(
+      t("skills.usedChip").replace("{name}", meta.skill.name), "ok",
+      t("skills.usedTitle").replace("{sha}", (meta.skill.sha256 || "").slice(0, 16))));
     // 3.3, recipe 3: a comparison between the documents and a public result, by code
     if (meta.comparisons?.length) chips.push(chip(t("chat.compareChip"), "ok",
       t("chat.compareChipTitle") + "\n" + meta.comparisons.map((c) =>
@@ -1249,7 +1442,9 @@ const Explore = (() => {
       readout(t("explore.rho"), sw.rho_achieved, "measured"),
       readout(t("explore.total"), UI.fmtMs(sw.total_ms ?? meta.total_ms), "measured"),
       readout(t("explore.coverage"), sw.coverage ? sw.coverage.c_eff : null, "estimated"),
-      readout(t("explore.embedder"), sw.embedder, null))];
+      readout(t("explore.embedder"), sw.embedder, null),
+      readout(t("explore.skill"), meta.skill?.name || null, "measured"),
+      readout(t("explore.skillSha"), meta.skill?.sha256 ? meta.skill.sha256.slice(0, 16) : null, "measured"))];
     if (meta.local_reason) sections.push(h("p.note", I18n.reason(meta.local_reason)));
     if (meta.passages_withheld) sections.push(h("p.note", meta.passages_withheld));
     if (meta.receipt) sections.push(h("h3", t("explore.receipt.title")), receiptView(meta.receipt));

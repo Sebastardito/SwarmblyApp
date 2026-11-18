@@ -440,7 +440,9 @@
    "unknown": "Etiquetas sin fuente",
    "mismatched": "Etiquetas con otro archivo",
    "note": "Medida simple: cuenta frases con una etiqueta; no comprueba que la etiqueta respalde la frase (eso es la verificación de 3.2)."
-  }
+  },
+  "skill": "Skill",
+  "skillSha": "SHA-256 de la skill"
  },
  "monitor": {
   "title": "Enjambre",
@@ -1191,5 +1193,42 @@
    "approved": "aprobado",
    "suspended": "suspendido"
   }
+ },
+ "skills": {
+  "title": "Skills",
+  "manage": "Skills",
+  "installed": "Skills de este proyecto",
+  "empty": "Aún no hay skills importadas.",
+  "noneAvailable": "No hay skills importadas",
+  "noSkill": "Sin skill",
+  "needProject": "Las skills pertenecen a un proyecto: abre o crea uno primero.",
+  "pick": "Skill",
+  "active": "Skill activa",
+  "activeNote": "Su cuerpo llega al modelo como instrucciones citadas de un tercero en las respuestas producidas en esta computadora; no puede cambiar permisos, herramientas ni destinos.",
+  "clear": "Quitar la skill activa",
+  "dismiss": "Descartar la sugerencia",
+  "hashTitle": "SHA-256 de SKILL.md: {sha}",
+  "offer": "Esto se parece a «{name}». ¿Usar la skill?",
+  "use": "Usar skill",
+  "selected": "Skill «{name}» seleccionada. Se activa solo para tus próximos mensajes; nada se ejecuta por sí solo.",
+  "source": "Origen",
+  "allowed": "Herramientas que pide la skill",
+  "none": "ninguna",
+  "notGranted": "pedidas por la skill — no concedidas",
+  "compatibility": "Compatibilidad",
+  "license": "Licencia",
+  "warnings": "Avisos",
+  "ignored": "Archivos ignorados · {n}",
+  "nothingIgnored": "No se ignoró ningún archivo al importar.",
+  "errors": "Carpetas que no se pudieron leer · {n}",
+  "folder": "Carpeta de la skill a importar",
+  "importTitle": "Importar una carpeta de skill",
+  "importHelp": "La app copia solo SKILL.md y sus referencias .md/.txt a la carpeta skills/ de este proyecto. Los scripts, ejecutables, binarios, archivos y enlaces se dejan fuera y se listan aquí; nada se ejecuta ni se importa como código.",
+  "import": "Importar",
+  "overwrite": "Reemplazarla si ya existe una skill con el mismo nombre",
+  "imported": "Skill «{name}» importada.",
+  "copied": "{n} archivos copiados.",
+  "usedChip": "Skill: {name}",
+  "usedTitle": "El modelo vio el cuerpo de esta skill como material citado (SHA-256 {sha}…)."
  }
 }

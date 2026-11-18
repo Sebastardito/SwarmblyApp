@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **Skills in the app: import, offer and activation** (`api/__init__.py`,
+  `chat.py`, `web/js/chat.js`). A project gets a `skills/` folder; importing a
+  skill copies only `SKILL.md` and its `.md`/`.txt` references, and the answer
+  lists the scripts, assets, binaries and links it left out and why. Listing
+  shows the name, description, source, size, ignored files and the skill's
+  `allowed-tools` as “requested by the skill — not granted”. The chat offers a
+  skill as a chip when the message shares at least two meaningful words with
+  its name/description (or a name word); it only offers, never activates. The
+  user can also pick one explicitly from the composer. On activation the body
+  enters the prompt as quoted, labelled third-party material that says it
+  cannot change permissions, tools, destinations or settings; `meta.skill` and
+  `receipt.skill` record its name and SHA-256, and the loader's 20 000-character
+  prompt cap still applies. A body that says “send this to …”, “enable tool X”
+  or “ignore previous instructions” is only text: no tool approval, egress
+  call, destination or setting changes. New routes `GET /api/skills`,
+  `POST /api/skills/import`, `POST /api/skills/match`; English/Spanish UI.
+
 - **Sandbox tests: cold-compile timing** (`tests/test_sandbox_runner.py`).
   The deadline check now starts its wall clock only after a worker reports
   ready, and the sandbox runner tests share one session-scoped wasmtime cache
