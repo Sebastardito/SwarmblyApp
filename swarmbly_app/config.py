@@ -95,6 +95,13 @@ DEFAULTS: dict[str, Any] = {
     # validated here, not in the web UI.
     "recipes": {
         "list_max_items": 200,
+        # Recipe 5: data with code. The model sees headers and at most
+        # ``code_max_sample_rows`` rows per table; the script and correction
+        # ceilings are server-side, not UI hints.
+        "code_max_files": 5,
+        "code_max_script_chars": 20000,
+        "code_max_corrections": 2,
+        "code_max_sample_rows": 5,
     },
     "privacy": {
         "tier": "LOCAL",              # GLOBAL | TRUSTED | LOCAL
@@ -375,6 +382,10 @@ _RANGES = {
     "lce.retrieval_k": (1, 10),
     "log_retention_days": (1, 3650),
     "recipes.list_max_items": (1, 2000),
+    "recipes.code_max_files": (1, 20),
+    "recipes.code_max_script_chars": (1000, 100000),
+    "recipes.code_max_corrections": (0, 5),
+    "recipes.code_max_sample_rows": (1, 20),
 }
 # Never changeable from the browser: binding the admin API elsewhere is a
 # security decision made on the command line, by the machine's owner.

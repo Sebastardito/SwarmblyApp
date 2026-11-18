@@ -425,3 +425,316 @@ def propose_query(text: str, glossary: list[tuple[str, str]] | None = None) -> s
     # Sur"), a person ("la Dra. Ana Pérez") or a code is the user's, not a topic
     # (sealed bank v3.2: a plot name was proposed and, approved, sent)
     return strip_private(" ".join([query, *names]), text or "").strip()[:200]
+
+
+# ---------------------------------------------------------------------------
+# Recipe 5: data with code (3.4)
+# ---------------------------------------------------------------------------
+#
+# The model writes the script, but it never receives the whole file: only the
+# column headers and at most five rows of each table, which is enough to name
+# the columns and choose an operation.  These helpers are host-side and use
+# only the standard library (the XLSX reader is a small zip+XML reader, not a
+# host openpyxl dependency).
+
+CODE_RECIPE = "code"
+CODE_MAX_FILES = 5
+CODE_MAX_QUESTION = 4000
+CODE_SAMPLE_CELL = 160
+
+
+class CodeRecipeError(ValueError):
+    """A data-with-code request the server cannot accept."""
+
+
+class CodeUnavailableError(CodeRecipeError):
+    """The optional sandbox extra is not installed or cannot be imported."""
+
+
+def parse_code_script(text: Any, max_chars: int = 20_000) -> str:
+    """One Python script from a model reply, defensively.
+
+    Fenced blocks win; a bare script is accepted only when the reply has no
+    fence and looks like code.  Prose-only replies, empty scripts, NUL bytes
+    and scripts over ``max_chars`` are refused.
+    """
+    if not isinstance(text, str):
+        raise CodeRecipeError("the model returned no text")
+    if max_chars <= 0:
+        raise CodeRecipeError("the script size limit is invalid")
+    blocks = re.findall(r"```(?:python|py)?[ \t]*\r?\n(.*?)```", text,
+                        flags=re.IGNORECASE | re.DOTALL)
+    script = ""
+    if blocks:
+        script = blocks[0]
+    else:
+        stripped = text.strip()
+        if "```" not in stripped and re.search(
+                r"^\s*(?:import|from|print|#|def |class |for |if )", stripped, re.M):
+            script = stripped
+    script = script.strip("\n").strip()
+    if not script:
+        raise CodeRecipeError("the model did not return a Python script")
+    if "\x00" in script:
+        raise CodeRecipeError("the proposed script contains a NUL byte")
+    if len(script) > max_chars:
+        raise CodeRecipeError(
+            f"the proposed script is longer than {max_chars} characters")
+    return script
+
+
+def _sample_cell(value: Any) -> str:
+    return " ".join(str(value if value is not None else "").split())[:CODE_SAMPLE_CELL]
+
+
+def _clean_rows(rows: list[list[Any]], max_rows: int) -> tuple[list[str], list[list[str]]] | None:
+    rows = [row for row in rows if any(_sample_cell(cell) for cell in row)]
+    if not rows:
+        return None
+    width = max(len(row) for row in rows)
+    padded = [[_sample_cell(row[i]) if i < len(row) else "" for i in range(width)]
+              for row in rows]
+    headers = padded[0]
+    return headers, padded[1:max_rows + 1]
+
+
+def sample_csv(path: Path | str, max_rows: int = 5) -> dict[str, Any] | None:
+    """Header + first ``max_rows`` data rows of a CSV file (never more)."""
+    path = Path(path)
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace", newline="") as handle:
+            sample = handle.read(8192)
+            try:
+                delimiter = csv.Sniffer().sniff(sample, delimiters=",;\t").delimiter
+            except csv.Error:
+                delimiter = ","
+            handle.seek(0)
+            rows: list[list[str]] = []
+            for row in csv.reader(handle, delimiter=delimiter):
+                rows.append(row)
+                if len(rows) >= max_rows + 1:
+                    break
+    except OSError as exc:
+        raise CodeRecipeError(f"cannot read {path.name}: {exc}") from exc
+    cleaned = _clean_rows(rows, max_rows)
+    if cleaned is None:
+        return None
+    headers, data = cleaned
+    return {"name": path.name, "sheet": "", "headers": headers, "rows": data}
+
+
+def _xlsx_column_index(ref: str) -> int:
+    letters = "".join(ch for ch in str(ref) if ch.isalpha()).upper()
+    value = 0
+    for char in letters:
+        value = value * 26 + (ord(char) - 64)
+    return max(0, value - 1)
+
+
+def _xlsx_member(target: str) -> str:
+    if target.startswith("/"):
+        return target.lstrip("/")
+    if target.startswith("xl/"):
+        return target
+    return "xl/" + target.lstrip("/")
+
+
+def _xlsx_rows(sheet: Any, shared: list[str], max_rows: int,
+               main: str) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for row_el in sheet.iter(f"{main}row"):
+        cells: dict[int, str] = {}
+        for cell in row_el.findall(f"{main}c"):
+            index = _xlsx_column_index(cell.get("r", ""))
+            kind = cell.get("t", "")
+            value_el = cell.find(f"{main}v")
+            raw = value_el.text if value_el is not None and value_el.text else ""
+            if kind == "inlineStr":
+                inline = cell.find(f"{main}is")
+                raw = ("" if inline is None else
+                       "".join(t.text or "" for t in inline.iter(f"{main}t")))
+            elif kind == "s":
+                try:
+                    raw = shared[int(raw)]
+                except (ValueError, IndexError):
+                    raw = ""
+            cells[index] = _sample_cell(raw)
+        if cells:
+            width = max(cells) + 1
+            rows.append([cells.get(i, "") for i in range(width)])
+        if len(rows) >= max_rows + 1:
+            break
+    return rows
+
+
+def sample_xlsx_tables(path: Path | str, max_rows: int = 5,
+                       max_tables: int = 3) -> list[dict[str, Any]]:
+    """Header + up to ``max_rows`` rows of each of the first sheets."""
+    import xml.etree.ElementTree as ET
+    import zipfile
+
+    path = Path(path)
+    main = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    rel_ns = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+    found: list[dict[str, Any]] = []
+    try:
+        with zipfile.ZipFile(path) as archive:
+            shared: list[str] = []
+            try:
+                root = ET.fromstring(archive.read("xl/sharedStrings.xml"))
+                for item in root.findall(f"{main}si"):
+                    shared.append("".join(t.text or "" for t in item.iter(f"{main}t")))
+            except (KeyError, ET.ParseError):
+                shared = []
+            targets: dict[str, str] = {}
+            try:
+                rels = ET.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+                targets = {str(rel.get("Id") or ""): str(rel.get("Target") or "")
+                           for rel in rels}
+            except (KeyError, ET.ParseError):
+                targets = {}
+            workbook = ET.fromstring(archive.read("xl/workbook.xml"))
+            for sheet_el in list(workbook.findall(f".//{main}sheet"))[:max_tables]:
+                sheet_name = sheet_el.get("name", "")
+                rel_id = sheet_el.get(f"{rel_ns}id", "")
+                target = targets.get(rel_id, "") or "worksheets/sheet1.xml"
+                member = _xlsx_member(str(Path(target).as_posix()))
+                sheet = ET.fromstring(archive.read(member))
+                cleaned = _clean_rows(_xlsx_rows(sheet, shared, max_rows, main), max_rows)
+                if cleaned is None:
+                    continue
+                headers, data = cleaned
+                found.append({"name": path.name, "sheet": sheet_name,
+                              "headers": headers, "rows": data})
+    except (OSError, KeyError, zipfile.BadZipFile, ET.ParseError) as exc:
+        raise CodeRecipeError(f"cannot read {path.name}: {exc}") from exc
+    return found
+
+
+def sample_xlsx(path: Path | str, max_rows: int = 5) -> dict[str, Any] | None:
+    tables = sample_xlsx_tables(path, max_rows)
+    return tables[0] if tables else None
+
+def markdown_tables(text: str, max_rows: int = 5,
+                    max_tables: int = 3) -> list[dict[str, Any]]:
+    """Markdown tables already present in a document (header + up to 5 rows)."""
+    lines = str(text or "").splitlines()
+
+    def cells(line: str) -> list[str]:
+        body = line.strip()
+        if body.startswith("|"):
+            body = body[1:]
+        if body.endswith("|"):
+            body = body[:-1]
+        return [_sample_cell(part.replace("\\|", "|")) for part in re.split(r"(?<!\\)\|", body)]
+
+    def separator(line: str) -> bool:
+        parts = cells(line)
+        return bool(parts) and all(re.fullmatch(r":?-{3,}:?", part.strip()) for part in parts)
+
+    found: list[dict[str, Any]] = []
+    index = 0
+    while index < len(lines) - 1 and len(found) < max_tables:
+        if "|" in lines[index] and separator(lines[index + 1]):
+            headers = cells(lines[index])
+            rows: list[list[str]] = []
+            cursor = index + 2
+            while cursor < len(lines) and "|" in lines[cursor] and lines[cursor].strip():
+                if separator(lines[cursor]):
+                    cursor += 1
+                    continue
+                rows.append(cells(lines[cursor]))
+                cursor += 1
+                if len(rows) >= max_rows:
+                    break
+            if headers:
+                found.append({"name": "", "sheet": "", "headers": headers,
+                              "rows": rows[:max_rows]})
+            index = cursor
+        else:
+            index += 1
+    return found
+
+
+def sample_document(path: Path | str, max_rows: int = 5,
+                    text: str | None = None) -> list[dict[str, Any]]:
+    """Tables of one source file, without reading the whole file into a prompt.
+
+    CSV and XLSX are parsed directly.  A Markdown/text file is read up to a
+    capped head; other formats (PDF, DOCX) use the Markdown the caller already
+    has from C1 (``text``).
+    """
+    path = Path(path)
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        table = sample_csv(path, max_rows)
+        return [table] if table else []
+    if suffix in (".xlsx", ".xlsm"):
+        return sample_xlsx_tables(path, max_rows)
+    if text is None:
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                text = handle.read(262_144)
+        except OSError as exc:
+            raise CodeRecipeError(f"cannot read {path.name}: {exc}") from exc
+    tables = markdown_tables(text, max_rows)
+    for table in tables:
+        table["name"] = path.name
+    return tables
+
+
+def build_code_prompt(question: str, files: list[dict[str, Any]],
+                      samples: list[dict[str, Any]],
+                      correction: dict[str, Any] | None = None) -> str:
+    """The writer's prompt: question, file names, headers and <=5 rows/table."""
+    lang = list_language(question)
+    if lang == "es":
+        intro = (
+            "Escribe UN script de Python corto para responder la pregunta del usuario. "
+            "Se ejecutará en un entorno aislado, sin red y sin procesos. "
+            "Los archivos elegidos se copian como solo lectura en /data/<nombre>; "
+            "escribe solo en /out/. Imprime la respuesta en stdout. "
+            "Puedes usar pandas y openpyxl."
+        )
+        heading = "Pregunta"
+        files_heading = "Archivos y muestras (máximo 5 filas por tabla; el resto del archivo NO se muestra)"
+        only = "Responde solo con el script dentro de un bloque ```python. No lo expliques."
+        previous = "El script anterior falló"
+        corrected = "Escribe un script corregido que resuelva el fallo."
+    else:
+        intro = (
+            "Write ONE short Python script that answers the user's question. "
+            "It runs in an isolated environment with no network and no processes. "
+            "The chosen files are copied read-only to /data/<name>; write only to /out/. "
+            "Print the answer to stdout. pandas and openpyxl are available."
+        )
+        heading = "Question"
+        files_heading = "Files and samples (at most 5 rows per table; the rest of the file is NOT shown)"
+        only = "Reply only with the script in one ```python block. Do not explain it."
+        previous = "The previous script failed"
+        corrected = "Write a corrected script that fixes the failure."
+    by_name: dict[str, list[dict[str, Any]]] = {}
+    for sample in samples:
+        by_name.setdefault(str(sample.get("name") or ""), []).append(sample)
+    parts = [intro, "", f"{heading}: {question.strip()[:CODE_MAX_QUESTION]}", "",
+             files_heading]
+    for item in files:
+        name = str(item.get("name") or "")
+        parts.append(f"- FILE: {name}")
+        for table in by_name.get(name, []):
+            label = table.get("sheet") or "table"
+            parts.append(f"  TABLE: {label}")
+            parts.append("  Columns: " + " | ".join(table.get("headers") or []))
+            for n, row in enumerate(table.get("rows") or [], 1):
+                parts.append(f"  ROW {n}: " + " | ".join(row))
+        if not by_name.get(name):
+            parts.append("  (no Markdown/CSV table was found; only the file name is shown)")
+    if correction:
+        parts += ["", f"{previous}: trapped={correction.get('trapped') or 'error'}.",
+                  "Previous script:", "```python",
+                  str(correction.get("script") or "")[:6500], "```",
+                  "Last stdout:", str(correction.get("stdout") or "")[-1200:],
+                  "Last stderr:", str(correction.get("stderr") or "")[-1800:],
+                  corrected]
+    parts += ["", only]
+    return "\n".join(parts)

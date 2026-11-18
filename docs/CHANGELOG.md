@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- **Recipe 5: data with code** (`swarmbly_app/recipes.py`, `chat.py`,
+  `api/__init__.py`, web chat/i18n). The "Data with code" card lets the user
+  pick project source files and ask a question. The writer model (role
+  `writer`, else the conversation model, with the usual destination policy)
+  receives only file names, column headers and at most five sample rows per
+  table, and returns one Python script parsed defensively under a size cap.
+  The UI shows the script, the files it will see, the limits and run/cancel;
+  nothing runs before approval. `POST /api/recipes/code/approve` is the only
+  path that issues the broker's one-time `sandbox/python` token and invokes
+  the tool; cancel, missing `wasi-python`, traps (deadline, memory, output,
+  disk, files) and the two-correction limit are handled explicitly. The answer
+  gives the script, stdout/stderr with a truncation marker, produced files with
+  name/size/SHA-256 and token-safe download links from that run's retained
+  `/out`; `meta.code` records the script hash, input names, trap, elapsed time,
+  `approved_by: "user"` and correction count. The receipt lists the local tool
+  call and any model send, and the Windows watchdog-only disk guard is shown
+  in the approval box (R-006). Recipe 5's earlier runner, extra and escape
+  tests are unchanged; this adds the flow, approval and chat wiring.
+
 - **MCP client core** (`swarmbly_app/tools/mcp.py`, `mcp_registry.py`). MCP
   servers are configured per project in `settings/mcp_servers.json` with the
   exact local command, arguments, working directory and environment-variable

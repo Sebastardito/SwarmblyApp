@@ -93,7 +93,8 @@ def _resolve_inputs(inputs: Any, root: Path) -> list[Path]:
 
 
 def make_handler(runner: SandboxRunner,
-                 project_path: Callable[[str], Path | None]) -> Callable[
+                 project_path: Callable[[str], Path | None],
+                 *, keep_output: bool = False) -> Callable[
                      [ToolCall, ToolContext], dict[str, Any]]:
     """Return a broker handler bound to one runner and project resolver."""
 
@@ -106,8 +107,12 @@ def make_handler(runner: SandboxRunner,
             raise ValueError(f"script exceeds {SCRIPT_MAX} characters")
         root = _project_root(project_path, call.project_id)
         inputs = _resolve_inputs(arguments.get("inputs") or [], root)
-        result = runner.run(script, inputs, Limits(), approval=ctx.approved_by)
+        result = runner.run(script, inputs, Limits(), approval=ctx.approved_by,
+                            keep_output=keep_output)
         payload = result.as_dict()
+        # The absolute output path stays server-side; the UI/download route
+        # addresses a run by its opaque id.
+        payload.pop("output_dir", None)
         payload["approval"] = ctx.approved_by
         payload["inputs"] = [path.name for path in inputs]
         return payload
@@ -116,7 +121,8 @@ def make_handler(runner: SandboxRunner,
 
 
 def register(broker: Any, *, project_path: Callable[[str], Path | None],
-             runner: SandboxRunner | None = None) -> ToolSpec:
+             runner: SandboxRunner | None = None,
+             keep_output: bool = False) -> ToolSpec:
     """Register ``sandbox/python`` on a broker; return the spec that was approved.
 
     The caller still has to call ``broker.approve(spec.id, project_id)`` and
@@ -124,6 +130,6 @@ def register(broker: Any, *, project_path: Callable[[str], Path | None],
     """
     spec = tool_spec()
     backend = runner if runner is not None else SandboxRunner()
-    broker.register(spec, make_handler(backend, project_path))
+    broker.register(spec, make_handler(backend, project_path, keep_output=keep_output))
     return spec
 

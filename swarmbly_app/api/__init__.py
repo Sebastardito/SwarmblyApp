@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from ..config import ConfigError, validate_changes
@@ -394,6 +394,69 @@ def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
             except Exception:
                 glossary = []
         return {"query": propose_query(text, glossary)}
+
+    # ---- recipe 5: data with code (3.4) ---------------------------------------
+    @app.get("/api/recipes/code/status")
+    def recipe_code_status() -> dict:
+        return state.chat.code_status()
+
+    @app.post("/api/recipes/code/propose")
+    def recipe_code_propose(body: dict[str, Any] | None = None) -> dict:
+        """Ask the writer for one script. Nothing runs and no token is issued."""
+        from ..recipes import CodeRecipeError, CodeUnavailableError
+        body = body or {}
+        try:
+            return state.chat.propose_code(
+                conversation_id=str(body.get("conversation_id") or ""),
+                project_id=str(body.get("project_id") or ""),
+                question=str(body.get("question") or ""),
+                files=body.get("files"),
+                model=str(body.get("model") or ""),
+                mode=str(body.get("mode") or ""),
+                correction_of=str(body.get("correction_of") or ""))
+        except CodeUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc).strip("'")) from exc
+        except CodeRecipeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/recipes/code/approve")
+    def recipe_code_approve(body: dict[str, Any] | None = None) -> dict:
+        """The only path that issues the one-time sandbox token and runs."""
+        from ..recipes import CodeRecipeError, CodeUnavailableError
+        body = body or {}
+        proposal_id = str(body.get("proposal_id") or "")
+        if not proposal_id:
+            raise HTTPException(status_code=400, detail="a proposal id is required")
+        try:
+            return state.chat.approve_code(proposal_id)
+        except CodeUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except CodeRecipeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/recipes/code/cancel")
+    def recipe_code_cancel(body: dict[str, Any] | None = None) -> dict:
+        from ..recipes import CodeRecipeError
+        body = body or {}
+        proposal_id = str(body.get("proposal_id") or "")
+        if not proposal_id:
+            raise HTTPException(status_code=400, detail="a proposal id is required")
+        try:
+            return state.chat.cancel_code(proposal_id)
+        except CodeRecipeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/recipes/code/runs/{run_id}/files/{name:path}")
+    def recipe_code_file(run_id: str, name: str) -> FileResponse:
+        """Serve one regular file from exactly that run's retained /out."""
+        from ..recipes import CodeRecipeError
+        try:
+            path = state.chat.code_output_path(run_id, name)
+        except CodeRecipeError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return FileResponse(path, filename=path.name)
 
     @app.post("/api/conversations/{conv_id}/messages/{message_id}/retry")
     def retry_message(conv_id: str, message_id: str,

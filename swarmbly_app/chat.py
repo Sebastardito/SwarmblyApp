@@ -8,21 +8,26 @@ model per conversation as required.
 
 from __future__ import annotations
 
+import hashlib
+import os
 import re
+import sys
 
 import json
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable
+from urllib.parse import quote
 
 from . import egress
 from .db import Database
 from .events import EventBus
 from .inference.base import BackendError, GenerationResult, Interrupted
 from .inference.registry import BackendRegistry, IncompleteSettings
+from .recipes import CodeRecipeError, CodeUnavailableError
 
 MAX_CONTEXT_MESSAGES = 12
 
@@ -107,6 +112,14 @@ class ChatService:
         # 3.1: per-term glossary metadata (distinct concepts, Wikidata ids)
         self.glossary_meta: Callable[[str], dict[str, dict[str, list[str]]]] | None = None
         self._lock = threading.Lock()
+        # 3.4, recipe 5: the broker, its sandbox runner and the pending script
+        # proposals. A proposal is only a script; nothing runs until approve.
+        self.tools: Any = None
+        self._code_runner: Any = None
+        self._code_tool_spec: Any = None
+        self._code_roots: dict[str, Path] = {}
+        self._code_proposals: dict[str, dict[str, Any]] = {}
+        self._code_lock = threading.RLock()
 
     def _changed(self, conversation_id: str) -> None:
         if self.on_conversation_changed is not None:
@@ -1206,6 +1219,607 @@ class ChatService:
             self._fail(request, str(exc))
         except Exception as exc:  # never leave a request hanging in "running"
             self._fail(request, f"unexpected error: {exc}")
+
+    # -- recipe 5: data with code (3.4) ----------------------------------------
+    def _code_cfg(self) -> dict[str, int]:
+        recipes_cfg = self.config().get("recipes") or {}
+        def number(key: str, default: int, low: int, high: int) -> int:
+            try:
+                value = int(recipes_cfg.get(key, default))
+            except (TypeError, ValueError):
+                value = default
+            return max(low, min(high, value))
+        return {
+            "max_files": number("code_max_files", 5, 1, 20),
+            "max_script": number("code_max_script_chars", 20_000, 1000, 100_000),
+            "max_corrections": number("code_max_corrections", 2, 0, 5),
+            "max_rows": number("code_max_sample_rows", 5, 1, 20),
+        }
+
+    @staticmethod
+    def _code_platform_guard() -> str:
+        return "watchdog" if sys.platform == "win32" else "rlimit+watchdog"
+
+    def _code_limits_payload(self) -> dict[str, Any]:
+        from .sandbox import Limits
+        limits = Limits()
+        mib = 1024 * 1024
+        return {
+            "deadline_s": limits.deadline_s,
+            "memory_mib": (limits.memory_bytes or 0) // mib,
+            "output_mib": (limits.output_bytes or 0) // mib,
+            "max_out_mib": (limits.max_out_bytes or 0) // mib,
+            "max_out_files": limits.max_out_files,
+        }
+
+    def code_status(self) -> dict[str, Any]:
+        """Whether recipe 5 can run here, plus the limits the approval shows."""
+        try:
+            from .sandbox import available
+            ok, reason = available()
+        except Exception as exc:
+            ok, reason = False, f"the isolated environment is not available: {exc}"
+        guard = self._code_platform_guard()
+        return {"available": bool(ok), "reason": "" if ok else str(reason),
+                "platform_guard": guard, "watchdog_only": guard == "watchdog",
+                "limits": self._code_limits_payload(),
+                "max_corrections": self._code_cfg()["max_corrections"]}
+
+    def _code_data_root(self) -> Path | None:
+        configured = getattr(getattr(self.tools, "approvals", None), "data_root", None)
+        if not configured:
+            configured = self.config().get("data_dir")
+        return Path(configured) / "sandbox" if configured else None
+
+    def _ensure_code_runner(self) -> None:
+        """Create the one runner and register its broker tool on first use."""
+        if self._code_runner is not None and self._code_tool_spec is not None:
+            return
+        if self.tools is None:
+            raise CodeRecipeError("the tool broker is not available")
+        from .sandbox import SandboxRunner, register_tool
+        runner = SandboxRunner(self._code_data_root(), pool_size=1)
+        spec = register_tool(self.tools, project_path=lambda pid: self._code_roots.get(pid),
+                             runner=runner, keep_output=True)
+        self._code_runner, self._code_tool_spec = runner, spec
+        self._code_roots.setdefault("", runner.root)
+
+    def _code_selected(self, project_id: str, files: Any) -> tuple[list[dict[str, Any]], list[str]]:
+        if self.document_list is None:
+            raise CodeRecipeError("this conversation cannot list project sources")
+        if not isinstance(files, (list, tuple)) or not files:
+            raise CodeRecipeError("select at least one source file")
+        cfg = self._code_cfg()
+        if len(files) > cfg["max_files"]:
+            raise CodeRecipeError(f"select at most {cfg['max_files']} files")
+        docs = list(self.document_list(project_id) or [])
+        by_rel: dict[str, list[dict[str, Any]]] = {}
+        for doc in docs:
+            rel = str(doc.get("rel") or "")
+            if rel:
+                by_rel.setdefault(rel, []).append(doc)
+        selected: list[dict[str, Any]] = []
+        seen_names: set[str] = set()
+        for raw in files:
+            ref = str(raw.get("rel") if isinstance(raw, dict) else raw or "").strip()
+            if not ref or "\x00" in ref:
+                raise CodeRecipeError("each selected file needs a name")
+            matches = list(by_rel.get(ref) or [])
+            if not matches:
+                matches = [doc for doc in docs if str(doc.get("path") or "") == ref]
+            if not matches:
+                raise CodeRecipeError(f"file {ref!r} is not in this project's sources")
+            if len(matches) > 1:
+                raise CodeRecipeError(f"file {ref!r} is ambiguous; choose its path")
+            doc = matches[0]
+            try:
+                path = Path(str(doc.get("path") or "")).expanduser().resolve(strict=True)
+            except OSError as exc:
+                raise CodeRecipeError(f"file {ref!r} cannot be read: {exc}") from exc
+            if not path.is_file():
+                raise CodeRecipeError(f"file {ref!r} is not a regular file")
+            if path.name in seen_names:
+                raise CodeRecipeError("two selected files have the same name")
+            seen_names.add(path.name)
+            selected.append({"name": path.name, "rel": str(doc.get("rel") or path.name),
+                             "path": path, "folder": str(doc.get("folder") or path.parent),
+                             "doc_id": str(doc.get("doc_id") or "")})
+        roots: list[Path] = []
+        for item in selected:
+            folder = Path(item["folder"]).expanduser().resolve()
+            roots.append(folder.parent if folder.name in ("sources", "memory") else folder)
+        try:
+            common = Path(os.path.commonpath([str(root) for root in roots]))
+        except ValueError as exc:
+            raise CodeRecipeError("the selected files are not under one project folder") from exc
+        try:
+            inputs = [item["path"].relative_to(common).as_posix() for item in selected]
+        except ValueError as exc:
+            raise CodeRecipeError("a selected file is outside the project folder") from exc
+        self._code_roots[project_id] = common
+        return selected, inputs
+
+    def _code_samples(self, project_id: str, selected: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        from .recipes import (CodeRecipeError as RecipeError, markdown_tables,
+                              sample_document)
+        max_rows = self._code_cfg()["max_rows"]
+        samples: list[dict[str, Any]] = []
+        for item in selected:
+            path = item["path"]
+            suffix = path.suffix.lower()
+            try:
+                if suffix in (".csv", ".xlsx", ".xlsm", ".md", ".markdown", ".txt"):
+                    samples.extend(sample_document(path, max_rows))
+                    continue
+                text = ""
+                if self.document_spans is not None and item.get("doc_id"):
+                    spans = self.document_spans(project_id, item["doc_id"]) or []
+                    text = "\n\n".join(str(span.get("text") or "") for span in spans)
+                tables = markdown_tables(text, max_rows)
+                for table in tables:
+                    table["name"] = path.name
+                samples.extend(tables)
+            except RecipeError:
+                raise
+            except Exception as exc:
+                raise CodeRecipeError(f"cannot sample {path.name}: {exc}") from exc
+        return samples
+
+    def _code_choice(self, cfg: dict[str, Any], model: str) -> Any:
+        from . import roles
+        backend = self.registry.resolve(cfg)
+        if not model:
+            listed = backend.list_models() or [""]
+            model = str(listed[0] or "")
+        return roles.choose("writer", cfg, backend, model, self.registry, passages=True)
+
+    @staticmethod
+    def _code_destination(choice: Any) -> dict[str, Any]:
+        from .inference.registry import endpoint
+        dest_cls, dest_host = egress.classify_url(endpoint(choice.backend) or "http://127.0.0.1")
+        remote = _remote_host(choice.backend, choice.model)
+        if remote:
+            dest_cls, dest_host = egress.THIRD_PARTY, remote
+        return {"clase": dest_cls, "host": dest_host}
+
+    def _code_public(self, proposal: dict[str, Any]) -> dict[str, Any]:
+        cfg = self._code_cfg()
+        return {
+            "proposal_id": proposal["proposal_id"],
+            "conversation_id": proposal["conversation_id"],
+            "question": proposal["question"],
+            "script": proposal["script"],
+            "script_sha256": proposal["script_sha256"],
+            "files": [{"name": f["name"], "rel": f["rel"]} for f in proposal["files"]],
+            "limits": self._code_limits_payload(),
+            "platform_guard": self._code_platform_guard(),
+            "watchdog_only": self._code_platform_guard() == "watchdog",
+            "corrections": proposal["corrections"],
+            "corrections_left": max(0, cfg["max_corrections"] - proposal["corrections"]),
+            "available": True,
+        }
+
+    def propose_code(self, *, conversation_id: str = "", project_id: str = "",
+                     question: str = "", files: Any = None, model: str = "",
+                     mode: str = "", correction_of: str = "") -> dict[str, Any]:
+        """Ask the writer for one script. Nothing is run and no token is issued."""
+        from .recipes import (CodeRecipeError as RecipeError, CodeUnavailableError,
+                              build_code_prompt, parse_code_script)
+        question = " ".join(str(question or "").split())
+        prior_hint = (self._code_proposals.get(str(correction_of))
+                      if correction_of else None)
+        if prior_hint is not None:
+            conversation_id = conversation_id or prior_hint["conversation_id"]
+            project_id = project_id or prior_hint["project_id"]
+            if not question:
+                question = prior_hint["question"]
+            if files is None:
+                files = [f["rel"] for f in prior_hint["files"]]
+        if not question:
+            raise CodeRecipeError("write a question for the script")
+        if len(question) > 4000:
+            raise CodeRecipeError("the question is longer than 4000 characters")
+        status = self.code_status()
+        if not status["available"]:
+            raise CodeUnavailableError(status["reason"] or "the isolated environment is not available")
+        cfg = self.config()
+        if conversation_id:
+            conv = self.db.get_conversation(conversation_id)
+            if conv is None:
+                raise KeyError(f"unknown conversation {conversation_id}")
+            conv_project = str(conv.get("project_id") or "")
+            if project_id and project_id != conv_project:
+                raise CodeRecipeError("that conversation belongs to another project")
+            project_id = conv_project
+            mode = mode or str(conv.get("mode") or "")
+            model = model or str(conv.get("model") or "")
+        else:
+            project_id = str(project_id or "")
+            conv = self.create_conversation(title=question[:56], mode=mode,
+                                            model=model, project_id=project_id)
+            conversation_id = str(conv["id"])
+        max_corrections = self._code_cfg()["max_corrections"]
+        prior = None
+        corrections = 0
+        correction = None
+        if correction_of:
+            prior = self._code_proposals.get(str(correction_of))
+            if prior is None:
+                raise CodeRecipeError("the script to correct is no longer available")
+            if prior["conversation_id"] != conversation_id:
+                raise CodeRecipeError("that script belongs to another conversation")
+            corrections = int(prior["corrections"]) + 1
+            if corrections > max_corrections:
+                raise CodeRecipeError(f"this question has used its {max_corrections} script corrections")
+            question = question or prior["question"]
+            files = files if files is not None else [f["rel"] for f in prior["files"]]
+            correction = {"script": prior["script"],
+                          "stdout": (prior.get("result") or {}).get("stdout", ""),
+                          "stderr": (prior.get("result") or {}).get("stderr", ""),
+                          "trapped": (prior.get("result") or {}).get("trapped")}
+        selected, inputs = self._code_selected(project_id, files)
+        samples = self._code_samples(project_id, selected)
+        prompt = build_code_prompt(question, selected, samples, correction)
+
+        choice = self._code_choice(cfg, model)
+        destination = self._code_destination(choice)
+        if destination["clase"] == egress.THIRD_PARTY:
+            policy = egress.policy()
+            if not policy.authorised(destination["host"]):
+                raise CodeRecipeError(
+                    f"the model that writes the script runs at {destination['host']}, "
+                    "which is not authorised")
+            if not policy.third_party_passages:
+                raise CodeRecipeError(
+                    f"{destination['host']} is authorised for questions only, not for "
+                    "the table sample")
+        proposal_id = uuid.uuid4().hex[:16]
+        ledger = egress.Ledger(request_id=proposal_id)
+        try:
+            with egress.request_ledger(proposal_id) as call_ledger:
+                with egress.purpose(egress.PASSAGES):
+                    result = choice.stream_chat(
+                        [{"role": "user", "content": prompt}],
+                        model=choice.model, max_tokens=1600, temperature=0.1)
+            events = [dict(event) for event in call_ledger.events]
+        except egress.EgressDenied as exc:
+            raise RecipeError(str(exc)) from exc
+        except Exception as exc:
+            raise RecipeError(f"the model could not write the script: {exc}") from exc
+        script = parse_code_script(getattr(result, "text", "") or "",
+                                   self._code_cfg()["max_script"])
+        script_sha = hashlib.sha256(script.encode("utf-8")).hexdigest()
+        proposal = {
+            "proposal_id": proposal_id,
+            "conversation_id": conversation_id,
+            "project_id": project_id,
+            "question": question,
+            "files": selected,
+            "inputs": inputs,
+            "samples": samples,
+            "script": script,
+            "script_sha256": script_sha,
+            "corrections": corrections,
+            "correction_of": str(correction_of or ""),
+            "status": "proposed",
+            "created_at": time.time(),
+            "model": choice.model,
+            "mode": mode or str(conv.get("mode") or cfg["swarm"].get("mode") or "local"),
+            "ledger_events": events,
+            "model_destination": destination,
+            "roles": ({choice.role: choice.to_meta()} if (choice.own or choice.note) else {}),
+        }
+        with self._code_lock:
+            if len(self._code_proposals) >= 50:
+                oldest = min(self._code_proposals.values(), key=lambda p: p["created_at"])
+                if oldest.get("status") != "running":
+                    self._code_proposals.pop(oldest["proposal_id"], None)
+            self._code_proposals[proposal_id] = proposal
+        return self._code_public(proposal)
+
+    def approve_code(self, proposal_id: str) -> dict[str, Any]:
+        """The user's yes: one token, one broker call, one answer. Never auto-run."""
+        from .recipes import CodeUnavailableError
+        status = self.code_status()
+        if not status["available"]:
+            raise CodeUnavailableError(status["reason"] or "the isolated environment is not available")
+        with self._code_lock:
+            proposal = self._code_proposals.get(str(proposal_id))
+            if proposal is None:
+                raise CodeRecipeError("that script is no longer available; propose it again")
+            if proposal["status"] == "cancelled":
+                raise CodeRecipeError("that script was cancelled; propose it again")
+            if proposal["status"] in ("running", "done", "failed"):
+                raise CodeRecipeError("that script has already been run; propose a new one")
+            if time.time() - float(proposal.get("created_at") or 0) > 1800:
+                proposal["status"] = "cancelled"
+                raise CodeRecipeError("that script expired; propose it again")
+            proposal["status"] = "running"
+        try:
+            from .tools import ToolCall
+            conv = self.db.get_conversation(proposal["conversation_id"])
+            if conv is None:
+                raise CodeRecipeError("the conversation no longer exists")
+            self._ensure_code_runner()
+            spec = self._code_tool_spec
+            self.tools.approve(spec.id, proposal["project_id"])
+            arguments = {"script": proposal["script"], "inputs": proposal["inputs"]}
+            call = ToolCall(spec.id, arguments, request_id=proposal["proposal_id"],
+                            project_id=proposal["project_id"])
+            with egress.request_ledger(proposal["proposal_id"]) as exec_ledger:
+                token = self.tools.issue_token(call)
+                result = self.tools.invoke(ToolCall(spec.id, arguments,
+                                                    request_id=proposal["proposal_id"],
+                                                    token=token,
+                                                    project_id=proposal["project_id"]))
+            exec_events = [dict(event) for event in exec_ledger.events]
+            if not result.ok:
+                raise CodeRecipeError(result.error or "the script could not run")
+            data = result.data if isinstance(result.data, dict) else {}
+            content, meta = self._code_answer(proposal, data, exec_events)
+            user_msg = self.db.add_message(proposal["conversation_id"], "user",
+                                           proposal["question"])
+            if str(conv.get("title") or "") in ("", "New conversation"):
+                title = proposal["question"][:56]
+                self.db.update_conversation(proposal["conversation_id"],
+                                            title=(title + "…") if len(proposal["question"]) > 56 else title)
+            assistant_msg = self.db.add_message(proposal["conversation_id"], "assistant",
+                                                content, meta=meta)
+            self.db.add_request(proposal["proposal_id"], proposal["conversation_id"],
+                                assistant_msg["id"], meta["mode"], meta["model"])
+            self.db.finish_request(proposal["proposal_id"], "done", meta)
+            self.db.touch_conversation(proposal["conversation_id"])
+            with self._code_lock:
+                proposal["status"] = "done"
+                proposal["result"] = data
+                proposal["message_id"] = assistant_msg["id"]
+            self._changed(proposal["conversation_id"])
+            self.bus.publish("chat.done", request_id=proposal["proposal_id"],
+                             conversation_id=proposal["conversation_id"],
+                             message_id=assistant_msg["id"], status="done",
+                             content=content, meta=meta)
+            return {"user_message": user_msg, "assistant_message": assistant_msg,
+                    "proposal": self._code_public(proposal)}
+        except CodeUnavailableError:
+            with self._code_lock:
+                proposal["status"] = "failed"
+            raise
+        except Exception as exc:
+            with self._code_lock:
+                proposal["status"] = "failed"
+            if isinstance(exc, CodeRecipeError):
+                raise
+            raise CodeRecipeError(f"the script could not run: {exc}") from exc
+
+    def cancel_code(self, proposal_id: str) -> dict[str, Any]:
+        with self._code_lock:
+            proposal = self._code_proposals.get(str(proposal_id))
+            if proposal is None:
+                raise CodeRecipeError("that script is no longer available")
+            if proposal["status"] in ("done", "running"):
+                raise CodeRecipeError("that script is already running or finished")
+            proposal["status"] = "cancelled"
+        return {"cancelled": True, "proposal_id": str(proposal_id)}
+
+    def _code_trap_text(self, trapped: str | None, lang: str) -> str:
+        es = lang == "es"
+        table = {
+            "deadline": ("El script tardó más del límite de tiempo y se detuvo.",
+                         "The script took longer than the time limit and was stopped."),
+            "memory": ("El script necesitó más memoria que el límite.",
+                       "The script needed more memory than the limit."),
+            "output": ("El script imprimió más texto que el límite.",
+                       "The script printed more output than the limit."),
+            "disk": ("El script escribió más datos de los permitidos en /out.",
+                     "The script wrote more data than allowed to /out."),
+            "files": ("El script creó más archivos de los permitidos.",
+                      "The script created more files than allowed."),
+            "error": ("El script se detuvo con un error.",
+                      "The script stopped with an error."),
+        }
+        if not trapped:
+            return ""
+        pair = table.get(str(trapped), table["error"])
+        return pair[0] if es else pair[1]
+
+    @staticmethod
+    def _code_clip(text: str, limit: int, lang: str) -> str:
+        text = str(text or "")
+        if len(text) <= limit:
+            return text
+        omitted = len(text) - limit
+        marker = (f"… [{omitted} caracteres omitidos]" if lang == "es"
+                  else f"… [{omitted} characters omitted]")
+        return text[:limit] + "\n" + marker
+
+    def _code_previews(self, run_id: str, files: list[dict[str, Any]]) -> list[tuple[str, str]]:
+        """Short previews of text files the script wrote (never a binary)."""
+        suffix_ok = {".csv", ".tsv", ".json", ".txt", ".md", ".log", ".yaml", ".yml",
+                     ".xml", ".html"}
+        out: list[tuple[str, str]] = []
+        for item in files[:3]:
+            name = str(item.get("name") or "")
+            if Path(name).suffix.lower() not in suffix_ok:
+                continue
+            try:
+                path = self.code_output_path(run_id, name)
+                if path.stat().st_size > 20_000:
+                    continue
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                continue
+            if text.strip():
+                out.append((name, text[:3000]))
+        return out
+
+    def _code_answer(self, proposal: dict[str, Any], data: dict[str, Any],
+                     exec_events: list[dict[str, Any]]) -> tuple[str, dict[str, Any]]:
+        from .recipes import list_language
+        lang = list_language(proposal["question"])
+        es = lang == "es"
+        script = proposal["script"]
+        stdout = str(data.get("stdout") or "")
+        stderr = str(data.get("stderr") or "")
+        trapped = data.get("trapped")
+        reason = self._code_trap_text(trapped, lang)
+        files = list(data.get("files") or [])
+        run_id = str(data.get("run_id") or "")
+        limits = self._code_limits_payload()
+        cfg = self._code_cfg()
+        destination = proposal.get("model_destination") or {"clase": egress.LOCAL, "host": ""}
+
+        previews = self._code_previews(run_id, files) if run_id else []
+        lines: list[str] = []
+        if trapped:
+            lines.append(f"**{'El script no terminó' if es else 'The script did not finish'}** — {reason}")
+        else:
+            lines.append(f"**{'Calculado por el script' if es else 'Computed by the script'}** "
+                         f"({'no por el modelo' if es else 'not by the model'}).")
+            last = next((line.strip() for line in reversed(stdout.splitlines())
+                         if line.strip()), "")
+            if last:
+                lines.append(self._code_clip(last, 700, lang))
+            elif previews:
+                first_name, first_text = previews[0]
+                head = [line for line in first_text.splitlines() if line.strip()][:8]
+                lines.append(("El script escribió el resultado en `{name}`:"
+                              if es else "The script wrote the result to `{name}`:").format(name=first_name))
+                lines.append("```text")
+                lines.append(self._code_clip("\n".join(head), 700, lang))
+                lines.append("```")
+            else:
+                lines.append("El script terminó sin imprimir un resultado." if es
+                             else "The script finished without printing a result.")
+        lines += ["", f"### {'Script aprobado' if es else 'Approved script'}", "```python",
+                  script, "```", "", f"### stdout"]
+        lines.append("```text")
+        lines.append(self._code_clip(stdout, 6000, lang) if stdout else
+                     ("(vacío)" if es else "(empty)"))
+        lines.append("```")
+        lines += ["", f"### stderr"]
+        lines.append("```text")
+        lines.append(self._code_clip(stderr, 4000, lang) if stderr else
+                     ("(vacío)" if es else "(empty)"))
+        lines.append("```")
+        lines += ["", f"### {'Archivos producidos' if es else 'Files produced'}"]
+        if files:
+            for item in files:
+                size = int(item.get("size") or 0)
+                lines.append(f"- `{item.get('name')}` — {size} B — sha256 `{item.get('sha256')}`")
+        else:
+            lines.append("- " + ("Ninguno." if es else "None."))
+        if previews:
+            lines += ["", f"### {'Contenido de los archivos' if es else 'File contents'}"]
+            for name, text in previews:
+                lines += [f"`{name}`", "```text",
+                          self._code_clip(text, 2000, lang), "```"]
+        if limits.get("max_out_mib"):
+            lines += ["", ("Límites: {t} s, {m} MiB de memoria, {o} MiB de salida."
+                           if es else "Limits: {t} s, {m} MiB memory, {o} MiB output.")
+                      .format(t=limits["deadline_s"], m=limits["memory_mib"],
+                              o=limits["max_out_mib"])]
+        content = "\n".join(lines)
+
+        sha = str(data.get("script_sha256") or proposal["script_sha256"])
+        files_meta = []
+        for item in files:
+            name = str(item.get("name") or "")
+            files_meta.append({
+                "name": name,
+                "size": int(item.get("size") or 0),
+                "sha256": str(item.get("sha256") or ""),
+                "url": (f"/api/recipes/code/runs/{run_id}/files/{quote(name, safe='/')}"
+                        if run_id else ""),
+            })
+        meta: dict[str, Any] = {
+            "status": "done",
+            "note": reason,
+            "mode": proposal.get("mode") or "local",
+            "model": proposal.get("model") or "",
+            "request_id": proposal["proposal_id"],
+            "executed": "local",
+            "recipe": "code",
+            "model_destination": destination,
+            "code": {
+                "script_sha256": sha,
+                "files_in": [str(item.get("name")) for item in proposal.get("files") or []],
+                "trapped": trapped,
+                "elapsed_s": float(data.get("elapsed_s") or 0.0),
+                "approved_by": "user",
+                "corrections": int(proposal.get("corrections") or 0),
+            },
+            "code_run": {
+                "proposal_id": proposal["proposal_id"],
+                "run_id": run_id,
+                "platform_guard": str(data.get("platform_guard") or self._code_platform_guard()),
+                "inputs": list(proposal.get("inputs") or []),
+                "file_refs": [str(item.get("rel")) for item in proposal.get("files") or []],
+                "question": proposal["question"],
+                "files": files_meta,
+                "max_corrections": cfg["max_corrections"],
+                "stdout_chars": len(stdout),
+                "stderr_chars": len(stderr),
+                "exit_code": data.get("exit_code"),
+                "truncated": list(data.get("truncated") or []),
+            },
+        }
+        if proposal.get("roles"):
+            meta["roles"] = proposal["roles"]
+        ledger = egress.Ledger(request_id=proposal["proposal_id"])
+        ledger.events.extend(proposal.get("ledger_events") or [])
+        ledger.events.extend(exec_events)
+        third = destination.get("clase") == egress.THIRD_PARTY
+        consent = {
+            "requerido": third,
+            "otorgado": third,
+            "alcance": ("encabezados y hasta cinco filas de tus tablas" if es
+                        else "headers and up to five rows of your tables") if third else "",
+            "base": (f"modelo autorizado en {destination.get('host')}" if es
+                     else f"model authorised at {destination.get('host')}") if third
+            else ("no hubo envíos a terceros" if es else "no third-party sends"),
+        }
+        if third:
+            consent["modelo_terceros"] = {"host": destination.get("host", ""),
+                                          "autorizado": True, "pasajes": True}
+        try:
+            receipt = egress.build_receipt(ledger, lane="personal", route="local",
+                                           answer=content, consent=consent,
+                                           model_destination=destination)
+            receipt["recipe"] = "code"
+            receipt["code"] = {"script_sha256": sha, "trapped": trapped}
+            meta["receipt"] = receipt
+        except Exception as exc:
+            meta["receipt_error"] = str(exc)[:200]
+        return content, meta
+
+    def code_output_path(self, run_id: str, name: str) -> Path:
+        """Resolve a download inside exactly one run's retained ``/out``."""
+        from .sandbox import SandboxRunner
+        if self._code_runner is None:
+            self._code_runner = SandboxRunner(self._code_data_root(), pool_size=1)
+        out = self._code_runner.output_dir_for(str(run_id or ""))
+        if out is None or not out.is_dir():
+            raise CodeRecipeError("that run's output is not available")
+        if out.is_symlink():
+            raise CodeRecipeError("that run's output is not available")
+        name = str(name or "")
+        if not name or "\x00" in name or "\\" in name:
+            raise CodeRecipeError("invalid file name")
+        rel = PurePosixPath(name)
+        if rel.is_absolute() or any(part in ("", ".", "..") for part in rel.parts):
+            raise CodeRecipeError("invalid file name")
+        cursor = out
+        for part in rel.parts:
+            cursor = cursor / part
+            if cursor.is_symlink():
+                raise CodeRecipeError("that file is not a regular output")
+        try:
+            resolved = (out / name).resolve(strict=True)
+        except OSError as exc:
+            raise CodeRecipeError("that file is not in the run's output") from exc
+        if not resolved.is_relative_to(out.resolve()) or not resolved.is_file():
+            raise CodeRecipeError("that file is not in the run's output")
+        return resolved
 
     # -- recipe 4: process a list on the swarm (3.4) ---------------------------
     def _run_list(self, request: ActiveRequest, user_text: str) -> None:

@@ -28,6 +28,7 @@ import hashlib
 import importlib
 import json
 import os
+import re
 import shutil
 import signal
 import stat
@@ -36,7 +37,7 @@ import sys
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -90,6 +91,8 @@ class RunResult:
     rejected_entries: int = 0
     collection_truncated: bool = False
     hard_file_cap_bytes: int | None = None
+    run_id: str | None = None
+    output_dir: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -111,6 +114,8 @@ class RunResult:
             "rejected_entries": self.rejected_entries,
             "collection_truncated": self.collection_truncated,
             "hard_file_cap_bytes": self.hard_file_cap_bytes,
+            "run_id": self.run_id,
+            "output_dir": self.output_dir,
         }
 
 
@@ -355,7 +360,8 @@ class SandboxRunner:
 
     # -- public run ----------------------------------------------------------
     def run(self, script: str, inputs: Iterable[str | os.PathLike[str]] | None,
-            limits: Limits | None = None, approval: str = "") -> RunResult:
+            limits: Limits | None = None, approval: str = "",
+            *, keep_output: bool = False) -> RunResult:
         """Run ``script`` once in a fresh guest and collect ``/out``.
 
         ``approval`` is the broker's approval reference (``"token"`` after a
@@ -377,7 +383,8 @@ class SandboxRunner:
             return self._error_result(script_sha256, reason)
 
         self._prepare()
-        run_dir = self.runs_dir / uuid.uuid4().hex
+        run_id = uuid.uuid4().hex
+        run_dir = self.runs_dir / run_id
         data_dir = run_dir / "data"
         out_dir = run_dir / "out"
         try:
@@ -395,6 +402,8 @@ class SandboxRunner:
         worker: _Worker | None = None
         started = 0.0
         killed = False
+        payload: dict[str, Any] | None = None
+        keep_this = False
         try:
             try:
                 worker = self._take_worker()
@@ -417,7 +426,6 @@ class SandboxRunner:
                     pass
             elapsed = time.perf_counter() - started
             result_path = run_dir / "result.json"
-            payload: dict[str, Any] | None = None
             if result_path.is_file():
                 try:
                     payload = json.loads(result_path.read_text(encoding="utf-8"))
@@ -425,22 +433,38 @@ class SandboxRunner:
                     payload = None
             tail = worker.stderr_tail()
             if killed:
-                return self._result_from_payload(
+                result = self._result_from_payload(
                     None, script_sha256, elapsed, worker.pid, limits,
                     stderr=("sandbox run exceeded its hard wall clock and was killed\n"
                             + tail).strip(),
                     trapped="deadline")
-            if payload is None:
-                return self._result_from_payload(
+            elif payload is None:
+                result = self._result_from_payload(
                     None, script_sha256, elapsed, worker.pid, limits,
                     stderr=("sandbox worker exited without a result\n" + tail).strip(),
                     trapped="error")
-            return self._result_from_payload(payload, script_sha256, elapsed,
-                                             worker.pid, limits)
+            else:
+                result = self._result_from_payload(payload, script_sha256, elapsed,
+                                                   worker.pid, limits)
+                if keep_output:
+                    keep_this = True
+                    result = replace(result, run_id=run_id,
+                                     output_dir=str(out_dir))
+            return result
         finally:
             if worker is not None:
                 self._retire(worker)
-            shutil.rmtree(run_dir, ignore_errors=True)
+            if keep_this:
+                # Keep only /out: the copied inputs and the script are not
+                # needed once the result is recorded.
+                shutil.rmtree(data_dir, ignore_errors=True)
+                for name in ("script.py", "limits.json", "result.json"):
+                    try:
+                        (run_dir / name).unlink()
+                    except OSError:
+                        pass
+            else:
+                shutil.rmtree(run_dir, ignore_errors=True)
             self._replenish_async()
 
     # -- helpers -------------------------------------------------------------
@@ -538,6 +562,12 @@ class SandboxRunner:
         return RunResult(ok=False, stdout="", stderr=reason, files=[],
                          trapped="error", elapsed_s=0.0, script_sha256=script_sha256,
                          platform_guard="watchdog" if os.name == "nt" else "rlimit+watchdog")
+
+    def output_dir_for(self, run_id: str) -> Path | None:
+        """The retained ``/out`` of one run, or ``None`` for an invalid id."""
+        if not isinstance(run_id, str) or not re.fullmatch(r"[0-9a-f]{32}", run_id):
+            return None
+        return self.runs_dir / run_id / "out"
 
     # -- lifecycle -----------------------------------------------------------
     def close(self) -> None:

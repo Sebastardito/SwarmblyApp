@@ -339,6 +339,7 @@ const Chat = (() => {
     { id: "table", available: true },
     { id: "research", available: true },
     { id: "list", available: true },
+    { id: "code", available: true },
   ];
   const recipeKey = (id) => id.charAt(0).toUpperCase() + id.slice(1);
 
@@ -359,6 +360,7 @@ const Chat = (() => {
 
   async function pickRecipe(id) {
     if (id === "list") return openListRecipe();
+    if (id === "code") return openCodeRecipe();
     recipe = id;
     const template = t(`chat.recipe${recipeKey(id)}Template`);
     els.input.value = template;
@@ -484,6 +486,114 @@ const Chat = (() => {
     conversations = await Api.get(`/api/conversations${projectQuery()}`);
     renderList();
     els.title.textContent = conversations.find((c) => c.id === active)?.title || "";
+  }
+
+  /* Recipe 5: the model writes a short script for the selected table/file.
+     Nothing runs until the user approves the script; approval is the only
+     endpoint that issues the broker's one-time token. */
+  async function codeStatus() {
+    try { return await Api.get("/api/recipes/code/status"); }
+    catch (_) { return { available: false, reason: t("chat.codeUnavailable") }; }
+  }
+
+  async function openCodeRecipe(opts = {}) {
+    recipe = null;
+    showRecipeTag();
+    const status = await codeStatus();
+    if (!status.available) {
+      return UI.modal(t("chat.recipeCode"), h("div.form-stack",
+        h("p", t("chat.codeUnavailable")),
+        h("p.muted", t("chat.codeUnavailableHint"))), [
+        { label: t("common.close"), value: null, kind: "ghost" }]);
+    }
+    if (opts.correctionOf) {
+      return proposeCode(opts.question || "", opts.files || [], opts.correctionOf);
+    }
+    const p = activeProject();
+    let sources = [];
+    try {
+      sources = p ? await Api.get(`/api/projects/${encodeURIComponent(p.id)}/sources`)
+                  : await Api.get("/api/lce/sources");
+    } catch (_) { sources = []; }
+    if (!sources.length) {
+      return UI.modal(t("chat.recipeCode"), h("p", t("chat.codeNoSources")), [
+        { label: t("common.close"), value: null, kind: "ghost" }]);
+    }
+    const boxes = [];
+    const list = h("div.form-stack", sources.map((d) => {
+      const box = h("input", { type: "checkbox", value: d.rel || d.name || "" });
+      boxes.push(box);
+      return h("label.inline", box, h("span", d.rel || d.name || ""));
+    }));
+    const question = h("textarea.text", { rows: 3, "aria-label": t("chat.codeQuestion"),
+      placeholder: t("chat.codeQuestionHint") });
+    const ok = await UI.modal(t("chat.recipeCode"), h("div.form-stack",
+      h("p", t("chat.codeIntro")),
+      h("p", h("strong", t("chat.codeFiles"))), list,
+      h("label.stack", h("span", t("chat.codeQuestion")), question),
+      h("p.muted", t("chat.codeSampleHint"))), [
+      { label: t("common.cancel"), value: false, kind: "ghost" },
+      { label: t("chat.codePropose"), value: true, kind: "primary" }]);
+    if (!ok) return;
+    const files = boxes.filter((b) => b.checked).map((b) => b.value);
+    if (!files.length) { UI.toast(t("chat.codePickFile"), "error"); return; }
+    const q = question.value.trim();
+    if (!q) { UI.toast(t("chat.codeQuestionEmpty"), "error"); return; }
+    return proposeCode(q, files, "");
+  }
+
+  async function proposeCode(question, files, correctionOf) {
+    UI.toast(t("chat.codeWriting"), "");
+    let proposal;
+    try {
+      proposal = await Api.post("/api/recipes/code/propose", {
+        conversation_id: active || "", project_id: projects.active || "",
+        question, files, model: els.model.value,
+        correction_of: correctionOf || "" });
+    } catch (err) { UI.toast(err.message, "error"); return; }
+    return showCodeApproval(proposal);
+  }
+
+  async function showCodeApproval(proposal) {
+    const pre = h("pre.code-script", { style: "max-height: 20rem; overflow: auto; white-space: pre-wrap;" },
+      proposal.script);
+    const fileList = h("ul.sources", (proposal.files || []).map((f) =>
+      h("li", h("span.muted", "· "), f.name)));
+    const limits = proposal.limits || {};
+    const limitText = t("chat.codeLimitsText")
+      .replace("{time}", limits.deadline_s)
+      .replace("{memory}", limits.memory_mib)
+      .replace("{output}", limits.output_mib)
+      .replace("{disk}", limits.max_out_mib);
+    const ok = await UI.modal(t("chat.codeProposalTitle"), h("div.form-stack",
+      h("p", t("chat.codeProposalIntro")),
+      h("p", h("strong", t("chat.codeFilesWillSee"))), fileList,
+      h("p", h("strong", t("chat.codeScript"))), pre,
+      h("p.muted", limitText),
+      proposal.watchdog_only ? h("p.note", t("chat.codeWatchdog")) : null,
+      h("p.muted", t("chat.codeApproveHint"))), [
+      { label: t("chat.codeCancel"), value: false, kind: "ghost" },
+      { label: t("chat.codeRun"), value: true, kind: "primary" }]);
+    if (!ok) {
+      try { await Api.post("/api/recipes/code/cancel", { proposal_id: proposal.proposal_id }); }
+      catch (_) { /* it already expired */ }
+      return;
+    }
+    UI.toast(t("chat.codeRunning"), "");
+    let res;
+    try {
+      res = await Api.post("/api/recipes/code/approve", { proposal_id: proposal.proposal_id });
+    } catch (err) { UI.toast(err.message, "error"); return; }
+    active = res.assistant_message.conversation_id;
+    await loadConversations(active);
+    UI.toast(t("chat.codeDone"), "ok");
+  }
+
+  async function correctCode(m) {
+    const run = m.meta?.code_run || {};
+    if (!run.proposal_id) return;
+    return openCodeRecipe({ correctionOf: run.proposal_id, question: run.question || "",
+      files: run.file_refs || [] });
   }
 
   /* Research: the query is proposed before the answer, and nothing is sent
@@ -734,6 +844,7 @@ const Chat = (() => {
       if (meta.coverage?.missing?.length) article.appendChild(coverageBox(meta.coverage.missing));
       if (meta.verification?.flagged?.length) article.appendChild(verificationBox(meta.verification));
       if (meta.memory_proposals) article.appendChild(memoryCard(m));
+      if (meta.code) article.appendChild(codeResult(m));
       article.appendChild(footer(m));
     }
     return article;
@@ -819,6 +930,14 @@ const Chat = (() => {
       t("chat.tableUnsupported").replace("{n}", meta.table_audit.unsupported.length), "warn",
       t("chat.tableUnsupportedTitle") + "\n" + meta.table_audit.unsupported
         .map((c) => `${c.row} · ${c.column}: ${c.value}`).join("\n")));
+    if (meta.code) {
+      chips.push(chip(t(meta.code.trapped ? "chat.codeTrappedChip" : "chat.codeRanChip"),
+        meta.code.trapped ? "warn" : "ok",
+        t("chat.codeChipTitle").replace("{sha}", (meta.code.script_sha256 || "").slice(0, 12))
+          .replace("{t}", meta.code.elapsed_s)));
+      if (meta.code.corrections) chips.push(chip(t("chat.codeCorrectedChip")
+        .replace("{n}", meta.code.corrections), ""));
+    }
     if (meta.recipe) chips.push(chip(t(`chat.recipe${meta.recipe.charAt(0).toUpperCase()}${meta.recipe.slice(1)}`), "ok",
       t("chat.recipeChipTitle")));
     // 3.3, recipe 3: a comparison between the documents and a public result, by code
@@ -1002,6 +1121,28 @@ const Chat = (() => {
         h("a", { href: r.url, target: "_blank", rel: "noopener noreferrer" }, r.title),
         h("span.muted", [r.authors, r.year, r.source].filter(Boolean).length
           ? ` — ${[r.authors, r.year, r.source].filter(Boolean).join(" · ")}` : "")))));
+  }
+
+  /* Recipe 5: the files the script produced (download through the token-aware
+     API) and the one path to a corrected script, which needs a new approval. */
+  function codeResult(m) {
+    const run = m.meta.code_run || {};
+    const box = h("div.code-result");
+    if (run.files?.length) {
+      box.appendChild(h("p", h("strong", t("chat.codeFilesProduced"))));
+      box.appendChild(h("ul.sources", run.files.map((f) => h("li",
+        h("span", ` ${f.name} · ${UI.fmtBytes(f.size)} · `),
+        h("code", { title: "sha256" }, (f.sha256 || "").slice(0, 16) + "…"),
+        " ",
+        h("button.link", { type: "button",
+          onclick: () => Api.download(f.url, f.name).catch((e) => UI.toast(e.message, "error")) },
+          t("chat.codeDownload"))))));
+    }
+    const code = m.meta.code || {};
+    if (code.trapped && (code.corrections || 0) < (run.max_corrections || 0)) {
+      box.appendChild(h("p", button(t("chat.codeCorrect"), () => correctCode(m), "primary small")));
+    }
+    return box;
   }
 
   /* 3.1: what the user asked to remember (or defined), proposed for a yes. */
