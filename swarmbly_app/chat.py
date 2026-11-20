@@ -2228,15 +2228,98 @@ class ChatService:
         return resolved
 
     # -- recipe 4: process a list on the swarm (3.4) ---------------------------
+    def _list_lexical_passages(self, project_id: str) -> list[dict[str, Any]]:
+        """Every project passage a short code can match exactly (T9.15).
+
+        C1 does not index the glossary file (it is a glossary, not a source),
+        so ``QA`` found nothing and the 7B invented the station's name.  The
+        glossary entries are offered as tiny passages ("QA = Quilén Alto…"),
+        and every document paragraph is offered too, so an exact code or word
+        is found even when BM25 ranked it below its cut.  Nothing is sent from
+        here; the caller decides what reaches the model.
+        """
+        out: list[dict[str, Any]] = []
+        docs: list[dict[str, Any]] = []
+        if self.document_list is not None:
+            try:
+                docs = list(self.document_list(project_id) or [])
+            except Exception:
+                docs = []
+        if self.document_spans is not None:
+            for doc in docs:
+                if doc.get("glossary"):
+                    continue
+                doc_id = str(doc.get("doc_id") or "")
+                if not doc_id:
+                    continue
+                try:
+                    spans = list(self.document_spans(project_id, doc_id) or [])
+                except Exception:
+                    spans = []
+                for span in spans:
+                    text = str(span.get("text") or "")
+                    if not text.strip():
+                        continue
+                    out.append({**span, "text": text, "score": 0.0})
+        if self.glossary_entries is not None:
+            glossary_name = next((str(d.get("rel") or d.get("name") or "")
+                                  for d in docs if d.get("glossary")), "")
+            glossary_name = glossary_name or "glosario.md"
+            try:
+                entries = list(self.glossary_entries(project_id) or [])
+            except TypeError:
+                entries = list(self.glossary_entries() or [])
+            except Exception:
+                entries = []
+            for number, entry in enumerate(entries, 1):
+                try:
+                    term, equivalents = entry[0], entry[1]
+                except (TypeError, IndexError):
+                    continue
+                term = str(term or "").strip()
+                equivalents = str(equivalents or "").strip()
+                if not term or not equivalents:
+                    continue
+                out.append({"doc_id": f"glossary:{glossary_name}", "source": glossary_name,
+                            "rel": glossary_name, "anchor": f"g{number}",
+                            "text": f"{term} = {equivalents}", "score": 0.0})
+        return out
+
+    @staticmethod
+    def _list_redundant(passage: dict[str, Any], source: dict[str, Any] | None,
+                        operation: str) -> bool:
+        """A CSV row of the very file the items came from adds nothing.
+
+        The item is already a cell of that table; giving its row back to the
+        model made the count-letters case answer "Lingue" as 5 instead of 6
+        in two of three runs.  An operation that asks for a document or table
+        ("según la tabla", "del informe") keeps it: then the row is the data
+        asked about, not a copy of the item.
+        """
+        if not source or str(source.get("kind") or "") != "csv":
+            return False
+        if re.search(r"\b(documentos?|tablas?|archivos?|csv|tsv|fichas?|informes?|"
+                     r"seg[uú]n|according|files?|tables?)\b", operation or "", re.I):
+            return False
+        name = PurePosixPath(str(source.get("file") or "")).name
+        rel = PurePosixPath(str(passage.get("rel") or passage.get("source") or "")).name
+        return bool(name and rel and name == rel)
+
     def _list_evidence(self, items: list[str], operation: str,
-                       project_id: str) -> dict[int, list[dict[str, Any]]]:
+                       project_id: str, source: dict[str, Any] | None = None
+                       ) -> dict[int, list[dict[str, Any]]]:
         """Passages of the project's documents relevant to each list item.
 
-        The same local retriever the normal chat recipe uses; nothing leaves
-        the device here.  A passage carries its document label so the model
-        can cite ``[D…]`` as in any other answer.
+        The same local retriever the normal chat recipe uses, plus an exact
+        lexical lookup for codes and short words; a passage is kept only when
+        it is about that item (``recipes.relevant_list_passages``), so an item
+        with no relevant passage gets no passage at all and the prompt is the
+        one the list recipe used before T9.12.  Nothing leaves the device
+        here.  A passage carries its document label so the model can cite
+        ``[D…]`` as in any other answer.
         """
-        if self.retriever is None:
+        if self.retriever is None and self.document_list is None \
+                and self.glossary_entries is None:
             return {}
         try:
             active = bool(self.retrieval_active(project_id))
@@ -2244,18 +2327,25 @@ class ChatService:
             active = True
         if not active:
             return {}
+        from .recipes import relevant_list_passages
+        lexical = [passage for passage in self._list_lexical_passages(project_id)
+                   if not self._list_redundant(passage, source, operation)]
         evidence: dict[int, list[dict[str, Any]]] = {}
         history: list[dict[str, Any]] = []
         for n, item in enumerate(items, 1):
-            try:
-                found = list(self.retriever(item, operation, project_id) or [])
-            except Exception:
-                found = []
-            if not found:
+            found: list[dict[str, Any]] = []
+            if self.retriever is not None:
+                try:
+                    found = list(self.retriever(item, operation, project_id) or [])
+                except Exception:
+                    found = []
+            found = [passage for passage in found[:6]
+                     if not self._list_redundant(passage, source, operation)]
+            relevant = relevant_list_passages(item, [*found, *lexical])
+            if not relevant:
                 continue
-            found = found[:4]
-            _label_sources(found, history)
-            evidence[n] = found
+            _label_sources(relevant, history)
+            evidence[n] = relevant
         return evidence
 
     def _run_list(self, request: ActiveRequest, user_text: str) -> None:
@@ -2306,7 +2396,8 @@ class ChatService:
                              conversation_id=request.conversation_id,
                              message_id=request.message_id, wave=wave_no,
                              waves=len(waves), done=offset, total=len(job.items))
-            evidence = self._list_evidence(wave, job.operation, request.project_id)
+            evidence = self._list_evidence(wave, job.operation, request.project_id,
+                                           source=job.source)
             if evidence:
                 documents_available = True
             documents_allowed = (job.where != "swarm"

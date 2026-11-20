@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **List recipe: a passage is attached only to the item it is about (T9.15)**
+  (`swarmbly_app/recipes.py`, `chat.py`, `tests/test_recipe_list.py`). T9.12
+  put the top passages of the project under every item, so a row of
+  `lotes.csv` was offered to a plot-code record; the original open list
+  battery fell from 27/33 cases (183/189 cells) to 21/33 (156/189). A
+  passage is now kept only when the item's code or a distinctive word
+  appears word-bounded in it (accents and case folded), or when a table
+  row's key is a cell; a long record needs two of its words in a table. At
+  most two passages are attached, prose before table rows, and an item with
+  no relevant passage gets the exact pre-T9.12 prompt. The project's
+  glossary entries and every document paragraph are also searched
+  lexically, so a short code such as `QA` finds "QA = Quilén Alto" even
+  though C1 does not index the glossary. The answer and meta still say
+  whether documents were used or withheld, and receipts record only the
+  passages actually given to the model.
+
 - **List recipe reads the project documents per item (T9.12)**
   (`swarmbly_app/recipes.py`, `chat.py`, `tests/test_recipe_list.py`). The
   list path built its prompt from the operation and items only, so cards

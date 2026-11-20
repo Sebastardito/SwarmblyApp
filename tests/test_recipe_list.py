@@ -13,8 +13,9 @@ from swarmbly_app import recipes
 from swarmbly_app.config import ConfigError, validate_changes
 from swarmbly_app.inference.base import GenerationResult
 from swarmbly_app.recipes import (ListJobError, MAX_ITEM_CHARS, build_list_prompt,
-                                   duplicate_rows, list_wave_size, normalise_list_job,
-                                   preview_list, read_csv_column)
+                                   duplicate_rows, item_match_terms, list_wave_size,
+                                   normalise_list_job, passage_matches_item, preview_list,
+                                   read_csv_column, relevant_list_passages)
 from tests.conftest import FakeBackend
 from tests.test_p2p_two_nodes import connect, make_node
 
@@ -427,3 +428,125 @@ def test_the_swarm_list_with_permission_sends_the_documents(
     assert "SENTINEL-PASSAGE for beta" in swarm.prompts[0]
     assert msg["meta"]["list"]["documents_used"] is True
     assert msg["meta"]["list"]["documents_withheld"] is False
+
+# ---- T9.15: a passage belongs to an item only when the item points at it ----
+
+def test_a_row_of_lotes_csv_is_not_about_a_plot_record():
+    row = {"text": "| lote | region | cantidad |\n|---|---|---|\n"
+                   "| Aliso | Norte | 3 |"}
+    # "Norte" and "parcela" are ordinary place words, not the item's identity
+    assert not passage_matches_item(
+        "Ficha de la parcela Norte; código: PN-204; responsable: equipo de campo.", row)
+    assert not passage_matches_item("Ficha 14: muestra de suelo.", row)
+    # a long record does not match a table by one incidental lot name
+    assert not passage_matches_item(
+        "Ficha 31; código: LN-410; lote: Aliso.", row)
+    # its key does
+    assert passage_matches_item("Aliso", row)
+
+
+def test_short_codes_are_matched_exactly_and_word_bounded():
+    glossary = {"text": "**QA** = Quilén Alto. Estación aguas arriba.\n"
+                        "**QM** = Quilén Medio."}
+    assert passage_matches_item("QA", glossary)
+    assert not passage_matches_item("QB", glossary)
+    # a prefix of a longer sensor code is a different token
+    assert not passage_matches_item("QA", {"text": "Registro 1: sensor QA-01, caudal."})
+    assert item_match_terms("QA") == (["qa"], [])
+    assert item_match_terms("Lote Arrayán") == ([], ["arrayan"])
+
+
+def test_prose_wins_over_a_table_row_and_the_cap_is_small():
+    table = {"doc_id": "csv", "anchor": "p1", "score": 9.0,
+             "text": "| lote | region |\n|---|---|\n| Aliso | Norte |"}
+    prose = {"doc_id": "md", "anchor": "p1", "score": 0.0,
+             "text": "Aliso fue el primer lote plantado."}
+    other = {"doc_id": "md", "anchor": "p2", "score": 0.0,
+             "text": "El lote Aliso se cosechó en marzo."}
+    found = relevant_list_passages("Aliso", [table, prose, other])
+    assert found == [prose, other]                    # no table, at most two
+    assert relevant_list_passages("Lote Boldo", [table, prose]) == []
+
+
+def test_the_whole_station_name_beats_a_shared_river_name():
+    alto = {"doc_id": "report", "anchor": "p1",
+            "text": "## Quilén Alto (QA)\nLa estación QA se ubica aguas arriba."}
+    medio = {"doc_id": "report", "anchor": "p2",
+             "text": "## Quilén Medio (QM)\nLa estación QM está en la junta."}
+    csv = {"doc_id": "csv", "anchor": "p1",
+           "text": "| estacion | caudal |\n|---|---|\n| Quilén Alto | 4,2 |"}
+    assert relevant_list_passages("Quilén Alto", [medio, csv, alto]) == [alto]
+
+
+def test_the_glossary_is_read_for_a_short_code(app_state, tmp_path):
+    project = app_state.projects.create("Codes", parent=tmp_path / "p")
+    (project.sources / "glosario.md").write_text(
+        "**QA** = Quilén Alto. Estación aguas arriba.\n"
+        "**QM** = Quilén Medio. Estación en la junta.\n"
+        "**QB** = Quilén Bajo. Estación de cierre.\n", encoding="utf-8")
+    app_state.chat.retriever = lambda query, expansion="", project_id="": []  # type: ignore[assignment]
+    app_state.chat.retrieval_active = lambda project_id="": True  # type: ignore[assignment]
+    fake = FakeBackend(reply="1. Quilén Alto\n2. Quilén Medio\n3. Quilén Bajo")
+    app_state.backends.resolve = lambda cfg=None: fake  # type: ignore[method-assign]
+    job = _job(["QA", "QM", "QB"], operation="Para cada código, dime el nombre completo "
+                                             "de la estación según el glosario.")
+    conv = app_state.chat.create_conversation(mode="local", project_id=project.id)
+    app_state.chat.send(conv["id"], job.operation, recipe="list",
+                        list_job=job.to_dict(), run_async=False)
+    msg = app_state.chat.get_messages(conv["id"])[-1]
+    prompt = fake.calls[-1]["messages"][-1]["content"]
+    assert "QA = Quilén Alto" in prompt and "QB = Quilén Bajo" in prompt
+    assert msg["meta"]["list"]["documents_used"] is True
+    assert msg["meta"]["list"]["documents_available"] is True
+
+
+def test_a_csv_column_does_not_get_its_own_row_back(app_state, tmp_path):
+    project = app_state.projects.create("Own rows", parent=tmp_path / "p")
+    csv = project.sources / "lotes.csv"
+    csv.write_text("lote,region,cantidad\nAliso,Norte,3\nLingue,Este,2\n",
+                   encoding="utf-8")
+    row = {"doc_id": "csv", "source": "lotes.csv", "rel": "lotes.csv", "anchor": "p1",
+           "score": 9.0, "text": "| lote | region | cantidad |\n|---|---|---|\n"
+                                  "| Aliso | Norte | 3 |"}
+    app_state.chat.retriever = lambda query, expansion="", project_id="": [row]  # type: ignore[assignment]
+    app_state.chat.retrieval_active = lambda project_id="": True  # type: ignore[assignment]
+    fake = FakeBackend(reply="1. 5\n2. 6")
+    app_state.backends.resolve = lambda cfg=None: fake  # type: ignore[method-assign]
+    operation = "Escribe el número de letras de cada nombre de lote."
+    job = normalise_list_job({
+        "items": "", "operation": operation, "where": "local",
+        "source": {"kind": "csv", "file": "lotes.csv", "column": "lote"}},
+        max_items=200, roots=[project.sources])
+    conv = app_state.chat.create_conversation(mode="local", project_id=project.id)
+    app_state.chat.send(conv["id"], operation, recipe="list",
+                        list_job=job.to_dict(), run_async=False)
+    msg = app_state.chat.get_messages(conv["id"])[-1]
+    prompt = fake.calls[-1]["messages"][-1]["content"]
+    assert prompt == build_list_prompt(operation, job.items)
+    assert msg["meta"]["list"]["documents_used"] is False
+    # an operation that asks for the table keeps it
+    assert app_state.chat._list_redundant(row, job.source, "cuenta las filas del CSV") is False
+
+
+def test_an_item_without_a_relevant_passage_gets_the_old_prompt(app_state, tmp_path):
+    project = app_state.projects.create("Rows", parent=tmp_path / "p")
+    (project.sources / "lotes.csv").write_text(
+        "lote,region,cantidad\nAliso,Norte,3\nCanelo,Sur,5\n", encoding="utf-8")
+    row = {"doc_id": "csv", "source": "lotes.csv", "rel": "lotes.csv", "anchor": "p1",
+           "score": 9.0, "text": "| lote | region | cantidad |\n|---|---|---|\n"
+                                  "| Aliso | Norte | 3 |"}
+    app_state.chat.retriever = lambda query, expansion="", project_id="": [row]  # type: ignore[assignment]
+    app_state.chat.retrieval_active = lambda project_id="": True  # type: ignore[assignment]
+    fake = FakeBackend(reply="1. LN-410")
+    app_state.backends.resolve = lambda cfg=None: fake  # type: ignore[method-assign]
+    item = "Ficha 31; código: LN-410; lote: Aliso."
+    job = _job([item], operation="Extrae solo el código que sigue a «código:».")
+    conv = app_state.chat.create_conversation(mode="local", project_id=project.id)
+    app_state.chat.send(conv["id"], job.operation, recipe="list",
+                        list_job=job.to_dict(), run_async=False)
+    msg = app_state.chat.get_messages(conv["id"])[-1]
+    prompt = fake.calls[-1]["messages"][-1]["content"]
+    assert prompt == build_list_prompt(job.operation, [item])
+    assert "lotes.csv" not in prompt and "| lote |" not in prompt
+    assert msg["meta"]["list"]["documents_used"] is False
+    assert msg["meta"]["list"]["documents_available"] is False

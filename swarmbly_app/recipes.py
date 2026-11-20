@@ -313,6 +313,218 @@ def build_single_item_prompt(operation: str, item: str) -> str:
     return f"{operation.strip()}\n\n{cue}\n{heading}\n1. {item.strip()}"
 
 
+# ---- recipe 4: is a retrieved passage about this item? ---------------------
+#
+# T9.12 attached the top passages of the project to every item.  A CSV row of
+# "lotes.csv" ("Aliso,Norte,3") was enough for an item about a plot code, and
+# the 7B answered with the row: the original list battery fell from 27/33
+# cases to 21/33.  A passage is now given to an item only when the item itself
+# points at it: its code or a distinctive word appears word-bounded in the
+# passage, or (for a table) the item's key matches a cell.  No relevant
+# passage means the prompt is exactly the one built before T9.12.
+LIST_MAX_PASSAGES_PER_ITEM = 2
+LIST_PASSAGE_SCORE_FLOOR = 4.0
+_ITEM_WORD = re.compile(r"[0-9A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+(?:[-'][0-9A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+)*")
+_ITEM_GENERIC = frozenset("""
+ficha fichas item items elemento elementos registro registros linea lineas
+codigo codigos responsable responsables equipo equipos dato datos valor valores
+numero numeros fila filas columna columnas
+""".split())
+
+
+def _item_fold(text: str) -> str:
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFKD", str(text).lower())
+                   if not unicodedata.combining(c))
+
+
+def _item_tokens(text: str) -> list[str]:
+    return [t for t in _ITEM_WORD.findall(str(text or "")) if t]
+
+
+def _item_common(word: str) -> bool:
+    from .web_search import _PRIVATE_COMMON
+    return _item_fold(word) in _PRIVATE_COMMON
+
+
+def item_match_terms(item: str) -> tuple[list[str], list[str]]:
+    """The item's exact codes and its distinctive words (folded).
+
+    ``QA``, ``PN-204`` and ``AB7`` are codes: they are matched exactly and
+    word-bounded.  Articles, place words (``norte``, ``lote``) and the generic
+    words of a record (``ficha``, ``código``) do not identify an item on
+    their own; the remaining words do.
+    """
+    codes: list[str] = []
+    words: list[str] = []
+    for token in _item_tokens(item):
+        folded = _item_fold(token)
+        letters = "".join(c for c in token if c.isalpha())
+        code = (any(c.isdigit() for c in token)
+                or (token.isupper() and 2 <= len(letters) <= 4))
+        if code:
+            if folded not in codes:
+                codes.append(folded)
+            continue
+        if (len(folded) >= 3 and not _item_common(folded)
+                and folded not in _ITEM_GENERIC and folded not in words):
+            words.append(folded)
+    return codes, words
+
+
+def _item_content_words(item: str) -> list[str]:
+    """Every non-place word of the item, generic ones included: it tells a
+    short key ("Lote Arrayán") from a long record ("Ficha 31; … Aliso")."""
+    out: list[str] = []
+    for token in _item_tokens(item):
+        folded = _item_fold(token)
+        if len(folded) >= 3 and not _item_common(folded) and folded not in out:
+            out.append(folded)
+    return out
+
+
+def _contains_sequence(tokens: list[str], wanted: list[str]) -> bool:
+    if not wanted:
+        return False
+    length = len(wanted)
+    return any(tokens[i:i + length] == wanted
+               for i in range(0, len(tokens) - length + 1))
+
+
+def _passage_is_tabular(text: str) -> bool:
+    lines = [ln.strip() for ln in str(text or "").splitlines() if ln.strip()]
+    if len(lines) >= 2 and all("|" in ln for ln in lines):
+        return True
+    if len(lines) >= 2 and all("," in ln for ln in lines):
+        try:
+            widths = {len(next(csv.reader([ln]))) for ln in lines}
+        except csv.Error:
+            widths = set()
+        return len(widths) == 1 and next(iter(widths), 0) >= 2
+    return False
+
+
+def _table_cells(text: str) -> list[str]:
+    cells: list[str] = []
+    for line in str(text or "").splitlines():
+        line = line.strip()
+        if "|" in line:
+            cells.extend(c.strip() for c in line.strip("|").split("|"))
+        elif "," in line:
+            try:
+                cells.extend(c.strip() for c in next(csv.reader([line])))
+            except csv.Error:
+                cells.extend(c.strip() for c in line.split(","))
+    return [c for c in cells if c]
+
+
+def passage_match_strength(item: str, passage: dict[str, Any],
+                           score_floor: float = LIST_PASSAGE_SCORE_FLOOR) -> int:
+    """How strongly ``passage`` is about ``item``: 0 (no), 1–2 (words), 3 (the
+    item's code, its whole phrase, or its key cell).
+
+    Word-bounded and accent/case folded: ``QA`` does not match ``QA-01`` by
+    accident, and a code matches only itself.  A Markdown/CSV table is used
+    only when the item's key is a cell (and a long record needs two of its
+    words in the table, not one incidental lot name).  A retrieval score may
+    add a paraphrase, but only above the calibrated floor, and never for a
+    table row that does not name the item.
+    """
+    text = str(passage.get("text") or passage.get("snippet") or "")
+    if not text.strip() or not str(item).strip():
+        return 0
+    codes, words = item_match_terms(item)
+    item_tokens = [_item_fold(t) for t in _item_tokens(item)]
+    passage_tokens = [_item_fold(t) for t in _item_tokens(text)]
+    if len(item_tokens) >= 2 and _contains_sequence(passage_tokens, item_tokens):
+        return 3
+    if codes and any(c in passage_tokens for c in codes):
+        return 3
+    if len(item_tokens) == 1 and item_tokens[0] in passage_tokens:
+        return 3
+    if _passage_is_tabular(text):
+        cell_tokens = {_item_fold(t) for cell in _table_cells(text)
+                       for t in _item_tokens(cell)}
+        matched = {w for w in words if w in cell_tokens}
+        if not matched:
+            return 0
+        content = _item_content_words(item)
+        if len(content) <= 2 or len(matched) >= 2:
+            return 3 if len(matched) >= 2 else 2
+        return 0
+    matched = {w for w in words if w in passage_tokens}
+    if matched:
+        return 2 if len(matched) >= 2 else 1
+    try:
+        score = float(passage.get("score") or 0.0)
+    except (TypeError, ValueError):
+        score = 0.0
+    if score >= score_floor:
+        # the retriever is confident and the item contributes a word: enough
+        # for a paraphrase, never for a table row (handled above)
+        return 1 if any(w in passage_tokens for w in _item_content_words(item)) else 0
+    return 0
+
+
+def passage_matches_item(item: str, passage: dict[str, Any],
+                         score_floor: float = LIST_PASSAGE_SCORE_FLOOR) -> bool:
+    """Whether ``passage`` is about ``item`` (see :func:`passage_match_strength`)."""
+    return passage_match_strength(item, passage, score_floor) > 0
+
+
+def relevant_list_passages(item: str, passages: list[dict[str, Any]],
+                           limit: int = LIST_MAX_PASSAGES_PER_ITEM
+                           ) -> list[dict[str, Any]]:
+    """At most ``limit`` passages about ``item``, prose before table rows.
+
+    A table row that names the item is a last resort: when a paragraph also
+    matches, the paragraph is the one the model should read (the report, not
+    the raw measurements CSV).  Duplicates keep the highest-scored copy.
+    """
+    found: list[tuple[int, dict[str, Any], bool]] = []
+    seen: dict[tuple[str, str, str], int] = {}
+    for index, passage in enumerate(passages or []):
+        if not isinstance(passage, dict):
+            continue
+        if not passage_matches_item(item, passage):
+            continue
+        key = (str(passage.get("doc_id") or ""), str(passage.get("anchor") or ""),
+               " ".join(str(passage.get("text") or "").split()))
+        if key in seen:
+            old = found[seen[key]]
+            try:
+                if float(passage.get("score") or 0) > float(old[1].get("score") or 0):
+                    found[seen[key]] = (index, passage, _passage_is_tabular(
+                        str(passage.get("text") or "")))
+            except (TypeError, ValueError):
+                pass
+            continue
+        seen[key] = len(found)
+        found.append((index, passage, _passage_is_tabular(
+            str(passage.get("text") or ""))))
+    if not found:
+        return []
+    prose = [entry for entry in found if not entry[2]]
+    if prose:
+        found = prose
+    # When one passage carries the item's whole phrase or code, it is the one
+    # to read: another section that only shares "Quilén" is not the item.
+    strong = [entry for entry in found
+              if passage_match_strength(item, entry[1]) >= 3]
+    if strong:
+        found = strong
+
+    def order(entry: tuple[int, dict[str, Any], bool]) -> tuple[float, int]:
+        try:
+            score = float(entry[1].get("score") or 0.0)
+        except (TypeError, ValueError):
+            score = 0.0
+        return (-score, entry[0])
+
+    found.sort(key=order)
+    return [entry[1] for entry in found[:max(0, int(limit))]]
+
+
 def summary_line(count: int, answered: int, missing: int, disagreement: int,
                  lang: str = "en") -> str:
     if lang == "es":
