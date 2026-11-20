@@ -1,6 +1,31 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 — Tools (2026-11-20)
+
+Swarmbly AI 3.4. Tools and data with code. One broker for every tool; an MCP
+client with approval per call (a local tool can be set to "don't ask again in
+this project"; remote tools, the sandbox and author search always ask); skills
+(`SKILL.md`, instructions only); author search with consent (ORCID, OpenAlex,
+PubMed); recipe 4, a list on the swarm; recipe 5, data with code in a WASI
+sandbox (`wasi-python` 0.1.5); the Anthropic provider, an embeddings role and
+the `swarmbly-agent` 0.1.0 runtime; Python 3.11 as the minimum; private
+glossary entries. The sealed banks v4.1 and v4.2 were run once (32 cards × 3,
+`qwen2.5:7b`, harness 1.3.2, re-scored offline with 1.3.4, isolated judge):
+seal OK, 0 technical failures, the eight permission counters at 0 in both
+banks, approved observations 22/96 and 44/96. Two exit criteria failed: zero
+unauthorised sends (the public query proposed by the App kept a fragment of a
+private name: one card in v4.1 and two in v4.2, three repetitions each, each
+approved by the simulated user) and exact results ≥ 90 % in código-exacto
+(v4.1 0/9, v4.2 6/12). The fixes after the banks (private names removed whole
+and by distinctive word, with the removed terms shown; recipe 5 reads text
+documents; the list recipe uses relevant passages per item; private glossary
+entries) were measured only on open batteries: recipe 4 30/36 cases
+(195/201 cells; the original 11 cases 27/33, 183/189), recipe 5 39/39 cases
+(57/57 numbers), the v4 self-test 24/24, 0 unauthorised sends. A new sealed
+bank will confirm the privacy fix. Known limits: exact results with a 7B local
+model; the 3.4 privacy fix is not yet confirmed by a sealed bank; the Windows
+disk guard is watchdog-only (R-006); the first sandbox compile is slow (R-005).
+Requires SwarmblyLCE 0.2.1.
 
 - **Glossary: a private entry never reaches a public query (T9.17)**
   (`swarmbly_app/memory_capture.py`, `web_search.py`, `lce_adapter.py`,
