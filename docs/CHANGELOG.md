@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Research proposal: report exactly the private terms it kept out (T9.16)**
+  (`swarmbly_app/web_search.py`, `recipes.py`, `tests/test_recipes.py`). The
+  proposal filtered the private run before building the offer, so EJ4-04's
+  `removed_terms` named the public station "Quilén Bajo" and never the
+  private "Rincón Alto". The question's capitalised private runs are now
+  candidates even when they never entered the proposed query; glossary
+  equivalents are public names, so they stay in the query and are never
+  reported as removed; and an explicit `private` term still wins over a
+  public-looking one. `removed_terms` is exactly the private terms present
+  in the question, glossary translations or model keywords and absent from
+  the query, and the UI's `removed` words come from those terms.
+
 - **List recipe: a passage is attached only to the item it is about (T9.15)**
   (`swarmbly_app/recipes.py`, `chat.py`, `tests/test_recipe_list.py`). T9.12
   put the top passages of the project under every item, so a row of

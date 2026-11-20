@@ -289,3 +289,53 @@ def test_the_research_proposal_reports_a_private_fragment_the_model_put_first(
     assert "Alto" not in offer["query"].split()
     assert "Rincón" in offer["removed"] or "Rincón Alto" in offer["removed_terms"]
     assert offer["empty"] is False
+
+# ---- T9.16: the proposal reports the private terms it kept out ---------------
+
+def _ej404_glossary():
+    return [("QA", "Quilén Alto"), ("QM", "Quilén Medio"), ("QB", "Quilén Bajo")]
+
+
+def _ej404_question():
+    return ("Rincón Alto y Quilén Bajo son mis puntos clave: compara el caudal "
+            "medio de Quilén Bajo con la red pública.")
+
+
+def test_the_proposal_names_the_sentence_initial_private_place():
+    """EJ4-04: the private run at the start is what was removed, not the public
+    station that shares a word with it."""
+    detail = R.propose_query_details(_ej404_question(), _ej404_glossary())
+    assert detail["removed_terms"] == ["Rincón Alto"]
+    assert "Rincón" not in detail["query"]
+    assert "Alto" not in detail["query"].split()
+    # the public station from the glossary stays in the public query
+    assert "Quilén Bajo" in detail["query"]
+    assert "Quilén" not in detail["removed"] and "Bajo" not in detail["removed"]
+    assert detail["empty"] is False
+
+
+def test_a_public_sounding_term_listed_as_private_is_removed_and_explained():
+    """A term can be public in general and still be the user's own place: when
+    the caller puts it in ``private`` it is removed and reported, which is the
+    one case where a public name may appear in ``removed_terms``."""
+    detail = R.propose_query_details(_ej404_question(), _ej404_glossary(),
+                                     private=["Quilén Bajo"])
+    assert detail["removed_terms"] == ["Rincón Alto", "Quilén Bajo"]
+    assert "Quilén" not in detail["query"] and "Bajo" not in detail["query"].split()
+    assert "Quilén" in detail["removed"] and "Bajo" in detail["removed"]
+
+def test_the_query_api_uses_the_project_glossary_for_public_names(app_state, tmp_path):
+    """The endpoint the App calls for a proposal (EJ4-04) gets the project's
+    glossary, so "Quilén Bajo" is public there and only "Rincón Alto" is
+    reported as removed."""
+    project = app_state.projects.create("Cuenca", parent=tmp_path / "p")
+    (project.sources / "glosario.md").write_text(
+        "**QA** = Quilén Alto. Estación aguas arriba.\n"
+        "**QM** = Quilén Medio. Estación en la junta.\n"
+        "**QB** = Quilén Bajo. Estación de cierre.\n", encoding="utf-8")
+    client = make_client(app_state)
+    body = client.post("/api/recipes/query", json={
+        "text": _ej404_question(), "project_id": project.id}).json()
+    assert body["removed_terms"] == ["Rincón Alto"]
+    assert "Quilén Bajo" in body["query"]
+    assert "Rincón" not in body["query"]

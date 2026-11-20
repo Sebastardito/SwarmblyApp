@@ -666,7 +666,9 @@ def propose_query_details(text: str, glossary: list[tuple[str, str]] | None = No
     las fuentes públicas sobre …") are not the topic: the query is what follows
     "sobre", and the names the request gives ("la variedad Kanela")."""
     from .web_search import (is_distinctive, propose_query_details as propose,
+                             public_glossary_terms, removed_private_terms,
                              strip_private_details)
+    public = public_glossary_terms(glossary or [], text or "")
     m = _TOPIC.search(text or "")
     if m:
         # only the topic the user wrote for the public sources: the rest of
@@ -682,12 +684,27 @@ def propose_query_details(text: str, glossary: list[tuple[str, str]] | None = No
         # Sur"), a person ("la Dra. Ana Pérez") or a code is the user's, not a
         # topic (sealed bank v3.2: a plot name was proposed and, approved, sent)
         merged = strip_private_details(" ".join([detail["query"], *names]),
-                                       text or "", private=private)
+                                       text or "", private=private,
+                                       public_terms=public)
         merged["removed"] = list(dict.fromkeys([*detail.get("removed", []),
                                                 *merged.get("removed", [])]))
-        merged["removed_terms"] = list(dict.fromkeys(
-            [*detail.get("removed_terms", []), *merged.get("removed_terms", [])]))
         detail = merged
+    # Exactly the private terms the question or the offer named and the query
+    # kept out (T9.16): a public glossary name is not one of them, while an
+    # explicit private term is even if it looks public.
+    detail["removed_terms"] = removed_private_terms(
+        text or "", detail["query"], private=private, glossary=glossary,
+        candidates=" ".join([detail["query"], *[n for n in _NAME.findall(text or "")
+                                                if n.lower() not in
+                                                {w.lower() for w in detail["query"].split()}]]))
+    for term in detail["removed_terms"]:
+        for word in re.findall(r"[\wÁÉÍÓÚÜÑáéíóúüñ'-]+", term):
+            if len(word) < 3 or word.lower() in {"los", "las", "del", "the"}:
+                continue
+            if word.lower() in detail["query"].lower():
+                continue
+            if word.casefold() not in {x.casefold() for x in detail.get("removed", [])}:
+                detail.setdefault("removed", []).append(word)
     detail["query"] = detail["query"][:200].strip()
     return detail
 
