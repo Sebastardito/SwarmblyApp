@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **Glossary: a private entry never reaches a public query (T9.17)**
+  (`swarmbly_app/memory_capture.py`, `web_search.py`, `lce_adapter.py`,
+  `local_context.py`, `projects.py`, `api/__init__.py`, `web/js/chat.js`,
+  `web/i18n/*.json`, `tests/test_glossary_private.py`). A glossary line can
+  now carry `| privado` (also `| private`, `| privado: sí`/`yes`/`true`, case
+  and accents ignored). LCE drops that bare segment because it is not one of
+  its metadata keys, so the App reads the raw lines from the same roots the
+  adapter already reads. The term and its equivalents of a private entry are
+  explicit private terms for the proposal: removed whole (a short code too)
+  and by distinctive word, reported in `removed_terms`, never used as a
+  translation in a public query and never returned by
+  `public_glossary_terms`; an unmarked entry keeps today's behaviour. The
+  memory card offers *Private: never used in public searches* (a `private`
+  field in the API), `glossary_line` writes `| privado`, the saved list shows
+  the mark, and a later edit keeps it. Local answers still use the entry;
+  passages and local retrieval are unchanged.
+
 - **Research proposal: report exactly the private terms it kept out (T9.16)**
   (`swarmbly_app/web_search.py`, `recipes.py`, `tests/test_recipes.py`). The
   proposal filtered the private run before building the offer, so EJ4-04's

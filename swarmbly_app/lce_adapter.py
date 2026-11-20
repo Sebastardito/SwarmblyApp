@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from swarmbly_lce.c1 import SourceIndex
+from swarmbly_lce.c1 import passages as _passages
 from swarmbly_lce.c1.passages import (  # noqa: F401  (kept for older imports)
     _BM25, _fold, _is_glossary, _paragraphs, _stem, _tokens, CANDIDATES_KEPT,
     DENSE_CANDIDATES, EXTRA_WEIGHT, MAX_PER_FILE, RELATIVE_FLOOR, RRF_K, SPAN_MAX_CHARS)
@@ -244,9 +245,56 @@ class LCEAdapter:
         getter = getattr(self.index, "glossary_meta", None)
         return getter(self._roots(extra_dirs, roots)) if getter else {}
 
+    def glossary_private_terms(self, extra_dirs: list[str] | tuple[str, ...] = (),
+                               roots: list[Path] | None = None) -> list[str]:
+        """Terms whose glossary line carries the App's ``| privado`` mark (T9.17).
+
+        LCE's ``_split_meta`` drops a bare ``privado`` segment (it is not one of
+        its metadata keys), so the App reads the raw lines here, from the same
+        files and roots the adapter already reads.  Only the term list leaves
+        this method; the mark itself never changes what LCE does locally.
+        """
+        from .memory_capture import split_private_mark
+        out: list[str] = []
+        for root in self._roots(extra_dirs, roots):
+            root = Path(root).expanduser()
+            if not root.is_dir():
+                continue
+            for path in sorted(root.rglob("*")):
+                if (not path.is_file() or not _passages.is_glossary(path)
+                        or any(p.startswith(".") for p in path.relative_to(root).parts)):
+                    continue
+                try:
+                    text = path.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                for term, right in _passages.glossary_lines(text):
+                    if term not in out and split_private_mark(right)[1]:
+                        out.append(term)
+        return out
+
+    # a shorter name for callers that only ask "which terms are private?"
+    glossary_private = glossary_private_terms
+
     def glossary_entries(self, extra_dirs: list[str] | tuple[str, ...] = (),
                          roots: list[Path] | None = None) -> list[tuple[str, str]]:
-        return self.index.glossary_entries(self._roots(extra_dirs, roots))
+        roots = self._roots(extra_dirs, roots)
+        entries = list(self.index.glossary_entries(roots))
+        private = set(self.glossary_private_terms(roots=roots))
+        if not private:
+            return entries
+        from .memory_capture import split_private_mark
+        out: list[tuple[str, str]] = []
+        for term, right in entries:
+            clean, marked = split_private_mark(right)
+            # The mark travels in the entry's existing two-field shape: every
+            # caller keeps working, and the proposal can read it App-side even
+            # though LCE itself dropped it.
+            if term in private or marked:
+                out.append((term, f"{clean} | privado" if clean else "privado"))
+            else:
+                out.append((term, right))
+        return out
 
     def worker_guard(self, declared_model: str):
         """WorkerGuard (invariant I2) bound to the base model this node

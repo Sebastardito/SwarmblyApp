@@ -1628,7 +1628,14 @@ const Chat = (() => {
     const prop = m.meta.memory_proposals;
     if (prop.status === "saved") {
       const where = [prop.saved?.notes_path, prop.saved?.glossary_path].filter(Boolean).join(" · ");
-      return h("p.note.memory-done", `${t("chat.memorySaved")}: ${where}`);
+      const lines = prop.saved?.glossary || [];
+      return h("div.memory-card", { dataset: { mid: m.id } },
+        h("p.note.memory-done", `${t("chat.memorySaved")}: ${where}`),
+        lines.length ? h("ul.file-list.glossary-list", lines.map((line) => {
+          const mark = /\|\s*(?:privad[oa]|private)\b/i.test(line);
+          const shown = line.replace(/\s*\|\s*(?:privad[oa]|private)(?:\s*:.*)?\s*$/i, "").trim();
+          return h("li", h("code", shown), mark ? chip(t("chat.memoryPrivateChip"), "warn") : null);
+        })) : null);
     }
     if (prop.status === "discarded") return h("p.muted.memory-done", t("chat.memoryDiscarded"));
     const rows = [];
@@ -1647,9 +1654,11 @@ const Chat = (() => {
         placeholder: t("chat.memoryDefinition") });
       const avoid = h("input.text", { type: "text", value: (g.avoid || []).join(", "),
         placeholder: t("chat.memoryAvoid") });
+      const priv = h("input", { type: "checkbox" }); priv.checked = !!g.private;
       rows.push(h("div.memory-row", box, h("span.chip", t("chat.memoryGlossary")), term, h("span", "="), eq,
-        h("span.muted", t("chat.memoryAvoidLabel")), avoid, def));
-      return { box, term, eq, def, avoid };
+        h("span.muted", t("chat.memoryAvoidLabel")), avoid, def,
+        h("label.inline.small", priv, h("span", t("chat.memoryPrivate")))));
+      return { box, term, eq, def, avoid, priv };
     });
     const save = async (discard) => {
       const body = discard ? { discard: true } : {
@@ -1658,6 +1667,7 @@ const Chat = (() => {
           term: g.term.value.trim(),
           equivalents: g.eq.value.split(",").map((x) => x.trim()).filter(Boolean),
           avoid: g.avoid.value.split(",").map((x) => x.trim()).filter(Boolean),
+          private: g.priv.checked,
           definition: g.def.value.trim() })) };
       try {
         await Api.post(`/api/conversations/${encodeURIComponent(active)}/messages/${encodeURIComponent(m.id)}/memory`, body);

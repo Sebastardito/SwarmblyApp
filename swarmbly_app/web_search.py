@@ -25,6 +25,7 @@ import urllib.parse
 from typing import Any, Callable
 
 from .engine.providers import USER_AGENT, _get
+from .memory_capture import private_value, split_private_mark
 
 Fetch = Callable[[str, float, str], Any]
 
@@ -128,13 +129,22 @@ def propose_query_details(question: str, keywords: str = "",
     from .lang import detect_language  # noqa: F401  (kept for callers' symmetry)
     q = question or ""
     fold = q.lower()
+    # T9.17: a glossary entry marked private is never a public translation; its
+    # term and equivalents become explicit private terms for the guard below.
+    entries = _glossary_items(glossary)
+    private_all = [str(t).strip() for t in private or [] if str(t).strip()]
+    for term in private_glossary_terms(glossary):
+        if term not in private_all:
+            private_all.append(term)
     translated: list[str] = []
-    for term, equivalents in glossary or []:
+    for term, equivalents, is_private in entries:
+        if is_private:
+            continue
         stem = term.lower().rstrip("s")
         if len(stem) >= 3 and stem in fold:
             translated += [e.strip() for e in equivalents.split(",") if e.strip()][:2]
             q = re.sub(re.escape(term.rstrip("s")) + r"\w*", " ", q, flags=re.I)
-    public_terms = public_glossary_terms(glossary, question)
+    public_terms = public_glossary_terms(glossary, question, private=private_all)
     rest = _FIRST_PERSON.sub(" ", q)
     rest = _FILLER.sub(" ", rest)
     rest = re.sub(r"[¿?¡!.,;:()\"]", " ", rest)
@@ -161,7 +171,7 @@ def propose_query_details(question: str, keywords: str = "",
         for w in _FILLER.sub(" ", piece).split():
             if len(w) > 2 and not any(_same_word(w, x) for x in out):
                 out.append(w)
-    detail = strip_private_details(" ".join(out), question, private=private,
+    detail = strip_private_details(" ".join(out), question, private=private_all,
                                    public_terms=public_terms)
     # Terms the model offered (or the question defined) and the guard kept out
     # of the query are part of what the user is told: the proposal says which
@@ -170,12 +180,14 @@ def propose_query_details(question: str, keywords: str = "",
     # start ("Rincón Alto") is reported even though it never entered ``out``.
     offered = " ".join([question or "", *translated, *defined, *kw, *words,
                         str(keywords or "")])
-    reported = removed_private_terms(question, detail["query"], private=private,
+    reported = removed_private_terms(question, detail["query"], private=private_all,
                                      glossary=glossary, candidates=offered)
     removed = list(detail.get("removed") or [])
     for term in reported:
         for word in _term_words(term):
-            if len(_fold(word)) < 3 or _ARTICLE.fullmatch(word):
+            if len(_fold(word)) < 3 and not (word.isupper() or any(c.isdigit() for c in word)):
+                continue
+            if _ARTICLE.fullmatch(word):
                 continue
             if _contains_phrase(offered, word) and not _contains_phrase(detail["query"], word):
                 if word.casefold() not in {x.casefold() for x in removed}:
@@ -334,21 +346,113 @@ def _contains_phrase(text: str, phrase: str) -> bool:
                for i in range(0, len(have) - length + 1))
 
 
-def public_glossary_terms(glossary: list[tuple[str, str]] | None,
-                          question: str) -> list[str]:
+def _contains_private_phrase(text: str, phrase: str) -> bool:
+    """Like :func:`_contains_phrase`, but a term also matches its inflection.
+
+    A private glossary term "cucuve" is the same term in "cucuves"; the report
+    must name it even though the question used the plural (T9.17).
+    """
+    wanted = _folded_tokens(phrase)
+    if not wanted:
+        return False
+    have = _folded_tokens(text)
+    length = len(wanted)
+    return any(all(_same_word(have[i + k], wanted[k]) for k in range(length))
+               for i in range(0, len(have) - length + 1))
+
+
+def _glossary_entry(item: Any) -> tuple[str, str, bool]:
+    """A glossary entry as ``(term, equivalents, private)`` (T9.17).
+
+    The adapter keeps the App's ``| privado`` mark in the entry's right side,
+    and a caller may also pass a dict or a third boolean.  All shapes are read
+    here, so no public-query path depends on how the entry travelled.
+    """
+    private = False
+    if isinstance(item, dict):
+        term = str(item.get("term") or "")
+        equivalents = item.get("equivalents") or ""
+        if isinstance(equivalents, (list, tuple)):
+            equivalents = ", ".join(str(x) for x in equivalents)
+        private = private_value(item.get("private", item.get("privado")))
+    elif isinstance(item, (list, tuple)):
+        term = str(item[0]) if item else ""
+        equivalents = item[1] if len(item) > 1 and item[1] is not None else ""
+        if isinstance(equivalents, (list, tuple)):
+            equivalents = ", ".join(str(x) for x in equivalents)
+        if len(item) > 2:
+            extra = item[2]
+            if isinstance(extra, dict):
+                private = private_value(extra.get("private", extra.get("privado")))
+            else:
+                private = private_value(extra)
+    else:
+        term, _, equivalents = str(item or "").partition("=")
+        equivalents = equivalents or ""
+    term, term_mark = split_private_mark(term)
+    equivalents, equivalents_mark = split_private_mark(str(equivalents))
+    return term.strip(), equivalents.strip(), private or term_mark or equivalents_mark
+
+
+def _glossary_items(glossary: Any) -> list[tuple[str, str, bool]]:
+    return [_glossary_entry(item) for item in glossary or []]
+
+
+def _glossary_equivalent_words(equivalents: str) -> list[str]:
+    """The public names of a right side: before any definition or metadata."""
+    out = []
+    for equivalent in str(equivalents or "").split(","):
+        equivalent = re.split(r"[.;|]", equivalent.strip(), maxsplit=1)[0].strip()
+        if equivalent:
+            out.append(equivalent)
+    return out
+
+
+def private_glossary_terms(glossary: Any) -> list[str]:
+    """The term and equivalents of every private glossary entry (T9.17).
+
+    They are the explicit private terms of a proposal: removed whole and by
+    distinctive word from the public query (T9.10 rule) and reported in
+    ``removed_terms`` when the question names them, while a local answer still
+    uses the entry (it never leaves this computer).
+    """
+    out: list[str] = []
+    for term, equivalents, private in _glossary_items(glossary):
+        if not private:
+            continue
+        for candidate in [term, *_glossary_equivalent_words(equivalents)]:
+            if candidate and candidate.casefold() not in {x.casefold() for x in out}:
+                out.append(candidate)
+    return out
+
+
+def glossary_entry_private(item: Any) -> bool:
+    """Whether one glossary entry is marked private (T9.17)."""
+    return _glossary_entry(item)[2]
+
+
+def _private_names(private: list[str] | None) -> set[str]:
+    return {_fold(str(term)).strip() for term in private or [] if str(term).strip()}
+
+
+def public_glossary_terms(glossary: Any, question: str,
+                          private: list[str] | None = None) -> list[str]:
     """Glossary equivalents that the question itself names (T9.16).
 
     "Quilén Bajo" is a public station in the project's glossary even when it
     appears at the start of a capitalised run; the proposal uses this list to
-    keep it and to avoid reporting it as private.
+    keep it and to avoid reporting it as private.  A private entry (T9.17) is
+    never public: neither its term nor its equivalents are returned.
     """
     out: list[str] = []
-    for _term, equivalents in glossary or []:
-        for equivalent in str(equivalents or "").split(","):
-            # A glossary line is "QB = Quilén Bajo. Estación de cierre…": the
-            # name is the part before the sentence, not the definition.
-            equivalent = re.split(r"[.;|]", equivalent.strip(), maxsplit=1)[0].strip()
-            if equivalent and equivalent not in out and _contains_phrase(question, equivalent):
+    hidden = _private_names(private)
+    for term, equivalents, is_private in _glossary_items(glossary):
+        if is_private or _fold(term).strip() in hidden:
+            continue
+        for equivalent in _glossary_equivalent_words(equivalents):
+            if _fold(equivalent).strip() in hidden:
+                continue
+            if equivalent not in out and _contains_phrase(question, equivalent):
                 out.append(equivalent)
     return out
 
@@ -538,7 +642,7 @@ def private_terms(question: str, private: list[str] | None = None,
 
 def removed_private_terms(question: str, query: str,
                           private: list[str] | None = None,
-                          glossary: list[tuple[str, str]] | None = None,
+                          glossary: Any = None,
                           candidates: str = "") -> list[str]:
     """The private terms that were offered (question, glossary, model keywords)
     and kept out of ``query`` (T9.16).
@@ -546,13 +650,19 @@ def removed_private_terms(question: str, query: str,
     ``candidates`` is the text of what the proposal considered; the question
     itself always counts.  A public glossary term is never in this list, while
     an explicit ``private`` term is (the caller may know that a
-    public-sounding name is the user's own place).
+    public-sounding name is the user's own place).  A glossary entry marked
+    private (T9.17) is explicit: its term and equivalents are never public.
     """
-    public = public_glossary_terms(glossary, question)
+    private_all = [str(term).strip() for term in private or [] if str(term).strip()]
+    for term in private_glossary_terms(glossary):
+        if term not in private_all:
+            private_all.append(term)
+    public = public_glossary_terms(glossary, question, private=private_all)
     offered = " ".join([question or "", candidates or ""])
     out: list[str] = []
-    for term in private_terms(question, private=private, public_terms=public):
-        if _contains_phrase(offered, term) and not _contains_phrase(query or "", term):
+    for term in private_terms(question, private=private_all, public_terms=public):
+        if _contains_private_phrase(offered, term) and \
+                not _contains_private_phrase(query or "", term):
             if term not in out:
                 out.append(term)
     return out
@@ -580,12 +690,12 @@ def strip_private_details(query: str, question: str = "",
     documented at ``_PRIVATE_COMMON`` and ``is_distinctive``.
     """
     spans, question_phrases = _private_details(question, public_terms=public_terms)
-    terms = [" ".join(words) for words in question_phrases]
-    terms += [str(t).strip() for t in private or [] if str(t).strip()]
+    question_terms = [" ".join(words) for words in question_phrases]
+    explicit_terms = [str(t).strip() for t in private or [] if str(t).strip()]
     phrases: list[list[str]] = []
     distinctive: set[str] = set()
     owner: dict[str, str] = {}
-    for term in terms:
+    for term in question_terms:
         words = _term_words(term)
         if not words:
             continue
@@ -596,6 +706,24 @@ def strip_private_details(query: str, question: str = "",
                 f = _fold(w)
                 distinctive.add(f)
                 owner.setdefault(f, term)
+    # An explicit private term is removed whole even when it is a short code
+    # ("QA", "AB") or a common word: the caller says it is the user's (T9.17).
+    for term in explicit_terms:
+        words = _term_words(term)
+        if not words:
+            continue
+        phrases.append(words)
+        for w in words:
+            if is_distinctive(w):
+                f = _fold(w)
+                distinctive.add(f)
+                owner.setdefault(f, term)
+                # the question may use the singular or the plural ("cucuve" /
+                # "cucuves"): a private term is removed in either form
+                if len(f) >= 4:
+                    other = f[:-1] if f.endswith("s") else f + "s"
+                    distinctive.add(other)
+                    owner.setdefault(other, term)
     for w in spans:
         if is_distinctive(w):
             distinctive.add(_fold(w))
@@ -626,8 +754,22 @@ def strip_private_details(query: str, question: str = "",
             if [_token_word(tokens[start + k]) for k in range(length)] == folded:
                 for k in range(length):
                     record(start + k, " ".join(words))
+    # A public glossary name that happens to share a word with a *different*
+    # private term keeps its own occurrence: "Quilén Bajo" (public) survives a
+    # private "Quilén Alto".  The private phrase above was already removed, so
+    # any occurrence still here is the public one.
+    public_phrases = [[_fold(w) for w in _term_words(term)]
+                      for term in public_terms or [] if _term_words(term)]
+    protected: set[int] = set()
+    for folded in public_phrases:
+        length = len(folded)
+        for start in range(0, len(tokens) - length + 1):
+            if any(removed_at[start:start + length]):
+                continue
+            if [_token_word(tokens[start + k]) for k in range(length)] == folded:
+                protected.update(range(start, start + length))
     for index, token in enumerate(tokens):
-        if removed_at[index]:
+        if removed_at[index] or index in protected:
             continue
         f = _token_word(token)
         if f in distinctive:

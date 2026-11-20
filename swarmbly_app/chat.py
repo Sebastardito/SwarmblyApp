@@ -823,8 +823,9 @@ class ChatService:
                     try:
                         known = self.glossary(f"{user_text} {expansion.keywords}",
                                               request.project_id)
-                        pairs = (self.glossary_entries(request.project_id)
-                                 if self.glossary_entries else [])
+                        pairs = _public_gloss_pairs(
+                            self.glossary_entries(request.project_id)
+                            if self.glossary_entries else [])
                     except Exception:
                         known, pairs = "", []
                 entities = public_entities(user_text, expansion, sources,
@@ -912,7 +913,7 @@ class ChatService:
             if request.web_query:
                 request.receipt_ctx["web_searched"] = True
                 with egress.purpose(egress.PUBLIC_QUERY):
-                    groups = {_fold_word(n): _fold_word(t) for t, eq in gloss_pairs
+                    groups = {_fold_word(n): _fold_word(t) for t, eq in _public_gloss_pairs(gloss_pairs)
                               for n in [t, *[e.strip() for e in eq.split(",") if e.strip()]]}
                     web_found = web_search.search(request.web_query, ev_cfg, lang_now,
                                                   recent=web_search.wants_recent(user_text),
@@ -2280,6 +2281,8 @@ class ChatService:
                 equivalents = str(equivalents or "").strip()
                 if not term or not equivalents:
                     continue
+                from .memory_capture import split_private_mark
+                equivalents = split_private_mark(equivalents)[0]
                 out.append({"doc_id": f"glossary:{glossary_name}", "source": glossary_name,
                             "rel": glossary_name, "anchor": f"g{number}",
                             "text": f"{term} = {equivalents}", "score": 0.0})
@@ -3052,6 +3055,17 @@ _SKILL_LABEL = {
 }
 
 
+def _public_gloss_pairs(pairs: list[tuple[str, str]] | None) -> list[tuple[str, str]]:
+    """Glossary pairs without the App's ``| privado`` mark (T9.17).
+
+    The mark tells the public-query guard that the entry is the user's; a
+    local answer still uses the entry, but the word "privado" is not one of its
+    equivalents, so it is removed before the pair reaches the model or a
+    matching helper."""
+    from .memory_capture import split_private_mark
+    return [(term, split_private_mark(str(eq))[0]) for term, eq in pairs or []]
+
+
 def _glossary_block(pairs: list[tuple[str, str]], avoid: dict[str, str], context: str,
                     lang: str, meta: dict[str, dict[str, list[str]]] | None = None) -> str:
     """Glossary entries that concern this answer (their term, an equivalent or
@@ -3067,7 +3081,7 @@ def _glossary_block(pairs: list[tuple[str, str]], avoid: dict[str, str], context
     for wrong, right in avoid.items():
         wrong_for.setdefault(_fold_word(right), []).append(wrong)
     seen = set()
-    for term, eq in pairs:
+    for term, eq in _public_gloss_pairs(pairs):
         eqs = [e.strip() for e in eq.split(",") if e.strip()]
         wrongs = wrong_for.get(_fold_word(term), [])
         distinct = (meta or {}).get(term, {}).get("distinct", [])
@@ -3114,7 +3128,8 @@ def _term_conflicts(answer: str, pairs: list[tuple[str, str]],
     Elateridae belongs to "cucujo = cucuyo, Pyrophorus, Elateridae | distinto:
     cucuve"). Flagged, not rewritten."""
     found = []
-    eqs = {term: [term, *[e.strip() for e in eq.split(",") if e.strip()]] for term, eq in pairs}
+    eqs = {term: [term, *[e.strip() for e in eq.split(",") if e.strip()]]
+           for term, eq in _public_gloss_pairs(pairs)}
     for sentence in re.split(r"(?<=[.!?])\s+|\n+", answer or ""):
         if _NEGATION.search(sentence):
             continue
@@ -3150,7 +3165,7 @@ def _missed_sources(answer: str, question: str, pairs: list[tuple[str, str]],
     qwords = [_fold_word(w).rstrip("s") for w in re.findall(r"\w+", question or "")]
     text = _fold_word(" ".join(passages or []))
     out = []
-    for term, eq in pairs:
+    for term, eq in _public_gloss_pairs(pairs):
         stem = _fold_word(term).rstrip("s")
         # the question's own word, not a prefix shared with another term
         # ("cucujo" was matched by "cucuves")
@@ -3193,7 +3208,7 @@ def _spanish_terms(text: str, pairs: list[tuple[str, str]]) -> tuple[str, list[d
     agrees with the term (-a feminine, -o masculine). Names, quotes and titles
     are left alone: only "article + lowercase English word" is replaced."""
     fixes = []
-    for term, eq in pairs:
+    for term, eq in _public_gloss_pairs(pairs):
         t = term.strip()
         if not t or " " in t or not re.fullmatch(r"[a-záéíóúñü]+", t):
             continue
@@ -3581,7 +3596,7 @@ def _sources_block(sources: list[dict[str, Any]], user_text: str,
     lines = [head]
     q = _fold_word(user_text)
     asked = []
-    for term, eq in pairs or []:
+    for term, eq in _public_gloss_pairs(pairs):
         if any(_fold_word(w).rstrip("s") == _fold_word(term).rstrip("s")
                for w in re.findall(r"\w+", user_text or "")) or _fold_word(term) in q:
             asked.append((term, [e.strip() for e in eq.split(",")

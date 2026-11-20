@@ -178,6 +178,8 @@
   "memoryGlossary": "glossary",
   "memoryEquivalents": "synonyms, translations (comma-separated)",
   "memoryDefinition": "short definition",
+  "memoryPrivate": "Private: never used in public searches",
+  "memoryPrivateChip": "private",
   "webNone": "The approved search found nothing (query: \"{q}\"). Try other terms, for example in English.",
   "webDropped": "The approved search (query: \"{q}\") found {n} results, but none was about the topic and they were left out. Try other terms.",
   "webAgain": "Search again",
