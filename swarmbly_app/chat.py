@@ -2228,6 +2228,36 @@ class ChatService:
         return resolved
 
     # -- recipe 4: process a list on the swarm (3.4) ---------------------------
+    def _list_evidence(self, items: list[str], operation: str,
+                       project_id: str) -> dict[int, list[dict[str, Any]]]:
+        """Passages of the project's documents relevant to each list item.
+
+        The same local retriever the normal chat recipe uses; nothing leaves
+        the device here.  A passage carries its document label so the model
+        can cite ``[D…]`` as in any other answer.
+        """
+        if self.retriever is None:
+            return {}
+        try:
+            active = bool(self.retrieval_active(project_id))
+        except Exception:
+            active = True
+        if not active:
+            return {}
+        evidence: dict[int, list[dict[str, Any]]] = {}
+        history: list[dict[str, Any]] = []
+        for n, item in enumerate(items, 1):
+            try:
+                found = list(self.retriever(item, operation, project_id) or [])
+            except Exception:
+                found = []
+            if not found:
+                continue
+            found = found[:4]
+            _label_sources(found, history)
+            evidence[n] = found
+        return evidence
+
     def _run_list(self, request: ActiveRequest, user_text: str) -> None:
         """Waves of items through the existing batch path, then a table by code.
 
@@ -2257,6 +2287,10 @@ class ChatService:
         wave_meta: list[dict[str, Any]] = []
         local_reasons: list[str] = []
         executed_waves: list[str] = []
+        documents_available = False
+        documents_used = False
+        documents_withheld = False
+        document_passages: list[str] = []
         offset = 0
         try:
             orchestrator = self.orchestrator() if self.orchestrator is not None else None
@@ -2272,7 +2306,21 @@ class ChatService:
                              conversation_id=request.conversation_id,
                              message_id=request.message_id, wave=wave_no,
                              waves=len(waves), done=offset, total=len(job.items))
-            prompt = recipes.build_list_prompt(job.operation, wave)
+            evidence = self._list_evidence(wave, job.operation, request.project_id)
+            if evidence:
+                documents_available = True
+            documents_allowed = (job.where != "swarm"
+                                 or egress.policy().third_party_passages)
+            if evidence and not documents_allowed:
+                documents_withheld = True
+                prompt = recipes.build_list_prompt(job.operation, wave)
+            else:
+                if evidence:
+                    documents_used = True
+                    document_passages.extend(
+                        str(p.get("text") or "") for passages in evidence.values()
+                        for p in passages)
+                prompt = recipes.build_list_prompt(job.operation, wave, evidence)
             local_items = {n: item for n, item in enumerate(wave, 1)}
             wave_exec = "local"
             retried = False
@@ -2363,6 +2411,17 @@ class ChatService:
         summary = recipes.summary_line(len(job.items), counts["answered"],
                                        counts["missing"], counts["disagreement"], lang)
         answer_text = f"{markdown}\n\n{summary}"
+        if documents_used:
+            request.receipt_ctx["passages"] = document_passages
+        documents_note = ""
+        if documents_withheld:
+            documents_note = ("No se usaron tus documentos: el enjambre no tiene permiso para "
+                              "recibir pasajes privados (privacy.third_party_passages)."
+                              if lang == "es" else
+                              "Your documents were not used: the swarm is not allowed to "
+                              "receive private passages (privacy.third_party_passages).")
+            answer_text = f"{answer_text}\n\n{documents_note}"
+            request.receipt_ctx["passages_withheld"] = "the swarm"
         executed = ("distributed" if executed_waves and all(
             x == "distributed" for x in executed_waves)
                     else "local" if not executed_waves or all(x == "local" for x in executed_waves)
@@ -2373,6 +2432,13 @@ class ChatService:
                      "wave_size": wave_size, "duplicates": len(duplicates),
                      "retries": sum(1 for w in wave_meta if w.get("retried")),
                      "partial_reasons": list(dict.fromkeys(local_reasons)),
+                     "documents_available": documents_available,
+                     "documents_used": documents_used,
+                     "documents_withheld": documents_withheld,
+                     "documents": {"available": documents_available,
+                                   "used": documents_used,
+                                   "withheld": documents_withheld,
+                                   "note": documents_note},
                      "privacy": {"tier": privacy["tier"], "lane": privacy["lane"],
                                  "sensitive": privacy["sensitive"]}}
         table_meta = {"by_code": True, "rows": len(job.items), "header": header,

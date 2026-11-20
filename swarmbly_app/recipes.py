@@ -252,24 +252,45 @@ def list_language(operation: str) -> str:
         return "en"
 
 
-def build_list_prompt(operation: str, items: list[str]) -> str:
+def build_list_prompt(operation: str, items: list[str],
+                      evidence: dict[int, list[dict[str, Any]]] | None = None) -> str:
     """The enumerated prompt the existing admission/orchestrator path expects.
 
     The operation is the user's text; the app adds only the per-item cue and
     the structural ``Items:`` heading. Every wave uses this same shape with
     its own slice of items.
+
+    ``evidence`` maps a 1-based item position to passages retrieved for that
+    item.  They are placed under their item, indented, so the model reads the
+    fact next to the question it answers; the prompt still has exactly one
+    numbered line per item.
     """
     lang = list_language(operation)
     if lang == "es":
         cue = ("Para cada elemento numerado, responde solo ese elemento. "
                "Escribe una línea por elemento: «número. respuesta».")
         heading = "Elementos:"
+        doc_hint = ("Cada elemento puede traer pasajes de tus documentos; úsalos y cita su "
+                    "etiqueta [D…]. Si un elemento no trae pasajes, no inventes datos de tus "
+                    "documentos.")
     else:
         cue = ("For each numbered item, answer only that item. "
                "Write one line per item: \"number. answer\".")
         heading = "Items:"
-    numbered = "\n".join(f"{n}. {item}" for n, item in enumerate(items, 1))
-    return f"{operation.strip()}\n\n{cue}\n{heading}\n{numbered}"
+        doc_hint = ("Each item may carry passages from your documents; use them and cite their "
+                    "[D…] label. If an item has no passages, do not invent document data.")
+    lines: list[str] = []
+    for n, item in enumerate(items, 1):
+        lines.append(f"{n}. {item}")
+        for passage in (evidence or {}).get(n, []):
+            label = str(passage.get("label") or passage.get("source") or "")
+            text = " ".join(str(passage.get("text") or "").split())[:1200]
+            if text:
+                lines.append(f"   - [{label}] {text}")
+    body = "\n".join(lines)
+    if evidence:
+        return f"{operation.strip()}\n\n{cue}\n{doc_hint}\n{heading}\n{body}"
+    return f"{operation.strip()}\n\n{cue}\n{heading}\n{body}"
 
 
 def build_single_item_prompt(operation: str, item: str) -> str:

@@ -348,3 +348,82 @@ def test_item_text_echoed_with_its_own_number_is_parsed():
     assert _parse_items("1. Ficha 2: parcela Norte. 9", {1: item}) == {1: "9"}
     assert _parse_single_item("1. Ficha 9: parcela Norte.", item) == "9"
     assert _parse_single_item("| 2 | 9 |", item) == "9"
+
+
+# ---- T9.12: list items read the project documents ---------------------------
+
+def _docs_retriever(query, expansion="", project_id=""):
+    """One passage per item, so the test can see which item got which fact."""
+    return [{"doc_id": "d1", "source": "notas.md", "rel": "notas.md",
+             "anchor": f"p{query.split()[-1]}", "text": f"SENTINEL-PASSAGE for {query}",
+             "score": 0.9}]
+
+
+def test_a_local_list_reads_the_documents_for_each_item(app_state, tmp_path):
+    project = app_state.projects.create("List docs", parent=tmp_path / "p")
+    app_state.chat.retriever = _docs_retriever          # type: ignore[assignment]
+    app_state.chat.retrieval_active = lambda project_id="": True  # type: ignore[assignment]
+    fake = FakeBackend(reply="1. 42\n2. 43")
+    app_state.backends.resolve = lambda cfg=None: fake  # type: ignore[method-assign]
+    job = _job(["Ficha 1", "Ficha 2"], operation="Di el dato de cada ficha")
+    conv = app_state.chat.create_conversation(mode="local", project_id=project.id)
+    app_state.chat.send(conv["id"], job.operation, recipe="list",
+                        list_job=job.to_dict(), run_async=False)
+    msg = app_state.chat.get_messages(conv["id"])[-1]
+    prompt = fake.calls[-1]["messages"][-1]["content"]
+    assert "SENTINEL-PASSAGE for Ficha 1" in prompt
+    assert "SENTINEL-PASSAGE for Ficha 2" in prompt
+    assert prompt.index("SENTINEL-PASSAGE for Ficha 1") < prompt.index("2. Ficha 2")
+    assert msg["meta"]["list"]["documents_used"] is True
+    assert msg["meta"]["list"]["documents_withheld"] is False
+    assert [row["answer"] for row in msg["meta"]["table"]["rows_data"]] == ["42", "43"]
+
+
+class _CapturingSwarm:
+    def __init__(self):
+        self.prompts: list[str] = []
+
+    def run(self, prompt, *, mode="lan", request_id=None, cancel=None, history=None):
+        self.prompts.append(str(prompt))
+        items = re.findall(r"^\s*(\d+)\.\s+(.+)$", prompt, re.M)
+        text = "\n".join(f"{n}. answer {n}" for n, _ in items)
+        return {"routed": "distributed", "text": text,
+                "metadata": {"n_tasks": 1,
+                             "attempts": [{"node": "W1", "task": "t0",
+                                           "bytes_out": len(prompt)}]},
+                "stages": []}
+
+
+def _send_swarm_list(app_state, tmp_path, monkeypatch, passages: bool):
+    project = app_state.projects.create("Swarm docs", parent=tmp_path / "p")
+    app_state.chat.retriever = _docs_retriever          # type: ignore[assignment]
+    app_state.chat.retrieval_active = lambda project_id="": True  # type: ignore[assignment]
+    swarm = _CapturingSwarm()
+    app_state.chat.orchestrator = lambda: swarm          # type: ignore[assignment]
+    app_state.config.update({"privacy": {"third_party_passages": passages}})
+    job = _job(["alpha", "beta"], operation="Give the status of this item",
+               where="swarm")
+    conv = app_state.chat.create_conversation(mode="lan", project_id=project.id)
+    app_state.chat.send(conv["id"], job.operation, recipe="list",
+                        list_job=job.to_dict(), run_async=False)
+    msg = app_state.chat.get_messages(conv["id"])[-1]
+    return swarm, msg
+
+
+def test_the_swarm_list_without_permission_does_not_send_the_documents(
+        app_state, tmp_path, monkeypatch):
+    swarm, msg = _send_swarm_list(app_state, tmp_path, monkeypatch, passages=False)
+    assert swarm.prompts and "SENTINEL-PASSAGE" not in swarm.prompts[0]
+    assert msg["meta"]["list"]["documents_used"] is False
+    assert msg["meta"]["list"]["documents_withheld"] is True
+    assert "not used" in msg["content"].lower()
+    assert "SENTINEL-PASSAGE" not in msg["content"]
+
+
+def test_the_swarm_list_with_permission_sends_the_documents(
+        app_state, tmp_path, monkeypatch):
+    swarm, msg = _send_swarm_list(app_state, tmp_path, monkeypatch, passages=True)
+    assert "SENTINEL-PASSAGE for alpha" in swarm.prompts[0]
+    assert "SENTINEL-PASSAGE for beta" in swarm.prompts[0]
+    assert msg["meta"]["list"]["documents_used"] is True
+    assert msg["meta"]["list"]["documents_withheld"] is False

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **List recipe reads the project documents per item (T9.12)**
+  (`swarmbly_app/recipes.py`, `chat.py`, `tests/test_recipe_list.py`). The
+  list path built its prompt from the operation and items only, so cards
+  with “Documentos” answered from memory. Each wave now retrieves passages
+  for every item with the same local retriever the chat recipe uses and
+  places them under their item, with `[D…]` labels. A local list always
+  uses them. A swarm list uses them only when
+  `privacy.third_party_passages` is on; otherwise the passages stay home
+  and the answer says the documents were not used. The receipt records the
+  passages only when they were actually given to the model.
+
 - **Recipe 5 hands the script the text documents too (T9.11)**
   (`swarmbly_app/recipes.py`, `chat.py`, `tests/test_recipe_code.py`). The
   file picker now scans the project's `sources` for Markdown, plain text and
