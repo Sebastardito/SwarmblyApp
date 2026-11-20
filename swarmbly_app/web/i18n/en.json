@@ -166,6 +166,8 @@
   "webOfferTitle": "Nothing was searched online for this answer. You can review and approve a search.",
   "webQuery": "Text that will be sent",
   "webHint": "Only this text is sent to PubMed and Wikipedia (and your SearXNG if configured). Neither your full question nor your documents leave this computer. Check it carries no personal data.",
+  "webOfferRemoved": "These private terms were removed from the query: {terms}.",
+  "webOfferEmpty": "No public query remains after removing the private terms. Write the query you want to send, or cancel.",
   "webSend": "Search and answer again",
   "webResults": "Online references (approved search: \"{q}\")",
   "memoryAsked": "You asked to save this. Review and confirm:",

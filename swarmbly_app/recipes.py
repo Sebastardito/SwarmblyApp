@@ -425,26 +425,45 @@ _TOPIC = re.compile(r"(?:fuentes\s+p[uú]blicas|public\s+sources)\s+(?:dicen\s+|
 _NAME = re.compile(r"(?<=[^\W\d_])[\s,;:(«\"']+([A-ZÁÉÍÓÚÑ][\wáéíóúñü-]{2,})")
 
 
-def propose_query(text: str, glossary: list[tuple[str, str]] | None = None) -> str:
-    """The query offered to the user before a research answer: nothing is sent
-    until the user approves it (and may edit it). The template's own words
-    ("Compara … con lo que dicen las fuentes públicas sobre …") are not the
-    topic: the query is what follows "sobre", and the names the request gives
-    ("la variedad Kanela")."""
-    from .web_search import propose_query as propose, strip_private
+def propose_query_details(text: str, glossary: list[tuple[str, str]] | None = None,
+                          private: list[str] | None = None) -> dict[str, Any]:
+    """The query offered to the user before a research answer, with the private
+    terms the guard removed.  Nothing is sent until the user approves the query
+    (and may edit it).  The template's own words ("Compara … con lo que dicen
+    las fuentes públicas sobre …") are not the topic: the query is what follows
+    "sobre", and the names the request gives ("la variedad Kanela")."""
+    from .web_search import (is_distinctive, propose_query_details as propose,
+                             strip_private_details)
     m = _TOPIC.search(text or "")
     if m:
         # only the topic the user wrote for the public sources: the rest of
         # the request is about their documents ("el rendimiento del lote AB2"), and a
         # lot code or a name from it does not belong in a public query
-        return strip_private(propose(m.group(1), "", glossary or []), text or "")[:200]
-    query = propose(text or "", "", glossary or [])
-    words = {w.lower() for w in query.split()}
-    names = [n for n in _NAME.findall(text or "") if n.lower() not in words]
-    # the names go through the same filter as the rest: a plot ("la Parcela
-    # Sur"), a person ("la Dra. Ana Pérez") or a code is the user's, not a topic
-    # (sealed bank v3.2: a plot name was proposed and, approved, sent)
-    return strip_private(" ".join([query, *names]), text or "").strip()[:200]
+        detail = propose(m.group(1), "", glossary or [], private=private)
+    else:
+        detail = propose(text or "", "", glossary or [], private=private)
+        words = {w.lower() for w in detail["query"].split()}
+        names = [n for n in _NAME.findall(text or "")
+                 if n.lower() not in words and is_distinctive(n)]
+        # the names go through the same filter as the rest: a plot ("la Parcela
+        # Sur"), a person ("la Dra. Ana Pérez") or a code is the user's, not a
+        # topic (sealed bank v3.2: a plot name was proposed and, approved, sent)
+        merged = strip_private_details(" ".join([detail["query"], *names]),
+                                       text or "", private=private)
+        merged["removed"] = list(dict.fromkeys([*detail.get("removed", []),
+                                                *merged.get("removed", [])]))
+        merged["removed_terms"] = list(dict.fromkeys(
+            [*detail.get("removed_terms", []), *merged.get("removed_terms", [])]))
+        detail = merged
+    detail["query"] = detail["query"][:200].strip()
+    return detail
+
+
+def propose_query(text: str, glossary: list[tuple[str, str]] | None = None,
+                  private: list[str] | None = None) -> str:
+    """The query offered to the user before a research answer (see
+    :func:`propose_query_details`)."""
+    return propose_query_details(text, glossary, private)["query"]
 
 
 # ---------------------------------------------------------------------------

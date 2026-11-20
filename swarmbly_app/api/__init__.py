@@ -1058,18 +1058,27 @@ def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
     def recipe_query(body: dict[str, Any]) -> dict:
         """The query offered before a research answer. Nothing leaves the
         computer here: the user sees it, edits it and approves it."""
-        from ..recipes import propose_query
-        text = str((body or {}).get("text") or "").strip()
+        from ..recipes import propose_query_details
+        body = body or {}
+        text = str(body.get("text") or "").strip()
         if not text:
             raise HTTPException(status_code=400, detail="empty text")
         glossary: list[tuple[str, str]] = []
         getter = state.chat.glossary_entries
         if getter is not None:
             try:
-                glossary = list(getter(str((body or {}).get("project_id") or "")))
+                glossary = list(getter(str(body.get("project_id") or "")))
             except Exception:
                 glossary = []
-        return {"query": propose_query(text, glossary)}
+        # Terms the caller already knows are the user's (a name from their
+        # documents) are removed whole, not word by word.  They never leave
+        # this response: the endpoint is a local proposal.
+        extra = body.get("private") if isinstance(body.get("private"), list) else []
+        private = [str(term)[:200] for term in extra if str(term).strip()][:50]
+        detail = propose_query_details(text, glossary, private=private)
+        detail["message"] = ("no public query remains after removing private terms"
+                             if detail.get("empty") else "")
+        return detail
 
     # ---- recipe 5: data with code (3.4) ---------------------------------------
     @app.get("/api/recipes/code/sources")

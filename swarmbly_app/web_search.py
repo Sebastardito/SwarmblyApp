@@ -29,7 +29,8 @@ from .engine.providers import USER_AGENT, _get
 Fetch = Callable[[str, float, str], Any]
 
 _FIRST_PERSON = re.compile(
-    r"\b(yo|mi|mis|me|conmigo|nuestr[oa]s?|i|my|me|mine|our|we|eu|meu|minha)\b", re.I)
+    r"\b(yo|mi|mis|m[ií][oa]s?|tuy[oa]s?|suy[oa]s?|nuestr[oa]s?|vuestr[oa]s?|me|conmigo|"
+    r"i|my|mine|yours|ours|our|we|eu|meu|minha)\b", re.I)
 _FILLER = re.compile(
     r"\b(puedes|podr[ií]as|busca(?:r)?|buscar|encuentra|dime|hay|que|qu[eé]|cu[aá]les?|sobre|"
     r"en\s+l[ií]nea|online|internet|referencias?|art[ií]culos?|estudios?|recientes?|"
@@ -112,17 +113,18 @@ def relevant(hit: dict[str, Any], terms: list[str],
     return (bool(in_title) and len(in_text) >= need) or len(in_text) >= n
 
 
-def propose_query(question: str, keywords: str = "",
-                  glossary: list[tuple[str, str]] | None = None,
-                  passages: list[str] | None = None) -> str:
-    """A short query without first-person words; the user edits it before
-    anything is sent.
+def propose_query_details(question: str, keywords: str = "",
+                          glossary: list[tuple[str, str]] | None = None,
+                          passages: list[str] | None = None,
+                          private: list[str] | None = None) -> dict[str, Any]:
+    """The proposed query and the private terms the guard removed from it.
 
-    The user's glossary translates first ("cucuve = mockingbird, Mimus" turns
-    "cucuves" into "mockingbird"); the local model's keywords are used only
-    when they share a word with the question or the glossary (in the third
-    test it offered "galapagos quails" and "Darwin's finches" for cucuves, and
-    PubMed found nothing for the whole string)."""
+    A short query without first-person words; the user edits it before anything
+    is sent.  The user's glossary translates first ("cucuve = mockingbird,
+    Mimus" turns "cucuves" into "mockingbird"); the local model's keywords are
+    used only when they share a word with the question or the glossary (in the
+    third test it offered "galapagos quails" and "Darwin's finches" for
+    cucuves, and PubMed found nothing for the whole string)."""
     from .lang import detect_language  # noqa: F401  (kept for callers' symmetry)
     q = question or ""
     fold = q.lower()
@@ -158,7 +160,28 @@ def propose_query(question: str, keywords: str = "",
         for w in _FILLER.sub(" ", piece).split():
             if len(w) > 2 and not any(_same_word(w, x) for x in out):
                 out.append(w)
-    return strip_private(" ".join(out), question)[:160].strip()
+    detail = strip_private_details(" ".join(out), question, private=private)
+    # Terms the model offered (or the question defined) and the guard kept out
+    # of the query are part of what the user is told: the proposal says which
+    # private terms were removed, even when they never reached the final text.
+    offered = " ".join([*translated, *defined, *kw, *words, str(keywords or "")])
+    if offered.strip():
+        removed_from_offer = strip_private_details(offered, question, private=private)
+        detail["removed"] = list(dict.fromkeys(
+            [*detail.get("removed", []), *removed_from_offer.get("removed", [])]))
+        detail["removed_terms"] = list(dict.fromkeys(
+            [*detail.get("removed_terms", []), *removed_from_offer.get("removed_terms", [])]))
+    detail["query"] = detail["query"][:160].strip()
+    return detail
+
+
+def propose_query(question: str, keywords: str = "",
+                  glossary: list[tuple[str, str]] | None = None,
+                  passages: list[str] | None = None,
+                  private: list[str] | None = None) -> str:
+    """The proposed query (see :func:`propose_query_details`)."""
+    return propose_query_details(question, keywords, glossary, passages,
+                                 private=private)["query"]
 
 
 # ---- what a proposed query must not carry (3.3, sealed bank v3.2) -------------
@@ -182,6 +205,7 @@ _STOP_SCOPE = re.compile(
     r"^(de|del|con|en|y|o|para|por|sobre|frente|seg[uú]n|que|a|al|with|and|or|for|about|"
     r"against|than|in|on|to|from|of)$", re.I)
 _POSSESSIVE = re.compile(r"^(mi|mis|nuestr[oa]s?|tu|tus|su|sus|my|our|your)$", re.I)
+_CONJ = re.compile(r"^(y|e|o|u|and|or)$", re.I)
 _INSTRUCTION = re.compile(
     r"^(escrib\w*|redact\w*|resum\w*|haz|hazlo|hazme|haga|explic\w*|compar\w*|indic\w*|"
     r"señal\w*|senal\w*|menciona\w*|di|dime|da|dame|incluy\w*|añad\w*|anad\w*|agrega\w*|"
@@ -219,15 +243,76 @@ _PUBLIC_NOUN = re.compile(
     r"islands?|rivers?|lakes?|volcano(?:es)?|park|reserve)$", re.I)
 
 
-def private_spans(question: str) -> set[str]:
-    """Words of the question that are about the user's own material: a place of
-    theirs and its name ("la Parcela Norte", "lote AB7", "Huerto Los Aromos"),
-    what follows a possessive up to the next connector ("mis conteos" → conteos),
-    a person introduced by a title ("la Dra. Ana Pérez"), codes and figures."""
+# Words that name a direction, a position or a generic part of a place.  They
+# are not distinctive on their own: "norte", "alto", "bajo" and "río" are
+# ordinary words of the user's own wording, so removing every occurrence of
+# them would eat the topic.  A multi-word private term is still removed whole
+# ("Rincón Norte" leaves neither word), and only its *distinctive* words are
+# removed when they appear alone ("Rincón" yes, "Norte" no).
+_PRIVATE_COMMON = frozenset("""
+norte sur este oeste noreste noroeste sureste suroeste
+alto alta altos altas bajo baja bajos bajas
+central centro medio media medios medias
+nuevo nueva nuevos nuevas viejo vieja viejos viejas
+grande grandes chico chica chicos chicas pequeno pequena pequenos pequenas
+rio rios ria rias laguna lagunas cerro cerros monte montes valle valles
+parcela parcelas lote lotes finca fincas predio predios campo campos sector sectores
+bloque bloques cantero canteros bancal bancales huerto huertos huerta huertas
+invernadero invernaderos potrero potreros cuartel cuarteles chacra chacras
+terreno terrenos cama camas surco surcos tratamiento tratamientos replica replicas
+repeticion repeticiones plot plots field fields lot lots farm farms block blocks
+bed beds greenhouse greenhouses paddock paddocks orchard orchards treatment treatments
+replicate replicates north south east west upper lower middle new old big small
+one two three four five seis siete ocho nueve diez
+""".split())
+
+# The words a private term is built from.  A term is split into words, folded
+# (accents and case) and compared token by token, never as a substring: "Río"
+# is not found inside "Rincón", and a term at the very start of the query is
+# found because there is no left word boundary to miss.
+_WORD = re.compile(r"[\wÁÉÍÓÚÑáéíóúñü'’-]+")
+
+
+def _term_words(term: str) -> list[str]:
+    return [w for w in _WORD.findall(str(term or "")) if w]
+
+
+def is_distinctive(word: str) -> bool:
+    """A word that identifies a private term by itself.
+
+    Common words of a language of place names (``_PRIVATE_COMMON``), articles,
+    connectors, titles and number words are not distinctive; everything else
+    of three letters or more is.  This is deliberately a small stop-list, not
+    a general dictionary: the function errs on the side of privacy for names
+    ("Rincón") and on the side of keeping the user's wording for ordinary
+    words ("norte").
+    """
+    f = _fold(word).strip("'’-")
+    return (len(f) >= 3 and f not in _PRIVATE_COMMON
+            and not _ARTICLE.fullmatch(f) and not _STOP_SCOPE.fullmatch(f)
+            and not _NUMBER_WORD.fullmatch(f) and not _PERSON_CUE.fullmatch(f))
+
+
+def _private_details(question: str) -> tuple[set[str], list[list[str]]]:
+    """The question's private words and the multi-word terms they belong to.
+
+    The words are the same ones the guard has always removed (place cues,
+    possessives, people, codes and capitalised names that are not public).
+    The terms add something the old word-only view lost: when a capitalised
+    private name is found, its whole run is kept ("Rincón Alto" at the very
+    start of a sentence, where the first word was not taken as a name).
+    """
     tokens = re.findall(r"[\wÁÉÍÓÚÑáéíóúñü'.-]+", question or "")
     tokens = [t.strip(".'") for t in tokens]
     tokens = [t for t in tokens if t]
     out: set[str] = set()
+    phrases: list[list[str]] = []
+
+    def phrase(words: list[str]) -> None:
+        words = [w.strip(".'") for w in words if w and w.strip(".'")]
+        if words:
+            phrases.append(words)
+
     i = 0
     while i < len(tokens):
         t = tokens[i]
@@ -241,33 +326,42 @@ def private_spans(question: str) -> set[str]:
                 if not _ARTICLE.match(tokens[j]):
                     out.add(_fold(tokens[j]))
                 j += 1
+            phrase(tokens[i:j])
             i = j
             continue
         if _PERSON_CUE.match(t):
             j = i + 1
+            names: list[str] = []
             while j < len(tokens) and j <= i + 3 and tokens[j][:1].isupper():
                 out.add(_fold(tokens[j]))
+                names.append(tokens[j])
                 j += 1
+            phrase([t, *names])
             i = j
             continue
         if _POSSESSIVE.match(t):
             j = i + 1
+            group: list[str] = []
             while j < len(tokens) and j <= i + 3 and not _STOP_SCOPE.match(tokens[j]):
                 out.add(_fold(tokens[j]))
+                group.append(tokens[j])
                 j += 1
+            phrase(group)
             i = j
             continue
         if any(c.isdigit() for c in t):
             out.add(_fold(t))
         i += 1
     # capitalised names: public only after a public noun (and the names that
-    # follow it) or as a scientific name; the first word of a sentence is not
-    # a name
+    # follow it) or as a scientific name.  A sentence-initial capital is still
+    # not a name by itself, but when the next capital is private the run is
+    # taken whole: "Rincón Alto" at the start is a name, not "Alto" alone.
     from .local_context import binomials
     latin = {_fold(w) for b in binomials(question or "") for w in b.split()}
     latin |= {_fold(m) for m in re.findall(r"\b[A-Z][a-z]{3,}(?:idae|inae|aceae|ales)\b", question or "")}
     raw = re.findall(r"[\wÁÉÍÓÚÑáéíóúñü'.-]+|[.?!¿¡]", question or "")
     public = False
+    private_idx: set[int] = set()
     for j, t in enumerate(raw):
         word = t.strip(".'")
         if not word or not word[0].isalpha():
@@ -279,21 +373,162 @@ def private_spans(question: str) -> set[str]:
         if word[:1].isupper():
             first = j == 0 or raw[j - 1] in (".", "?", "!", "¿", "¡") or raw[j - 1].endswith(".")
             if not first and not public and _fold(word) not in latin and not _ARTICLE.match(word):
-                out.add(_fold(word))
+                private_idx.add(j)
             continue
         if not _ARTICLE.match(word):
             public = False
-    return out
+    expanded = set(private_idx)
+    for j in sorted(private_idx):
+        k = j - 1
+        steps = 0
+        while k >= 0 and steps < 3:
+            word = raw[k].strip(".'")
+            if not word or not word[0].isalpha():
+                break
+            if word[:1].isupper() and _fold(word) not in latin \
+                    and not _PUBLIC_NOUN.match(word) and not _ARTICLE.match(word):
+                expanded.add(k)
+                k -= 1
+                steps += 1
+                continue
+            if _ARTICLE.match(word) or _STOP_SCOPE.match(word):
+                k -= 1
+                steps += 1
+                continue
+            break
+    group: list[int] = []
+    last = -10
+    for j in sorted(expanded):
+        between = raw[last + 1:j] if group else []
+        split = bool(group) and (j - last > 2 or any(
+            not w or not w[0].isalpha() or _CONJ.match(w.strip(".'"))
+            for w in between))
+        if split:
+            _add_capital_group(raw, group, out, phrase)
+            group = []
+        group.append(j)
+        last = j
+    if group:
+        _add_capital_group(raw, group, out, phrase)
+    return out, phrases
+
+
+def _add_capital_group(raw: list[str], group: list[int], out: set[str],
+                       phrase: Callable[[list[str]], None]) -> None:
+    words = [raw[j].strip(".'") for j in group]
+    words = [w for w in words if w]
+    if not words:
+        return
+    phrase(words)
+    for w in words:
+        if not _ARTICLE.match(w) and not _STOP_SCOPE.match(w):
+            out.add(_fold(w))
+
+
+def private_spans(question: str) -> set[str]:
+    """Words of the question that are about the user's own material: a place of
+    theirs and its name ("la Parcela Norte", "lote AB7", "Huerto Los Aromos"),
+    what follows a possessive up to the next connector ("mis conteos" → conteos),
+    a person introduced by a title ("la Dra. Ana Pérez"), codes and figures.
+
+    A capitalised private name is taken with its whole run, including the first
+    word of a sentence ("Rincón Alto y …"), so a later fragment cannot outlive
+    the guard."""
+    return _private_details(question)[0]
+
+
+def _query_tokens(query: str) -> list[str]:
+    return re.findall(r"\S+", query or "")
+
+
+def _token_word(token: str) -> str:
+    return _fold(token.strip(".,;:()[]{}«»\"'’"))
+
+
+def strip_private_details(query: str, question: str = "",
+                          private: list[str] | None = None) -> dict[str, Any]:
+    """Remove the private terms from a proposed query, and say what was removed.
+
+    ``private`` adds terms known to be the user's (their name, a place from
+    their documents).  Every such term is first removed *whole*, token by token
+    and case/accent-insensitively; then every distinctive word of it is removed
+    wherever it appears alone.  A common word ("norte", "alto", "bajo", "río")
+    is not removed when it appears alone in the user's own wording, but it does
+    leave as part of a multi-word private term ("Rincón Norte").  The rule is
+    documented at ``_PRIVATE_COMMON`` and ``is_distinctive``.
+    """
+    spans, question_phrases = _private_details(question)
+    terms = [" ".join(words) for words in question_phrases]
+    terms += [str(t).strip() for t in private or [] if str(t).strip()]
+    phrases: list[list[str]] = []
+    distinctive: set[str] = set()
+    owner: dict[str, str] = {}
+    for term in terms:
+        words = _term_words(term)
+        if not words:
+            continue
+        if len(words) >= 2:
+            phrases.append(words)
+        for w in words:
+            if is_distinctive(w):
+                f = _fold(w)
+                distinctive.add(f)
+                owner.setdefault(f, term)
+    for w in spans:
+        if is_distinctive(w):
+            distinctive.add(_fold(w))
+    # a hyphen inside a name ("Rincón-Norte") separates words for the guard;
+    # the search engines treat it as a separator too.
+    query = re.sub(r"(?<=\w)[-‐‑–—](?=\w)", " ", query or "")
+    tokens = _query_tokens(query)
+    removed_at = [False] * len(tokens)
+    removed: list[str] = []
+    matched: list[str] = []
+
+    def record(index: int, term: str) -> None:
+        if removed_at[index]:
+            return
+        removed_at[index] = True
+        shown = tokens[index].strip(".,;:()[]{}«»\"'’")
+        if shown and shown.casefold() not in {x.casefold() for x in removed}:
+            removed.append(shown)
+        if term and term not in matched:
+            matched.append(term)
+
+    for words in sorted(phrases, key=len, reverse=True):
+        folded = [_fold(w) for w in words]
+        length = len(folded)
+        for start in range(0, len(tokens) - length + 1):
+            if any(removed_at[start:start + length]):
+                continue
+            if [_token_word(tokens[start + k]) for k in range(length)] == folded:
+                for k in range(length):
+                    record(start + k, " ".join(words))
+    for index, token in enumerate(tokens):
+        if removed_at[index]:
+            continue
+        f = _token_word(token)
+        if f in distinctive:
+            record(index, owner.get(f, token.strip(".,;:()[]{}«»\"'’")))
+    kept = [token for index, token in enumerate(tokens) if not removed_at[index]]
+    kept = [token for token in kept
+            if _public_word(token, set())
+            and not _FILLER.fullmatch(token.strip(".,;:()[]{}«»\"'’"))]
+    cleaned = " ".join(kept).strip()
+    meaningful = [w for w in kept
+                  if len(_fold(w)) >= 3 and not _FILLER.fullmatch(w)
+                  and not _ARTICLE.fullmatch(_fold(w))
+                  and not _FIRST_PERSON.fullmatch(_fold(w))]
+    empty = not meaningful
+    return {"query": "" if empty else cleaned, "removed": removed,
+            "removed_terms": matched, "empty": empty}
 
 
 def strip_private(query: str, question: str = "", private: list[str] | None = None) -> str:
     """The query without the question's private words, codes, figures and the
     words of a format request; ``private`` adds terms known to be the user's
     (their name, people in their documents)."""
-    spans = private_spans(question)
-    for term in private or []:
-        spans |= {_fold(w) for w in re.findall(r"[\wÁÉÍÓÚÑáéíóúñü-]+", term) if len(w) >= 3}
-    return " ".join(w for w in (query or "").split() if _public_word(w, spans))
+    return strip_private_details(query, question, private)["query"]
 
 
 _VERB = re.compile(

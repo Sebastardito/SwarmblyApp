@@ -940,7 +940,7 @@ class ChatService:
                         pairs_now = self.glossary_entries(request.project_id)
                     except Exception:
                         pairs_now = []
-                request.receipt_ctx["web_offer"] = web_search.propose_query(
+                request.receipt_ctx["web_offer"] = web_search.propose_query_details(
                     user_text, expansion.keywords if expansion else "", pairs_now)
             proposals = None
             if capture and not request.memory_saved:
@@ -1062,7 +1062,7 @@ class ChatService:
                     block += "\n" + _NOTHING_FOUND.get(_lang(user_text), _NOTHING_FOUND["en"])
                     if web_found is None and request.receipt_ctx.get("web_offer") is None:
                         # "the sources do not say" comes with a way to look further
-                        request.receipt_ctx["web_offer"] = web_search.propose_query(
+                        request.receipt_ctx["web_offer"] = web_search.propose_query_details(
                             user_text, expansion.keywords if expansion else "")
                 blocks.insert(0, block)
             if request.memory_saved and not request.memory_saved.get("error"):
@@ -1239,7 +1239,9 @@ class ChatService:
             if web_found is not None:
                 extra["web_search"] = web_found
             elif request.receipt_ctx.get("web_offer") is not None and request.recipe != "documents":
-                extra["web_offer"] = {"query": request.receipt_ctx["web_offer"]}
+                offer = request.receipt_ctx["web_offer"]
+                extra["web_offer"] = (dict(offer) if isinstance(offer, dict)
+                                      else {"query": str(offer)})
             if web_found and web_found.get("results") and not proposals:
                 # references found online can be kept, with the user's yes
                 proposals = {"id": uuid.uuid4().hex[:12], "status": "proposed", "asked": False,

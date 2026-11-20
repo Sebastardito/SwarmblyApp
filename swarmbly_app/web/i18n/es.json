@@ -166,6 +166,8 @@
   "webOfferTitle": "No se buscó nada en internet para esta respuesta. Puedes revisar y aprobar la búsqueda.",
   "webQuery": "Texto que se enviará",
   "webHint": "Solo se envía este texto a PubMed y Wikipedia (y a tu SearXNG si lo configuraste). Ni tu pregunta completa ni tus documentos salen de esta computadora. Revisa que no lleve datos personales.",
+  "webOfferRemoved": "Se quitaron estos términos privados de la consulta: {terms}.",
+  "webOfferEmpty": "No queda una consulta pública después de quitar los términos privados. Escribe la consulta que quieras enviar o cancela.",
   "webSend": "Buscar y responder de nuevo",
   "webResults": "Referencias en línea (búsqueda aprobada: «{q}»)",
   "memoryAsked": "Pediste guardar esto. Revisa y confirma:",

@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Research proposal: a private name is removed whole (T9.10)**
+  (`swarmbly_app/web_search.py`, `recipes.py`, `api/__init__.py`, `chat.py`,
+  `web/js/chat.js`, i18n). A private place name at the start of a request was
+  detected only by its last word ("Rincón Alto" left "Rincón" in the offered
+  query). The guard now takes a capitalised private run whole, matches whole
+  terms and their fragments token by token (accents and case folded, word
+  bounded, hyphens as separators), and only removes a *distinctive* word on
+  its own: common place words (“norte”, “alto”, “bajo”, “río”) stay when the
+  user writes them alone, but leave as part of a multi-word private term. The
+  proposal returns `removed`/`removed_terms`/`empty`; the UI lists the terms
+  removed and says when no public query remains. Nothing is sent by the
+  proposal, and the query is still editable and approved by the user.
+
 - **Launch-time test host map (D-013)** (`swarmbly_app/test_hosts.py`,
   `cli.py`, `egress.py`, MCP/author/HTTP clients, `web/index.html`,
   `web/js/app.js`). The sealed-bank v4 harness can now exercise third-party

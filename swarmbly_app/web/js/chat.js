@@ -834,9 +834,12 @@ const Chat = (() => {
      until the user approves it (and may edit it). The optional author field
      opens the same consent box an author lookup always uses. */
   async function approveResearch(text) {
-    let proposed = "";
+    let proposed = "", removed = [], empty = false;
     try {
-      proposed = (await Api.post("/api/recipes/query", { text, project_id: projects.active || "" })).query || "";
+      const offer = await Api.post("/api/recipes/query", { text, project_id: projects.active || "" });
+      proposed = offer.query || "";
+      removed = offer.removed || [];
+      empty = !!offer.empty;
     } catch (e) { proposed = ""; }
     const q = h("input.text", { type: "text", value: proposed, "aria-label": t("chat.webQuery") });
     const author = h("input.text", { type: "text", value: "",
@@ -847,9 +850,14 @@ const Chat = (() => {
           h("span.muted.small", t("chat.recipeResearchAuthorHelp")))
       : null;
     setTimeout(() => q.focus(), 50);
+    const removedNote = removed.length
+      ? h("p.muted", t("chat.webOfferRemoved").replace("{terms}", removed.join(", ")))
+      : null;
+    const emptyNote = empty ? h("p.note", t("chat.webOfferEmpty")) : null;
     const ok = await UI.modal(t("chat.recipeResearch"), h("div.form-stack",
       h("p", t("chat.recipeResearchAsk")),
       h("label.stack", h("span", t("chat.webQuery")), q),
+      removedNote, emptyNote,
       authorBox,
       h("p.muted", t("chat.webHint"))), [
       { label: t("common.cancel"), value: false, kind: "ghost" },
@@ -1477,7 +1485,8 @@ const Chat = (() => {
 
   /* 3.1: online search only with the user's yes, the query in view and editable. */
   async function searchOnline(m) {
-    const q = h("input.text", { type: "text", value: (m.meta.web_offer || m.meta.web_search || {}).query || "",
+    const offer = m.meta.web_offer || m.meta.web_search || {};
+    const q = h("input.text", { type: "text", value: offer.query || "",
       "aria-label": t("chat.webQuery") });
     const termsBox = h("div.terms-box");
     const keep = h("input", { type: "checkbox" });
@@ -1523,8 +1532,13 @@ const Chat = (() => {
       review.disabled = false;
     }, "ghost small");
     setTimeout(() => q.focus(), 50);
+    const removedNote = (offer.removed || []).length
+      ? h("p.muted", t("chat.webOfferRemoved").replace("{terms}", (offer.removed || []).join(", ")))
+      : null;
+    const emptyNote = offer.empty ? h("p.note", t("chat.webOfferEmpty")) : null;
     const ok = await UI.modal(t("chat.webOffer"), h("div.form-stack",
       h("label.stack", h("span", t("chat.webQuery")), q),
+      removedNote, emptyNote,
       h("div.msg-actions", review, h("span.muted", t("chat.termsHint"))),
       termsBox, keepRow,
       h("p.muted", t("chat.webHint"))), [
