@@ -480,6 +480,8 @@ CODE_RECIPE = "code"
 CODE_MAX_FILES = 5
 CODE_MAX_QUESTION = 4000
 CODE_SAMPLE_CELL = 160
+CODE_SAMPLE_LINES = 5
+CODE_TEXT_SUFFIXES = (".md", ".markdown", ".txt", ".json")
 
 
 class CodeRecipeError(ValueError):
@@ -560,6 +562,29 @@ def sample_csv(path: Path | str, max_rows: int = 5) -> dict[str, Any] | None:
         return None
     headers, data = cleaned
     return {"name": path.name, "sheet": "", "headers": headers, "rows": data}
+
+
+def sample_text(path: Path | str, max_lines: int = CODE_SAMPLE_LINES,
+                max_chars: int = 65_536) -> dict[str, Any] | None:
+    """The first ``max_lines`` non-empty lines of a text document.
+
+    The script receives the file whole in ``/data``; the model only needs
+    enough to know what it contains.  Reading is capped and each line is
+    flattened and shortened, so a long note cannot fill the prompt (the same
+    row cap idea as :func:`sample_csv` and :func:`sample_xlsx_tables`).
+    """
+    path = Path(path)
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read(max_chars)
+    except OSError as exc:
+        raise CodeRecipeError(f"cannot read {path.name}: {exc}") from exc
+    lines = [" ".join(line.split())[:CODE_SAMPLE_CELL]
+             for line in text.lstrip("\ufeff").splitlines() if line.strip()]
+    if not lines:
+        return None
+    return {"name": path.name, "sheet": "", "kind": "text",
+            "lines": lines[:max_lines]}
 
 
 def _xlsx_column_index(ref: str) -> int:
@@ -736,7 +761,8 @@ def build_code_prompt(question: str, files: list[dict[str, Any]],
             "Puedes usar pandas y openpyxl."
         )
         heading = "Pregunta"
-        files_heading = "Archivos y muestras (máximo 5 filas por tabla; el resto del archivo NO se muestra)"
+        files_heading = ("Archivos y muestras (máximo 5 filas por tabla y 5 líneas por "
+                         "documento de texto; el resto del archivo NO se muestra)")
         only = "Responde solo con el script dentro de un bloque ```python. No lo expliques."
         previous = "El script anterior falló"
         corrected = "Escribe un script corregido que resuelva el fallo."
@@ -748,7 +774,8 @@ def build_code_prompt(question: str, files: list[dict[str, Any]],
             "Print the answer to stdout. pandas and openpyxl are available."
         )
         heading = "Question"
-        files_heading = "Files and samples (at most 5 rows per table; the rest of the file is NOT shown)"
+        files_heading = ("Files and samples (at most 5 rows per table and 5 lines per "
+                         "text document; the rest of the file is NOT shown)")
         only = "Reply only with the script in one ```python block. Do not explain it."
         previous = "The previous script failed"
         corrected = "Write a corrected script that fixes the failure."
@@ -759,8 +786,14 @@ def build_code_prompt(question: str, files: list[dict[str, Any]],
              files_heading]
     for item in files:
         name = str(item.get("name") or "")
-        parts.append(f"- FILE: {name}")
+        size = item.get("size_bytes")
+        parts.append(f"- FILE: {name}" + (f" ({size} bytes)" if size is not None else ""))
         for table in by_name.get(name, []):
+            if table.get("kind") == "text":
+                parts.append("  TEXT: first lines (the rest of the file is NOT shown)")
+                for n, line in enumerate(table.get("lines") or [], 1):
+                    parts.append(f"  LINE {n}: {line}")
+                continue
             label = table.get("sheet") or "table"
             parts.append(f"  TABLE: {label}")
             parts.append("  Columns: " + " | ".join(table.get("headers") or []))

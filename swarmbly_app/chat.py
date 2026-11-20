@@ -1551,6 +1551,7 @@ class ChatService:
         self._code_roots.setdefault("", runner.root)
 
     _CODE_TABLE_SUFFIXES = (".csv", ".tsv", ".xlsx", ".xlsm")
+    _CODE_TEXT_SUFFIXES = (".md", ".markdown", ".txt", ".json")
 
     def _code_sources_root(self, project_id: str) -> Path | None:
         """The project's ``sources`` folder, or the personal one."""
@@ -1580,13 +1581,14 @@ class ChatService:
             return False
 
     def code_sources(self, project_id: str = "") -> list[dict[str, Any]]:
-        """Recipe 5's file picker: C1 documents plus spreadsheet sources.
+        """Recipe 5's file picker: C1 documents plus table and text sources.
 
         C1 (swarmbly_lce) does not list XLSX/XLSM, so the project's
-        ``sources`` folder is scanned directly for CSV/TSV/XLSX/XLSM.  Every
-        direct entry is a regular file, not a symlink, and its real path stays
-        inside that folder.  Files above ``code_max_file_bytes`` are shown as
-        too large and are refused at selection.
+        ``sources`` folder is scanned directly for CSV/TSV/XLSX/XLSM and for
+        the text documents a script may read (Markdown, plain text and JSON).
+        Every direct entry is a regular file, not a symlink, and its real path
+        stays inside that folder.  Files above ``code_max_file_bytes`` are
+        shown as too large and are refused at selection.
         """
         cfg = self._code_cfg()
         cap = cfg["max_file_bytes"]
@@ -1601,7 +1603,9 @@ class ChatService:
                                if not (Path(dirpath) / name).is_symlink()]
                 for name in sorted(filenames):
                     path = Path(dirpath) / name
-                    if path.suffix.lower() not in self._CODE_TABLE_SUFFIXES:
+                    suffix = path.suffix.lower()
+                    if suffix not in self._CODE_TABLE_SUFFIXES \
+                            and suffix not in self._CODE_TEXT_SUFFIXES:
                         continue
                     try:
                         if path.is_symlink():
@@ -1630,7 +1634,7 @@ class ChatService:
                         "folder": str(root),
                         "size_bytes": int(info.st_size),
                         "doc_id": str((doc or {}).get("doc_id") or ""),
-                        "kind": "table",
+                        "kind": "table" if suffix in self._CODE_TABLE_SUFFIXES else "text",
                         "too_large": int(info.st_size) > cap,
                     })
         for doc in docs:
@@ -1646,6 +1650,7 @@ class ChatService:
                 continue
             seen.add(key)
             size = int(doc.get("size_bytes") or 0)
+            suffix = resolved.suffix.lower()
             out.append({
                 "name": str(doc.get("name") or resolved.name),
                 "rel": str(doc.get("rel") or resolved.name),
@@ -1653,7 +1658,8 @@ class ChatService:
                 "folder": str(doc.get("folder") or resolved.parent),
                 "size_bytes": size,
                 "doc_id": str(doc.get("doc_id") or ""),
-                "kind": "document",
+                "kind": ("table" if suffix in self._CODE_TABLE_SUFFIXES else
+                         "text" if suffix in self._CODE_TEXT_SUFFIXES else "document"),
                 "too_large": bool(cap and size > cap),
             })
         out.sort(key=lambda item: (str(item.get("rel") or "").casefold(),
@@ -1717,7 +1723,8 @@ class ChatService:
             seen_names.add(path.name)
             selected.append({"name": path.name, "rel": str(doc.get("rel") or path.name),
                              "path": path, "folder": str(doc.get("folder") or path.parent),
-                             "doc_id": str(doc.get("doc_id") or "")})
+                             "doc_id": str(doc.get("doc_id") or ""),
+                             "size_bytes": int(info.st_size)})
         roots: list[Path] = []
         for item in selected:
             folder = Path(item["folder"]).expanduser().resolve()
@@ -1734,16 +1741,20 @@ class ChatService:
         return selected, inputs
 
     def _code_samples(self, project_id: str, selected: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        from .recipes import (CodeRecipeError as RecipeError, markdown_tables,
-                              sample_document)
+        from .recipes import (CODE_TEXT_SUFFIXES, CodeRecipeError as RecipeError,
+                              markdown_tables, sample_document, sample_text)
         max_rows = self._code_cfg()["max_rows"]
         samples: list[dict[str, Any]] = []
         for item in selected:
             path = item["path"]
             suffix = path.suffix.lower()
             try:
-                if suffix in (".csv", ".tsv", ".xlsx", ".xlsm", ".md", ".markdown",
-                              ".txt"):
+                if suffix in CODE_TEXT_SUFFIXES:
+                    sample = sample_text(path, max_rows)
+                    if sample:
+                        samples.append(sample)
+                    continue
+                if suffix in (".csv", ".tsv", ".xlsx", ".xlsm"):
                     samples.extend(sample_document(path, max_rows))
                     continue
                 text = ""

@@ -388,3 +388,115 @@ def test_successful_run_meta_receipt_and_safe_download(app_state, tmp_path, monk
     linked = client.get(f"/api/recipes/code/runs/{run['run_id']}/files/link.txt")
     assert linked.status_code == 404
     assert client.get("/api/recipes/code/runs/not-a-run/files/x.txt").status_code == 404
+
+
+# ---- T9.11: recipe 5 also hands the script the text documents ---------------
+
+def test_listing_includes_markdown_and_plain_text(app_state, tmp_path):
+    project, _ = _project(app_state, tmp_path)
+    (project.sources / "notas.md").write_text("# Notas\nEl total es 42.\n",
+                                              encoding="utf-8")
+    (project.sources / "datos.txt").write_text("clave,valor\nuno,1\n",
+                                               encoding="utf-8")
+    client = make_client(app_state)
+    listing = client.get(f"/api/recipes/code/sources?project_id={project.id}").json()
+    by_rel = {item["rel"]: item for item in listing}
+    assert by_rel["notas.md"]["kind"] == "text"
+    assert by_rel["datos.txt"]["kind"] == "text"
+    assert by_rel["hive.csv"]["kind"] == "table"
+
+
+def test_text_proposal_lists_only_the_first_lines_and_the_size(
+        app_state, tmp_path, monkeypatch):
+    _as_available(monkeypatch, app_state)
+    project, _ = _project(app_state, tmp_path)
+    lines = ["El total es 42."] + [f"SENTINEL-LINE-{n}" for n in range(2, 10)]
+    (project.sources / "notas.md").write_text("\n".join(lines) + "\n",
+                                              encoding="utf-8")
+    fake = ScriptBackend("```python\nprint('ok')\n```")
+    app_state.backends.resolve = lambda config=None: fake   # type: ignore[method-assign]
+    client = make_client(app_state)
+    response = client.post("/api/recipes/code/propose", json={
+        "project_id": project.id, "question": "combine the note with the table",
+        "files": ["hive.csv", "notas.md"]})
+    assert response.status_code == 200, response.text
+    assert [f["name"] for f in response.json()["files"]] == ["hive.csv", "notas.md"]
+    prompt = fake.prompts[-1]
+    assert "- FILE: notas.md (" in prompt and "bytes)" in prompt
+    assert "TEXT: first lines" in prompt and "El total es 42." in prompt
+    assert "SENTINEL-LINE-6" not in prompt and "SENTINEL-LINE-7" not in prompt
+
+
+def test_symlinked_text_is_refused_and_an_escape_is_refused(
+        app_state, tmp_path, monkeypatch):
+    _as_available(monkeypatch, app_state)
+    project, _ = _project(app_state, tmp_path)
+    outside = tmp_path / "outside.md"
+    outside.write_text("SENTINEL-OUTSIDE\n", encoding="utf-8")
+    link = project.sources / "linked.md"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        pytest.skip("this platform cannot create a test symlink")
+    fake = ScriptBackend("```python\nprint('ok')\n```")
+    app_state.backends.resolve = lambda config=None: fake    # type: ignore[method-assign]
+    client = make_client(app_state)
+    names = [item["rel"] for item in
+             client.get(f"/api/recipes/code/sources?project_id={project.id}").json()]
+    assert "linked.md" not in names
+    for ref in ("linked.md", "../outside.md", str(outside)):
+        response = client.post("/api/recipes/code/propose", json={
+            "project_id": project.id, "question": "q", "files": [ref]})
+        assert response.status_code == 400, ref
+        assert "not in this project's sources" in response.json()["detail"]
+    assert fake.prompts == []
+
+
+def test_text_file_over_the_size_cap_is_refused(app_state, tmp_path, monkeypatch):
+    _as_available(monkeypatch, app_state)
+    app_state.config.update({"recipes": {"code_max_file_bytes": 80}})
+    project, _ = _project(app_state, tmp_path)
+    (project.sources / "notas.md").write_text("x" * 200, encoding="utf-8")
+    fake = ScriptBackend("```python\nprint('ok')\n```")
+    app_state.backends.resolve = lambda config=None: fake    # type: ignore[method-assign]
+    client = make_client(app_state)
+    listing = client.get(f"/api/recipes/code/sources?project_id={project.id}").json()
+    note = next(item for item in listing if item["rel"] == "notas.md")
+    assert note["too_large"] is True
+    response = client.post("/api/recipes/code/propose", json={
+        "project_id": project.id, "question": "q", "files": ["notas.md"]})
+    assert response.status_code == 400
+    assert "byte limit" in response.json()["detail"]
+    assert fake.prompts == []
+
+
+@pytest.mark.sandbox
+@pytest.mark.skipif(not available()[0], reason="the [sandbox] extra is not installed")
+def test_recipe5_script_reads_the_text_and_the_spreadsheet(
+        app_state, tmp_path, monkeypatch):
+    project, _ = _project(app_state, tmp_path)
+    (project.sources / "notas.md").write_text("El total de agujas es 42.\n",
+                                              encoding="utf-8")
+    fake = ScriptBackend(
+        "```python\n"
+        "import csv\n"
+        "nota = open('/data/notas.md', encoding='utf-8').read()\n"
+        "with open('/data/hive.csv', encoding='utf-8') as fh:\n"
+        "    rows = list(csv.DictReader(fh))\n"
+        "print(nota.strip(), len(rows))\n"
+        "```")
+    app_state.backends.resolve = lambda config=None: fake    # type: ignore[method-assign]
+    client = make_client(app_state)
+    proposal = client.post("/api/recipes/code/propose", json={
+        "project_id": project.id, "question": "combine the note and the table",
+        "files": ["hive.csv", "notas.md"]}).json()
+    try:
+        approved = client.post("/api/recipes/code/approve",
+                               json={"proposal_id": proposal["proposal_id"]})
+        assert approved.status_code == 200, approved.text
+        message = approved.json()["assistant_message"]
+        assert message["meta"]["code"]["trapped"] is None
+        assert "42" in message["content"] and "8" in message["content"]
+    finally:
+        if app_state.chat._code_runner is not None:
+            app_state.chat._code_runner.close()

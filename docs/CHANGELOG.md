@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Recipe 5 hands the script the text documents too (T9.11)**
+  (`swarmbly_app/recipes.py`, `chat.py`, `tests/test_recipe_code.py`). The
+  file picker now scans the project's `sources` for Markdown, plain text and
+  JSON alongside CSV/TSV/XLSX/XLSM, with the same containment checks
+  (realpath inside the project, no symlinks, size cap) and a read-only copy
+  into `/data`. The script proposal lists each text file by name, size and
+  its first five lines, with the same cap idea as the spreadsheet sample;
+  the rest of the document is not shown. A recipe-5 end-to-end test reads a
+  `.md` and a `.csv` from the sandbox.
+
 - **Research proposal: a private name is removed whole (T9.10)**
   (`swarmbly_app/web_search.py`, `recipes.py`, `api/__init__.py`, `chat.py`,
   `web/js/chat.js`, i18n). A private place name at the start of a request was
