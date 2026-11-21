@@ -15,7 +15,7 @@ from urllib.parse import quote
 
 import pytest
 
-from conftest import FakeBackend
+from conftest import FakeBackend, prepare_guest_for_test
 from swarmbly_app import egress
 from swarmbly_app.inference.base import GenerationResult
 from swarmbly_app.recipes import (CodeRecipeError, build_code_prompt,
@@ -488,8 +488,7 @@ def test_recipe5_script_reads_the_text_and_the_spreadsheet(
     app_state.backends.resolve = lambda config=None: fake    # type: ignore[method-assign]
     # R-005: recipe 5 refuses an unprepared cache instead of compiling inside
     # the request; this test runs the real guest.
-    assert app_state.sandbox.start()["started"] is True
-    assert app_state.sandbox.wait(300)["status"] == "ready"
+    prepare_guest_for_test(app_state)
     client = make_client(app_state)
     proposal = client.post("/api/recipes/code/propose", json={
         "project_id": project.id, "question": "combine the note and the table",

@@ -26,7 +26,7 @@ from pathlib import Path
 import psutil
 import pytest
 
-from conftest import FakeBackend
+from conftest import FakeBackend, prepare_guest_for_test
 from swarmbly_app import egress
 from swarmbly_app import web_search as W
 from swarmbly_app.inference.base import GenerationResult
@@ -380,8 +380,7 @@ def test_recipe5_stdout_and_output_files_are_data(app_state, tmp_path, monkeypat
     # R-005: recipe 5 refuses an unprepared cache instead of compiling inside
     # the request. This test exercises the real guest, so pay the one-time
     # preparation first (the same cache the run below will use).
-    assert app_state.sandbox.start()["started"] is True
-    assert app_state.sandbox.wait(300)["status"] == "ready"
+    prepare_guest_for_test(app_state)
     client = make_client(app_state)
     proposal = client.post("/api/recipes/code/propose", json={
         "project_id": project.id, "question": "total weight",
