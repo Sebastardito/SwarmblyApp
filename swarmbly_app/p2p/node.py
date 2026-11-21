@@ -685,6 +685,18 @@ class NodeManager:
             if refusal is not None:
                 raise PeerError(refusal.code, refusal.detail) from exc
             raise PeerError("E_EGRESS_DENIED", str(exc)) from exc
+        # 3.5, D-020: only after admission and the egress gate accepted the
+        # send may this node offer one earned receipt for this exact attempt.
+        # The credit can change queue order while the worker is busy; it can
+        # never bypass a gate (this line runs after all of them).
+        credits = getattr(self.circles, "credits", None) if self.circles else None
+        if credits is not None and str(destination.get("clase") or "") \
+                == egress.CIRCLE and str(destination.get("circle_id") or ""):
+            try:
+                await credits.present_spend_async(
+                    node_id, str(destination["circle_id"]), attempt_id)
+            except Exception:
+                pass
         loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
         future.node_id = node_id  # type: ignore[attr-defined]

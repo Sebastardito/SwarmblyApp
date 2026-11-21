@@ -167,7 +167,8 @@ class Orchestrator:
                  stats_sink: Callable[..., None] | None = None,
                  local_pool_factory: Callable[[], Any] | None = None,
                  speed: Any = None, role_stats: Any = None,
-                 public_query: Callable[[str, str], str] | None = None):
+                 public_query: Callable[[str, str], str] | None = None,
+                 credits: Any = None):
         self.nodes = nodes
         self.bus = bus
         self.local_stream = local_stream
@@ -186,6 +187,8 @@ class Orchestrator:
         self.public_query = public_query
         self.stats_sink = stats_sink
         self.local_pool_factory = local_pool_factory
+        # 3.5, D-020: receipts are issued on acceptance, never before.
+        self.credits = credits
 
     # -- public entry -----------------------------------------------------------
     def run(self, text: str, *, mode: str = "lan", request_id: str | None = None,
@@ -569,7 +572,7 @@ class Orchestrator:
             min_params_b=float(swarm_cfg.get("min_model_params_b", 1.5)),
             queue_retries=not (self.local_stream is not None and self.local_model),
             speed=self.speed, passage_texts=passage_texts,
-            role_stats=self.role_stats)
+            role_stats=self.role_stats, credits=self.credits)
         carries: dict[str, str] = {}
         resolved: dict[str, dict[str, Any]] = {}
         local_fallbacks: list[str] = []

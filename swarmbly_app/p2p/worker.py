@@ -92,7 +92,8 @@ class WorkerService:
                  circle_guard: Callable[[str], tuple[bool, str, str]] | None = None,
                  role_provider: Callable[..., list[dict[str, Any]]] | None = None,
                  circle_for: Callable[..., dict[str, Any] | None] | None = None,
-                 project_provider: Callable[[str], Any] | None = None):
+                 project_provider: Callable[[str], Any] | None = None,
+                 credits: Any = None):
         self.config = config
         self.db = db
         self.bus = bus
@@ -108,9 +109,13 @@ class WorkerService:
         self.role_provider = role_provider
         self.circle_for = circle_for or (lambda node_id, allowed=None: None)
         self.project_provider = project_provider or (lambda project_id: None)
+        # D-020: a validated credit_spend marker for one exact attempt. It
+        # can only change queue order while this worker is busy.
+        self.credits = credits
         # A test seam for the public engines: no real network in unit tests.
         self.search_fetch: Callable[..., Any] | None = None
         self._tasks_now = 0
+        self._priority_waiters = 0
         self._lock = threading.Lock()
         self._ledger_lock = threading.Lock()
         # What this node did on behalf of peers (public search, shared corpus),
@@ -264,10 +269,22 @@ class WorkerService:
             if not idle:
                 return error("E_POLICY", "worker participates only when idle",
                              attempt_id)
-        with self._lock:
-            if self._tasks_now >= int(policy["max_concurrent"]):
-                return error("E_POLICY", "worker at concurrency limit", attempt_id)
-            self._tasks_now += 1
+        # D-020: a credit is a queue courtesy, never an admission or a policy
+        # exception. Every gate above has already run; a requester without a
+        # credit is still served whenever a slot is free. Only while busy does
+        # a credited task wait for a slot instead of being refused, and an
+        # uncredited task yields to a credited one that is already waiting.
+        credited = False
+        if self.credits is not None:
+            try:
+                credited = bool(self.credits.take_priority(
+                    node_id, str(attempt_id or "")))
+            except Exception:
+                credited = False
+        if not await self._acquire_slot(int(policy["max_concurrent"]),
+                                        credited=credited,
+                                        budget_s=budget_s):
+            return error("E_POLICY", "worker at concurrency limit", attempt_id)
         cancel_event = threading.Event()
         key = (node_id, str(attempt_id or ""))
         self._cancels[key] = cancel_event
@@ -282,6 +299,28 @@ class WorkerService:
             self._cancels.pop(key, None)
             with self._lock:
                 self._tasks_now -= 1
+
+    async def _acquire_slot(self, limit: int, *, credited: bool,
+                            budget_s: float) -> bool:
+        """Take a concurrency slot; a credited task may wait while busy."""
+        deadline = time.monotonic() + max(0.0, float(budget_s))
+        if credited:
+            with self._lock:
+                self._priority_waiters += 1
+        try:
+            while True:
+                with self._lock:
+                    if self._tasks_now < limit and (
+                            credited or self._priority_waiters == 0):
+                        self._tasks_now += 1
+                        return True
+                if not credited or time.monotonic() >= deadline:
+                    return False
+                await asyncio.sleep(0.02)
+        finally:
+            if credited:
+                with self._lock:
+                    self._priority_waiters = max(0, self._priority_waiters - 1)
 
     @staticmethod
     def _machine_idle() -> bool:

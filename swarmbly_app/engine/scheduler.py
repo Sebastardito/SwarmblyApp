@@ -242,6 +242,7 @@ class Attempt:
     node_id: str
     family: str
     reason: str                       # initial | hedge | retry | tie_break
+    attempt_id: str = ""              # wire attempt id (D-020 receipt hash)
     status: str = "dispatched"        # dispatched|accepted|extra|failed|cancelled_slow
     code: str = ""
     elapsed_ms: int | None = None
@@ -383,7 +384,8 @@ class Scheduler:
                  min_params_b: float = 0.0, queue_retries: bool = True,
                  speed: SpeedStats | None = None,
                  passage_texts: list[str] | None = None,
-                 role_stats: RoleStats | None = None):
+                 role_stats: RoleStats | None = None,
+                 credits: Any = None):
         self.nodes = nodes
         # Models below this size are not used (tags without a size always are).
         self.min_params_b = float(min_params_b)
@@ -395,6 +397,9 @@ class Scheduler:
         self.speed = speed or SpeedStats()
         # D-018: per-role outcomes per node, shared across requests by the app.
         self.role_stats = role_stats or RoleStats()
+        # D-020: the requester's credit service. A verified, accepted replica
+        # from a circle member earns one signed receipt; nothing else does.
+        self.credits = credits
         # D-017: the list recipe passes the texts it attached; each attempt
         # records how many of them its packet really carried.
         self.passage_texts = [str(text) for text in (passage_texts or []) if text]
@@ -705,6 +710,14 @@ class Scheduler:
                     accepted.append(replica)
                     self.latency.add(latency_key, replica.elapsed_ms / 1000.0)
                     self._event(attempt, "accepted")
+                    # Only now, after signature/schema verification and the
+                    # quality check, does the requester accept the result and
+                    # sign a credit receipt for a circle member (D-020).
+                    if self.credits is not None:
+                        try:
+                            await self.credits.issue_for_attempt(attempt, replica)
+                        except Exception:
+                            pass
                 else:
                     self._event(attempt, "failed")
                     if len(accepted) + len(inflight) < k_min and launch("retry", free_only=not self.queue_retries):
@@ -787,6 +800,7 @@ class Scheduler:
     async def _dispatch_one(self, node_id: str, message: dict[str, Any],
                             attempt: Attempt) -> Replica | None:
         started = time.monotonic()
+        attempt.attempt_id = str(message.get("attempt_id", "") or "")
         async with self._slot(node_id), self._sem:
             wait = self._busy_until.get(node_id, 0.0) - time.monotonic()
             if wait > 0:

@@ -16,9 +16,10 @@ unexpired manifest. The 3.4 LAN behaviour remains available as the explicit
 The task plane stays wire 0.2. Control message types are new ``type`` values
 on the same TLS session, so an older node ignores them (SPEC §3).
 
-Limits, deliberately: no mutual TLS, no circle CA, no relay (WP2/WP3), no
-credit receipts. A stolen node key can impersonate a member until the owner
-signs a new version without it (R-010).
+Limits, deliberately: no mutual TLS, no circle CA, no relay (WP3). Credit
+receipts (D-020) live in ``credits.py`` and reuse this control plane; a stolen
+node key can impersonate a member until the owner signs a new version without
+it (R-010).
 """
 
 from __future__ import annotations
@@ -56,6 +57,9 @@ E_INVITATION_USED = "E_INVITATION_USED"
 CONTROL_TYPES = frozenset({
     "circle_manifest_get", "circle_manifest", "circle_manifest_ack",
     "circle_join_request", "circle_join_ack", "circle_leave",
+    # 3.5, D-020/D-021: reciprocity credits. They are MINOR-safe additions to
+    # the same control plane; older nodes ignore an unknown type (SPEC §3).
+    "credit_receipt", "credit_spend", "credit_spent",
 })
 
 INVITATION_PREFIX = "SWC1."
@@ -429,6 +433,8 @@ class CircleService:
         # change when a member turns passages on). They default to off, so an
         # existing privacy.third_party_passages=true never enables them.
         self._settings: dict[str, bool] = {}
+        # 3.5, D-020: set by AppState; None keeps circles usable alone.
+        self.credits: Any = None
         self._load()
 
     # -- identity and configuration -----------------------------------------
@@ -440,6 +446,8 @@ class CircleService:
 
     def attach(self, nodes: Any) -> None:
         self.node = nodes
+        if self.credits is not None:
+            self.credits.node = nodes
 
     def mode(self) -> str:
         mode = str(self.config.get("circle.admission_mode") or "circle")
@@ -1094,6 +1102,11 @@ class CircleService:
         node_id = str(getattr(peer, "node_id", "") or "")
         if not node_id:
             return
+        if self.credits is not None:
+            try:
+                await self.credits.on_peer_connected(peer)
+            except Exception:
+                pass
         with self._lock:
             pending = []
             for record in self.outgoing.values():
@@ -1150,6 +1163,10 @@ class CircleService:
             return None
         if mtype == "circle_leave":
             await self._on_leave(node_id, message)
+            return None
+        if mtype in ("credit_receipt", "credit_spend", "credit_spent"):
+            if self.credits is not None:
+                return await self.credits.handle_control(node_id, message)
             return None
         return None
 

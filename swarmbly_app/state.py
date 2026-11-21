@@ -146,6 +146,12 @@ class AppState:
                                      self.dirs, self.bus)
         self.circles.attach(self.nodes)
         self.nodes.circles = self.circles
+        # 3.5, D-020: signed reciprocity receipts, the local wallet and the
+        # issuer's double-spend log. Circle control delegates credit messages.
+        from .p2p.credits import CreditService
+        self.credits = CreditService(self.identity_manager, self.config,
+                                     self.dirs, self.bus, circles=self.circles)
+        self.circles.credits = self.credits
         self.worker: WorkerService | None = None
         from .console import ConsoleReporter
         self.console = ConsoleReporter(self.bus, lambda: self.nodes.peers)
@@ -581,7 +587,8 @@ class AppState:
                 self.lce, lambda: self.backends.resolve(self.config.all()),
                 model_info=self.model_info, circle_guard=self._circle_guard,
                 role_provider=self._worker_roles, circle_for=self._circle_for,
-                project_provider=lambda project_id: self.projects.get(project_id))
+                project_provider=lambda project_id: self.projects.get(project_id),
+                credits=self.credits)
             self.nodes.start(task_handler=self.worker.handle,
                              cancel_handler=self.worker.cancel)
 
@@ -702,7 +709,8 @@ class AppState:
                 latency=self.latency, speed=self.speed,
                 role_stats=self.role_stats, stats_sink=self._client_stats,
                 public_query=self._public_query,
-                local_pool_factory=self._local_pool)
+                local_pool_factory=self._local_pool,
+                credits=self.credits)
         return self.orchestrator
 
     def _local_pool(self):
