@@ -96,6 +96,30 @@ class Directory:
                               .get("max_concurrent") or 1))
                    for w in self.available_workers())
 
+    def passages_allowed(self, node_id: str) -> bool:
+        """Whether document passages may be sent to this worker (WP4b).
+
+        The local pool is always allowed (nothing leaves the computer). A
+        remote peer needs a shared circle with ``circle_passages`` on, or the
+        explicit my-own-devices switch. Corpus results are treated as the
+        requester's passages, so this is the gate that stops forwarding them
+        to a node that is not allowed to receive passages.
+        """
+        if self.local is not None and node_id == self.local.peer.node_id:
+            return True
+        if not self.remote_allowed or self.nodes is None:
+            return False
+        if self.allowed_remote is not None and node_id not in self.allowed_remote:
+            return False
+        circles = getattr(self.nodes, "circles", None)
+        if circles is None:
+            return False
+        try:
+            ok, _why = circles.peer_passages_allowed(node_id)
+            return bool(ok)
+        except Exception:
+            return False
+
     def classify_peer(self, node_id: str) -> dict[str, Any]:
         """Destination class for a send (D-017): local pool, circle, own network."""
         if self.local is not None and node_id == self.local.peer.node_id:

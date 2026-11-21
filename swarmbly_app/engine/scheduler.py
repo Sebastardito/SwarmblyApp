@@ -264,6 +264,11 @@ class Attempt:
     # to fall back to a generic worker (large_model/reasoner only).
     role: str = ""
     role_fallback: bool = False
+    # WP4b: an executor attempt (search/corpus), its public query and whether
+    # the packet carries a corpus passage (egress kind PASSAGES).
+    executor: str = ""
+    query: str = ""
+    carries_passages: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         out = self._base()
@@ -282,7 +287,10 @@ class Attempt:
                 "circle_id": self.circle_id, "circle_name": self.circle_name,
                 "member_name": self.member_name, "passages": self.passages,
                 "role": self.role,
-                **({"role_fallback": True} if self.role_fallback else {})}
+                **({"role_fallback": True} if self.role_fallback else {}),
+                **({"executor": self.executor} if self.executor else {}),
+                **({"query": self.query} if self.query else {}),
+                **({"carries_passages": True} if self.carries_passages else {})}
 
 
 @dataclass
@@ -293,6 +301,13 @@ class Replica:
     model: str
     elapsed_ms: int
     telemetry: dict[str, Any] = field(default_factory=dict)
+    # WP4b: provenance of executor material. The requester labels it from the
+    # destination it actually sent to, never from the worker's own claim.
+    sources: list[dict[str, Any]] = field(default_factory=list)
+    executor: str = ""
+    circle_id: str = ""
+    circle_name: str = ""
+    member_name: str = ""
 
 
 class TaskFailed(RuntimeError):
@@ -351,7 +366,8 @@ class Scheduler:
         self._pair_used: collections.Counter = collections.Counter()  # spread over time
 
     # -- worker selection -------------------------------------------------------
-    def _candidates(self, role: str = "") -> list[tuple[Any, str, str]]:
+    def _candidates(self, role: str = "", require_passages: bool = False
+                    ) -> list[tuple[Any, str, str]]:
         """(peer, family, model): per worker and family, its largest eligible model.
 
         Capability (parameter count from the tag) decides *which* model of a
@@ -367,6 +383,8 @@ class Scheduler:
         def collect(min_b: float) -> list[tuple[Any, str, str]]:
             out = []
             for peer in self.nodes.available_workers(self.kind):
+                if require_passages and not self._passages_allowed(peer.node_id):
+                    continue
                 if role:
                     entries = [entry for entry in (peer.advertisement.get("roles") or [])
                                if isinstance(entry, dict) and entry.get("role") == role]
@@ -390,6 +408,22 @@ class Scheduler:
 
         return collect(self.min_params_b) or collect(0.0)
 
+    def _passages_allowed(self, node_id: str) -> bool:
+        """Whether document passages may be forwarded to this worker.
+
+        Corpus results from a role executor are the requester's passages for
+        egress purposes: they may reach the local pool, or a circle peer whose
+        per-circle ``circle_passages`` switch is on (own-devices uses its own
+        switch). A Directory that cannot answer is treated as refusing.
+        """
+        fn = getattr(self.nodes, "passages_allowed", None)
+        if not callable(fn):
+            return True                # unit-test doubles without a policy
+        try:
+            return bool(fn(node_id))
+        except Exception:
+            return False
+
     def _capacity(self, peer) -> int:
         try:
             return max(1, int((peer.advertisement.get("policy") or {})
@@ -399,14 +433,15 @@ class Scheduler:
 
     def _select(self, used_pairs: set[tuple[str, str]], used_families: set[str],
                 used_nodes: set[str], free_only: bool = False,
-                max_tokens: int | None = None, role: str = ""):
+                max_tokens: int | None = None, role: str = "",
+                require_passages: bool = False):
         """Best (peer, family, model). ``free_only``: only workers with a free
         slot — a hedge queued behind a busy worker adds load and saves no
         time (P3b.3, 22 Oct 2026: after the server left, hedges queued on the
         two remaining single-slot workers and every task missed its deadline)."""
         best = None
         best_key = None
-        for peer, family, model in self._candidates(role):
+        for peer, family, model in self._candidates(role, require_passages):
             if (peer.node_id, family) in used_pairs:
                 continue
             busy = self.speed.busy(peer.node_id)
@@ -450,7 +485,8 @@ class Scheduler:
                        start_number: int = 0,
                        reason: str = "initial",
                        free_only: bool = False,
-                       role: str = "") -> list[Replica]:
+                       role: str = "", require_passages: bool = False
+                       ) -> list[Replica]:
         """Dispatch replicas of one task; return ≥1 verified replica or raise.
 
         ``validate`` rejects a signed, well-formed replica whose content is
@@ -471,7 +507,7 @@ class Scheduler:
             if requested_role not in ("large_model", "reasoner", "search", "corpus"):
                 raise TaskFailed(
                     f"{task_id}: role {requested_role!r} unavailable: unknown role")
-            if not self._candidates(requested_role):
+            if not self._candidates(requested_role, require_passages):
                 if requested_role not in FALLBACK_ROLES:
                     raise TaskFailed(
                         f"{task_id}: role {requested_role!r} unavailable: no worker "
@@ -496,7 +532,8 @@ class Scheduler:
                 return False
             choice = self._select(used_pairs, used_families, used_nodes,
                                   free_only=free_only or reason == "hedge",
-                                  max_tokens=max_tokens, role=effective_role)
+                                  max_tokens=max_tokens, role=effective_role,
+                                  require_passages=require_passages)
             if choice is None:
                 return False
             peer, family, model = choice
@@ -516,6 +553,10 @@ class Scheduler:
                 # The generic worker must not be sent a role it never claimed.
                 constraints.pop("role", None)
                 constraints.pop("think", None)
+            if require_passages:
+                # MINOR-safe: the peer send carries a corpus passage, so the
+                # egress ledger records PASSAGES and the receipt says so.
+                constraints["carries_passages"] = True
             packet_text = str(message)
             attempt = Attempt(task_id, number, peer.node_id, family, reason,
                               model=model,
@@ -524,7 +565,12 @@ class Scheduler:
                               started_at=time.monotonic(),
                               passages=sum(1 for text in self.passage_texts
                                            if text in packet_text),
-                              role=requested_role, role_fallback=role_fallback)
+                              role=requested_role, role_fallback=role_fallback,
+                              executor=(requested_role if requested_role in
+                                        ("search", "corpus") else ""),
+                              query=(str((message.get("task") or {}).get("instruction") or "")
+                                     if requested_role == "search" else ""),
+                              carries_passages=require_passages)
             if role_fallback:
                 attempt.note = (f"role {requested_role} unavailable, ran on "
                                 f"{peer.node_id[:12]} (generic worker)")
@@ -751,9 +797,13 @@ class Scheduler:
                                            - load_s))
         attempt.model = str(profile.get("model_version") or attempt.model)
         family = str(profile.get("model_family") or attempt.family)
+        sources = result.get("sources") if isinstance(result.get("sources"), list) else []
         return Replica(text=str(result["text"]), node_id=node_id, family=family,
                        model=attempt.model, elapsed_ms=attempt.elapsed_ms,
-                       telemetry=telemetry)
+                       telemetry=telemetry, sources=sources[:8],
+                       executor=str(result.get("executor") or ""),
+                       circle_id=attempt.circle_id, circle_name=attempt.circle_name,
+                       member_name=attempt.member_name)
 
     def _event(self, attempt: Attempt, status: str) -> None:
         self.bus.publish("swarm.attempt", request_id=self.request_id,
@@ -771,6 +821,17 @@ def verify_result(node_id: str, packet: dict[str, Any], result: dict[str, Any]) 
     text = result.get("text")
     if not isinstance(text, str) or not text.strip() or len(text) > MAX_RESULT_CHARS:
         return "E_SCHEMA"
+    sources = result.get("sources")
+    if sources is not None:
+        if not isinstance(sources, list) or len(sources) > 8:
+            return "E_SCHEMA"
+        for source in sources:
+            if not isinstance(source, dict):
+                return "E_SCHEMA"
+            for key in ("title", "span", "cite", "url", "snippet", "text", "provider"):
+                value = source.get(key)
+                if value is not None and (not isinstance(value, str) or len(value) > 2000):
+                    return "E_SCHEMA"
     return ""
 
 

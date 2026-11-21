@@ -667,10 +667,13 @@ class NodeManager:
             refusal = exc
             destination = {"clase": "", "circle_id": "", "circle_name": "",
                            "member_name": "", "member_node": node_id[:12]}
+        carries_passages = bool((packet_message.get("constraints") or {})
+                                .get("carries_passages"))
         try:
             egress.check_call(
                 f"peer://{node_id}", len(str(packet_message)),
-                f"fragmento {attempt_id}", kind=egress.FRAGMENT,
+                f"{'pasajes' if carries_passages else 'fragmento'} {attempt_id}",
+                kind=(egress.PASSAGES if carries_passages else egress.FRAGMENT),
                 destination_class=str(destination.get("clase") or ""),
                 destination_label=f"nodo {node_id[:12]}",
                 circle_id=destination.get("circle_id", ""),
