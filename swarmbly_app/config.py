@@ -137,6 +137,13 @@ DEFAULTS: dict[str, Any] = {
         # per-circle circle_passages defaults off as well.
         "own_devices_passages": False,
     },
+    # 3.5, D-020: reciprocity credits are signed, non-transferable receipts.
+    # One receipt is one indivisible courtesy unit; it expires and can only be
+    # spent by the named worker, in the same circle. No transfer, no market.
+    "credits": {
+        "enabled": True,
+        "receipt_ttl_days": 90,       # default lifetime of an earned receipt
+    },
     # 3.5, D-018: node roles are a property of the machine, not of a model
     # task (those are ``roles`` below). WP4a advertises only what it can run:
     # a shared model at or above the threshold is ``large_model``; a shared
@@ -448,6 +455,7 @@ _RANGES = {
     "swarm.min_items_per_fragment": (1, 50),
     "circle.manifest_ttl_days": (1, 365),
     "circle.invitation_ttl_s": (300, 2592000),
+    "credits.receipt_ttl_days": (1, 365),
     "evidence.timeout_s": (0.5, 30.0),
     "evidence.max_chars": (60, 1000),
     "evidence.max_items": (1, 100),
