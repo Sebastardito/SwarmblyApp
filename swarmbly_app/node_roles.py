@@ -213,15 +213,89 @@ def reasoner_models(cfg: dict[str, Any]) -> list[str]:
     return out
 
 
+def search_enabled(cfg: dict[str, Any]) -> bool:
+    """Whether the owner opted in to serving public searches (WP4b)."""
+    return bool((((cfg.get("node_roles") or {}).get("search") or {})
+                 .get("enabled")))
+
+
+def search_engines(cfg: dict[str, Any]) -> list[str]:
+    """Engines a worker can actually use, from its own search configuration.
+
+    This mirrors :func:`swarmbly_app.web_search.search`: PubMed and Wikipedia
+    are queried when their provider is on; SearXNG only when ``web`` is on and
+    its URL is configured. Wikidata is not a web search and is not listed.
+    """
+    evidence = cfg.get("evidence") or {}
+    providers = set(evidence.get("providers") or ["wikidata", "wikipedia", "pubmed"])
+    engines: list[str] = []
+    if "pubmed" in providers:
+        engines.append("pubmed")
+    if "wikipedia" in providers:
+        engines.append("wikipedia")
+    if "web" in providers and str(evidence.get("searxng_url") or "").strip():
+        engines.append("searxng")
+    return engines[:MAX_SEARCH_ENGINES]
+
+
+def valid_corpus_name(name: Any) -> bool:
+    """A corpus display name: not a path, no control characters, <= 40 chars."""
+    return isinstance(name, str) and _CORPUS_NAME.fullmatch(name) is not None \
+        and name == name.strip()
+
+
+def corpus_size_bucket(documents: int) -> str:
+    """S/M/L from the number of documents in the shared collection.
+
+    Small private collections dominate the beta, so the bucket is deliberately
+    coarse: up to 25 documents is S, up to 200 M, more is L. The count itself
+    never leaves the node.
+    """
+    try:
+        count = int(documents)
+    except (TypeError, ValueError):
+        count = 0
+    if count <= 25:
+        return "S"
+    if count <= 200:
+        return "M"
+    return "L"
+
+
+def configured_corpus_share(cfg: dict[str, Any]) -> dict[str, Any] | None:
+    """The configured corpus share, or ``None`` when the owner shares nothing.
+
+    The project and its circles are resolved by the app (which owns the
+    project registry and the manifests); this helper only reads the settings.
+    ``circle_ids`` is kept for the executor's per-circle check and never
+    advertised.
+    """
+    share = ((cfg.get("node_roles") or {}).get("corpus") or {})
+    project_id = str(share.get("project_id") or "").strip()
+    if not project_id:
+        return None
+    circle_ids = []
+    for circle_id in share.get("circle_ids") or []:
+        if isinstance(circle_id, str) and circle_id and circle_id not in circle_ids:
+            circle_ids.append(circle_id)
+    return {"project_id": project_id, "circle_ids": circle_ids,
+            "display_name": str(share.get("display_name") or "").strip()}
+
+
 def derive_roles(models: list[str], cfg: dict[str, Any], *,
-                 announce: bool = True) -> list[dict[str, Any]]:
-    """The roles a node may advertise for ``models`` (WP4a: large_model, reasoner).
+                 announce: bool = True,
+                 corpus_share: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """The roles a node may advertise for ``models`` (large_model, reasoner,
+    search, corpus).
 
     ``models`` is the exact set the node offers: shared models for a remote
     worker, the local pool models for the local pseudo-peer. The caller decides
-    whether the worker role is on (``announce=False`` returns no roles). Search
-    and corpus are never derived here: their executors arrive in WP4b and in
-    WP4a the configuration keys stay absent or inert.
+    whether the worker role is on (``announce=False`` returns no roles).
+
+    ``corpus_share`` is the metadata the app resolved for a shared collection
+    (``{"name": ..., "size": ...}``); when absent, corpus is not advertised.
+    Search is advertised only with the owner's explicit opt-in and the engines
+    its configuration really supports.
     """
     if not announce:
         return []
@@ -241,5 +315,18 @@ def derive_roles(models: list[str], cfg: dict[str, Any], *,
     for name in offered:
         if name in marked:
             roles.append({"role": "reasoner", "model": name, "think": True})
+    # WP4b: search only with the owner's opt-in, and only for engines this
+    # node's configuration can really use.
+    if search_enabled(cfg):
+        engines = search_engines(cfg)
+        if engines:
+            roles.append({"role": "search", "engines": engines})
+    # WP4b: corpus only when a project is shared with at least one circle (the
+    # app resolves both); the metadata never contains a path or a title.
+    if corpus_share:
+        name = corpus_share.get("name")
+        size = corpus_share.get("size")
+        if valid_corpus_name(name) and size in ("S", "M", "L"):
+            roles.append({"role": "corpus", "name": name, "size": size})
     # The advertisement has a hard cap; the same validator bounds the rest.
     return roles[:MAX_ADVERTISEMENT_ROLES]

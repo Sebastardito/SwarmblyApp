@@ -147,6 +147,13 @@ DEFAULTS: dict[str, Any] = {
         # than the 1–3 B SLMs this swarm mostly runs, and fits an 8 GB GPU.
         "large_model_min_b": 7.0,
         "reasoner_models": [],        # model tags the user marks as reasoning
+        # 3.5, D-018 (WP4b): executors, both off until the owner opts in.
+        "search": {"enabled": False},
+        "corpus": {
+            "project_id": "",         # one local project/collection, default none
+            "circle_ids": [],         # circles allowed to retrieve from it
+            "display_name": "",       # what admitted peers may see (<= 40 chars)
+        },
     },
     "privacy": {
         "tier": "LOCAL",              # GLOBAL | TRUSTED | LOCAL
@@ -562,6 +569,32 @@ def validate_changes(changes: dict[str, Any]) -> dict[str, Any]:
                 if name not in cleaned:
                     cleaned.append(name)
             flat[key] = cleaned
+        if key == "node_roles.corpus.project_id":
+            text = str(value or "").strip()
+            if len(text) > 64 or any(ord(ch) < 32 or ord(ch) == 127 for ch in text):
+                raise ConfigError(
+                    "node_roles.corpus.project_id must be a project id of at "
+                    "most 64 printable characters")
+            flat[key] = text
+        if key == "node_roles.corpus.display_name":
+            text = str(value or "").strip()
+            from .node_roles import valid_corpus_name
+            if text and not valid_corpus_name(text):
+                raise ConfigError(
+                    "node_roles.corpus.display_name must be a display name of at "
+                    "most 40 characters (letters, digits, spaces and . & ' ( ) + -)")
+            flat[key] = text
+        if key == "node_roles.corpus.circle_ids":
+            cleaned_ids: list[str] = []
+            for circle_id in value:
+                if not isinstance(circle_id, str) or not circle_id \
+                        or len(circle_id) > 64 \
+                        or any(ord(ch) < 32 or ord(ch) == 127 for ch in circle_id):
+                    raise ConfigError(
+                        "node_roles.corpus.circle_ids items must be circle ids")
+                if circle_id not in cleaned_ids:
+                    cleaned_ids.append(circle_id)
+            flat[key] = cleaned_ids
     if flat.get("model.backend") == "anthropic" \
             and not str(flat.get("model.backend_url") or "").strip():
         flat["model.backend_url"] = ANTHROPIC_DEFAULT_URL
