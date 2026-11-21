@@ -387,7 +387,8 @@ const Monitor = (() => {
           () => relayDialog(circle), "ghost small"),
         circle.relay
           ? button(t("circle.relayRemove"), () => removeRelay(circle), "ghost small")
-          : null));
+          : null,
+        button(t("circle.renew"), () => renewCircle(circle), "ghost small")));
     }
     card.appendChild(h("div.form-actions",
       circle.is_owner
@@ -460,10 +461,35 @@ const Monitor = (() => {
       : t("circle.relayOff");
     const extra = status.last_error
       ? h("span.muted", ` — ${status.last_error}`) : null;
-    return h("p.muted", { class: status.security_warning ? "warn" : "" },
-      `${t("circle.relay")}: ${target} · ${state}`, extra,
-      h("br"), h("span.muted", t("circle.relayPin").replace("{pin}",
-        `${String(relay.tls_cert_sha256 || "").slice(0, 16)}…`)));
+    const push = (status.push || {}).current;
+    let pushText = t("circle.relayPushNone");
+    let pushHint = "";
+    if (push) {
+      const acked = Number(push.acknowledged_version || 0);
+      const pending = Number(push.pending_version || 0);
+      pushText = acked
+        ? t("circle.relayPushAck").replace("{v}", String(acked))
+        : t("circle.relayPushNone");
+      if (pending > acked) {
+        pushText += ` · ${t("circle.relayPushPending").replace("{v}",
+          String(pending))}`;
+      }
+      if (push.last_refusal) {
+        pushText += ` · ${t("circle.relayPushRefused").replace("{code}",
+          push.last_refusal)}`;
+        pushHint = pushRefusalHint(push.last_refusal);
+      } else if (push.status === "unreachable") {
+        pushText += ` · ${t("circle.relayPushUnreachable")}`;
+      }
+    }
+    return h("div.relay-summary",
+      h("p.muted", { class: status.security_warning ? "warn" : "" },
+        `${t("circle.relay")}: ${target} · ${state}`, extra,
+        h("br"), h("span.muted", t("circle.relayPin").replace("{pin}",
+          `${String(relay.tls_cert_sha256 || "").slice(0, 16)}…`))),
+      h("p.muted", t("circle.relayPush") + ": " + pushText,
+        pushHint ? h("span.muted", ` — ${pushHint}`) : null),
+      h("p.muted.small", t("circle.relayPushSource")));
   }
 
   async function relayDialog(circle) {
@@ -492,6 +518,21 @@ const Monitor = (() => {
       await Api.post(`/api/circles/${encodeURIComponent(circle.circle_id)}/relay`,
         { host: host.value.trim(), port: Number(port.value),
           tls_cert_sha256: pin.value.trim() });
+      await refresh();
+    } catch (e) { UI.toast(e.message, "error"); }
+  }
+
+  function pushRefusalHint(code) {
+    if (code === "unknown_circle") return t("circle.relayPushUnknownCircle");
+    if (code === "rate_limited") return t("circle.relayPushRateLimited");
+    if (code === "stale_version") return t("circle.relayPushStale");
+    if (code === "not_owner") return t("circle.relayPushNotOwner");
+    return t("circle.relayPushOther");
+  }
+
+  async function renewCircle(circle) {
+    try {
+      await Api.post(`/api/circles/${encodeURIComponent(circle.circle_id)}/renew`, {});
       await refresh();
     } catch (e) { UI.toast(e.message, "error"); }
   }
