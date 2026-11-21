@@ -91,6 +91,51 @@
 - **Not in WP4a:** the search and corpus executors (WP4b) and teams (WP5).
   Their roles are already in the wire schema so those changes are additive.
 
+**Search and corpus executors, WP4b (D-018).**
+
+- **Opt-in roles** (`swarmbly_app/node_roles.py`, `config.py`, `state.py`).
+  `node_roles.search.enabled` is off by default and a worker advertises
+  `search` with only the engines its own configuration supports (PubMed,
+  Wikipedia, and SearXNG only when a URL is configured). Corpus sharing is a
+  project plus the circles allowed to read it, also off by default; only a
+  display name (at most 40 characters) and a size bucket (`S|M|L`, from
+  document count) are advertised. Worker-off still means no roles at all.
+- **Search executor** (`p2p/worker.py`, `web_search.py`). A search task
+  carries only a public query, in a packet with no Γ, predecessors or
+  conversation; the requester derives it with `strip_private_details` and
+  its glossary/private terms and sends nothing if that cannot be done. The
+  worker accepts one short line (not a document), requires a shared trusted
+  circle (not *my own devices*), checks its egress policy for each engine and
+  records the query, circle and member it ran for in its own ledger. Results
+  are bounded titles, URLs and snippets, signed like any result.
+- **Corpus executor** (`p2p/worker.py`, `lce_adapter.py`). A corpus task is
+  refused with `E_ROLE_UNAVAILABLE`, before retrieval, unless the requester
+  belongs to a circle the corpus is shared with. It reads only the selected
+  project's roots, returns at most five bounded passages with a neutral
+  citation (document title and span id, never a path), and records the
+  passages, count and bytes in the worker ledger.
+- **Requester rules** (`engine/scheduler.py`, `engine/orchestrator.py`,
+  `chat.py`, `egress.py`). Search sends show the public query, circle, member
+  and executor kind in the receipt, and say the requester cannot verify the
+  engine. Corpus results are labelled in `role_sources` with the member and
+  circle the requester sent to, never the worker's claim; they stay out of
+  glossary/memory. They are treated as the requester's passages for egress:
+  a packet carrying them reaches only the local pool or a circle peer with
+  `circle_passages` on (or the own-devices switch), and a third-party model
+  only with `privacy.third_party_passages`; otherwise the dependent task runs
+  locally or fails honestly.
+- **UI and docs**: Settings → Swarm has the search switch and the corpus
+  project/display name, each circle card has a “Share corpus with this circle”
+  switch, and the Swarm panel explains that every admitted peer sees the name
+  and bucket. English and Spanish strings, architecture, limitations and user
+  guide were updated.
+- **Tests**: `tests/test_node_executors.py` covers opt-in defaults, worker-off,
+  engine lists, the private-term query guard, document-like query refusal,
+  non-member/unshared-circle refusals with nothing searched or retrieved,
+  worker ledgers, neutral citations, the passage gate for peers and model
+  services, real loopback search and corpus in a shared circle, and the local
+  pool path. Network calls are faked.
+
 **Honest peer classification, WP2 (D-017).**
 
 - **Destination class `CIRCLE`** (`swarmbly_app/egress.py`,

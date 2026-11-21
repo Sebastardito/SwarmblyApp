@@ -60,11 +60,12 @@ Limitations are documented, never hidden. *[Español](#español) below.*
     `advertisement_update`, advertisement fields `endpoint` and
     `policy.max_concurrent`, advertisement field `roles` (node roles, D-018),
     packet fields `constraints.model_family` (SWIP draft in
-    `docs/SWIP-DRAFT-model-family-hint.md`), `constraints.role` and
-    `constraints.think`, error codes `E_POLICY`, `E_EXECUTION`,
-    `E_DUPLICATE`, `E_DISCONNECTED`, `E_ROLE_UNAVAILABLE`. In 3.5 WP4a only
-    `large_model` and `reasoner` are advertised and executed; `search` and
-    `corpus` are fixed in the wire schema but their executors arrive in WP4b.
+    `docs/SWIP-DRAFT-model-family-hint.md`), `constraints.role`,
+    `constraints.think` and `constraints.carries_passages`, result fields
+    `executor` and `sources`, error codes `E_POLICY`, `E_EXECUTION`,
+    `E_DUPLICATE`, `E_DISCONNECTED`, `E_ROLE_UNAVAILABLE`. All four node roles
+    are in the wire schema; WP4b executes `search` and `corpus` only when the
+    owner opts in.
 17. **Several local models share one machine.** In multi-model mode replicas
     run on different model families but the same hardware; unless the
     recommendation allows parallel generation they take turns. Their agreement
@@ -106,6 +107,19 @@ Limitations are documented, never hidden. *[Español](#español) below.*
     whole. Grounded composition (a fact sheet, tables built by code, a
     verifier) is planned for 3.2; until then, check the labels in *Explore
     processing*.
+
+27. **The requester cannot verify a member's search engine.** A search result
+    says which member and circle ran the query and that the requester cannot
+    verify the engine; the worker's own ledger is local and is not signed or
+    sent back. A corpus result is labelled from the destination the requester
+    sent to, not from the worker's self-description, and the passages may be
+    incomplete or irrelevant: retrieval is keyword/BM25 over the shared project
+    only.
+28. **Corpus sharing is one project at a time.** Every admitted peer of a
+    circle the owner selects sees the corpus display name and size bucket,
+    even if it never asks for a passage. The owner cannot revoke a single
+    passage already returned; revoking the member or removing the circle from
+    the share stops new retrievals.
 
 ## Upstream (audited repositories)
 
@@ -163,3 +177,14 @@ Limitations are documented, never hidden. *[Español](#español) below.*
    porque forma parte del mensaje del asistente, pero reiniciar la app detiene
    la ejecución (no se guarda ningún token ni ejecución pendiente). Vuelve a
    enviar la pregunta después de reiniciar.
+
+27. El solicitante no puede verificar qué motor usó un miembro: el recibo
+    dice el miembro, el círculo y que no es verificable; el ledger del worker
+    es local y no se firma ni se devuelve. Los pasajes del corpus se etiquetan
+    según el destino al que el solicitante envió la tarea, no según lo que el
+    worker diga, y pueden ser incompletos o irrelevantes (recuperación BM25
+    solo sobre el proyecto compartido). 28. El corpus se comparte de un
+    proyecto a la vez. Todos los pares admitidos de un círculo elegido ven el
+    nombre visible y el tamaño, aunque nunca pidan un pasaje; el dueño no
+    puede revocar un pasaje ya devuelto, pero quitar el círculo de la
+    compartición detiene las nuevas recuperaciones.

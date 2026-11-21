@@ -86,7 +86,27 @@ and the code names them separately:
   model the user marked in `node_roles.reasoner_models`), and only while the
   worker role is on. The local pool derives the same roles from its own
   models without the "shared" condition, so a role-aware plan can run on one
-  node.
+  node. WP4b adds two opt-in executors, off by default:
+  - **search.** The worker advertises the engines its own
+    `evidence.providers` and SearXNG URL can really use. A search task carries
+    **only a public query** in a packet with no Γ, no predecessors and no
+    conversation; the requester produces it with `strip_private_details` plus
+    its glossary and private terms, and if no query without private terms can
+    be produced nothing is sent. The worker accepts only one short line,
+    requires a shared trusted circle (the explicit *my own devices* mode is
+    refused), checks its own egress policy for each engine, and records the
+    query it ran on behalf of `nodo <id>` in circle `<name>` in its own
+    ledger. The requester receipt shows the query, circle and member, says the
+    member ran it, and says the requester cannot verify which engine answered.
+  - **corpus.** The owner picks one local project and the circles allowed to
+    read it; only its display name and a size bucket (`S|M|L`, from document
+    count) are advertised, so every admitted peer sees them. A corpus task is
+    refused with `E_ROLE_UNAVAILABLE`, before retrieval, unless the requester
+    is in a circle the corpus is shared with. Retrieval reads only that
+    project's roots (never personal sources or another project) and returns at
+    most five passages bounded in size with a neutral citation (document
+    title and span id, never a path). The worker ledger records the passages
+    sent to `nodo <id>` in circle `<name>`, their count and bytes.
 
 Placement sends a role task only to workers that advertise the role; the
 models considered are the ones the role names (for `reasoner`, the worker
@@ -196,5 +216,22 @@ solo envía una tarea con rol a un worker que lo anuncie, aprende por rol y por
 nodo (`RoleStats`) y desprioriza a quien falló; un rol nunca amplía permisos.
 Sin worker para `large_model`/`reasoner` se puede usar el mejor worker genérico
 y el intento, los metadatos y el recibo dicen «rol X no disponible, ejecutado
-en Y»; `search`/`corpus` fallan honestamente hasta WP4b. Las decisiones Q1–Q5,
+en Y». WP4b añade los ejecutores opt-in (por defecto, apagados):
+**search** anuncia solo los motores que su configuración puede usar, recibe
+solo una consulta pública de una línea en un paquete sin Γ, predecesores ni
+conversación, exige un círculo de confianza (nunca «mis propios
+dispositivos»), aplica su propia política de salida y registra en su ledger la
+consulta hecha en nombre de `nodo <id>` del círculo `<name>`; el recibo del
+solicitante muestra la consulta, el círculo y el miembro, y dice que no puede
+verificar qué motor respondió. **corpus** comparte un proyecto local con uno o
+más círculos y anuncia solo el nombre visible y el tamaño `S|M|L`; se niega
+con `E_ROLE_UNAVAILABLE`, antes de recuperar nada, si el solicitante no está
+en un círculo con el que se comparte, lee solo las raíces de ese proyecto y
+devuelve hasta cinco pasajes acotados con cita neutral (título y span, nunca
+ruta); su ledger registra los pasajes y bytes enviados a `nodo <id>` del
+círculo `<name>`. Los pasajes devueltos son material de terceros para el
+solicitante: se etiquetan con el miembro y el círculo reales, no entran en su
+glosario ni memoria, y solo se reenvían a un nodo con `circle_passages`
+encendido o a un servicio de modelos con `privacy.third_party_passages`; si
+no, se ejecutan en local o la tarea falla honestamente. Las decisiones Q1–Q5,
 D1–D14 y D-018/D-021 están en la tabla anterior.

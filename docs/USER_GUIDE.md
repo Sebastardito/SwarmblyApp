@@ -195,8 +195,26 @@ never widens a permission. A role task is sent only to a node that advertises
 it. If no node has `large_model` or `reasoner`, the task may run on the best
 generic worker and the answer, its stages and the receipt say «role X
 unavailable, ran on Y»; tasks that need `search` or `corpus` fail honestly
-until their executors arrive. The Swarm panel shows your own roles and each
+until their executors are on. The Swarm panel shows your own roles and each
 peer's advertised roles.
+
+**Search and corpus (executors).** Both are off by default in Settings → Swarm.
+- *Share public search* lets this worker run a public query for a member of a
+  trusted circle. Only one short public query travels; your files and
+  conversation never do. The query is derived from the requester's words with
+  its private terms removed, and if that cannot be done no search is made. The
+  requester's receipt shows the query, circle and member, and that it cannot
+  verify which engine answered.
+- *Corpus to share* picks one local project and a display name. In each circle
+  card, **Share corpus with this circle** decides which circles may retrieve
+  from it. Only the display name and a size bucket (S/M/L) are advertised; every
+  admitted peer sees them. Retrieval reads that project only and returns a few
+  passages with a neutral citation (document title and span, never a path).
+  Returned passages are third-party material: keep them out of your own
+  glossary and memory. They are treated like your documents for egress, so
+  another node receives them only with that circle's **Document passages**
+  switch on, and a model service only with `privacy.third_party_passages`;
+  otherwise the task runs locally or fails honestly.
 
 ### Trusted circles · Círculos de confianza
 
@@ -372,8 +390,28 @@ permiso. Una tarea con rol se envía solo a un nodo que anuncie ese rol. Si
 ningún nodo tiene `large_model` o `reasoner`, la tarea puede ejecutarse en el
 mejor worker genérico y la respuesta, sus etapas y el recibo dicen «rol X no
 disponible, ejecutado en Y»; las tareas que necesitan `search` o `corpus`
-fallan honestamente hasta que lleguen sus ejecutores. El panel Swarm muestra
-tus roles y los roles anunciados por cada par.
+fallan honestamente hasta que sus ejecutores estén activos. El panel Swarm
+muestra tus roles y los roles anunciados por cada par.
+
+**Búsqueda y corpus (ejecutores).** Ambos están apagados por defecto en
+Ajustes → Swarm.
+- *Compartir búsqueda pública* permite que este worker ejecute una consulta
+  pública en nombre de un miembro de un círculo de confianza. Solo viaja una
+  consulta pública corta; tus archivos y tu conversación nunca. La consulta se
+  deriva de las palabras del solicitante quitando sus términos privados, y si
+  no se puede, no se busca. El recibo del solicitante muestra la consulta,
+  el círculo y el miembro, y que no puede verificar qué motor respondió.
+- *Corpus a compartir* elige un proyecto local y un nombre visible. En cada
+  tarjeta de círculo, **Compartir corpus con este círculo** decide qué círculos
+  pueden recuperar de él. Solo se anuncian el nombre visible y un tamaño
+  (S/M/L); todos los pares admitidos los ven. La recuperación lee solo ese
+  proyecto y devuelve unos pocos pasajes con cita neutral (título y span,
+  nunca una ruta). Los pasajes devueltos son material de terceros: no entran en
+  tu glosario ni en tu memoria. Se tratan como tus documentos para la salida,
+  así que otro nodo los recibe solo con **Pasajes de documentos** de ese
+  círculo encendido, y un servicio de modelos solo con
+  `privacy.third_party_passages`; si no, la tarea se ejecuta en local o falla
+  honestamente.
 
 **Memory.** C0 activa; C1 recupera pasajes de tus fuentes para las
 respuestas hechas en este equipo; C2–C4 en fases posteriores.
