@@ -1481,6 +1481,15 @@ def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
     def circles_list() -> dict:
         return state.circles.list_payload()
 
+    @app.get("/api/credits")
+    def credits_list() -> dict:
+        """Local wallet per circle and the issuer's flagged double spends.
+
+        Read-only on purpose: there is no transfer, no export as a token and
+        no market (SPEC §18, D-020).
+        """
+        return state.credits.list_payload()
+
     @app.post("/api/circles")
     def circles_create(body: dict) -> dict:
         return _circle_call(state.circles.create_circle,

@@ -1469,5 +1469,29 @@
    "large_model": "large model",
    "reasoner": "reasoner"
   }
+ },
+ "credits": {
+  "title": "Reciprocity credits",
+  "lede": "Credits are a courtesy inside a circle, not money. When you accept a verified result from a member, you sign a receipt for that member; they can offer it back just before sending you work, and it may let their task wait for a busy slot. A receipt belongs only to the worker it names, only in that circle, and expires. There is no transfer, sale, market or shared ledger: the balance is local, and a spend reported twice is flagged only at the issuer — detection, not prevention.",
+  "empty": "No circle yet. Credits are earned inside a trusted circle.",
+  "issued": "Receipts issued",
+  "unit": "Unit",
+  "unitReceipts": "one receipt = one courtesy",
+  "ttl": "Default expiry",
+  "withinDays": "within {days} days",
+  "flagged": "Double-spend reports",
+  "flaggedHelp": "The issuer logs what it issued and what workers reported spent. This is detection, not prevention, and nothing is broadcast beyond the circle.",
+  "noFlagged": "No receipt was reported spent twice.",
+  "col": {
+   "name": "circle",
+   "balance": "balance",
+   "earned": "earned",
+   "spent": "spent",
+   "expiring": "expiring soon",
+   "receipt": "receipt",
+   "worker": "worker",
+   "reports": "reports",
+   "reason": "reason"
+  }
  }
 }

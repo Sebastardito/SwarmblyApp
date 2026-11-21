@@ -1480,5 +1480,29 @@
    "large_model": "modelo grande",
    "reasoner": "razonador"
   }
+ },
+ "credits": {
+  "title": "Créditos de reciprocidad",
+  "lede": "Los créditos son una cortesía dentro de un círculo, no dinero. Cuando aceptas un resultado verificado de un miembro, firmas un recibo para ese miembro; puede ofrecerlo de vuelta justo antes de enviarte trabajo, y puede hacer que su tarea espere un turno libre. Un recibo pertenece solo al worker que nombra, solo en ese círculo, y caduca. No hay transferencia, venta, mercado ni libro contable compartido: el saldo es local y un gasto reportado dos veces se marca solo en el emisor: detección, no prevención.",
+  "empty": "Todavía no hay círculo. Los créditos se ganan dentro de un círculo de confianza.",
+  "issued": "Recibos emitidos",
+  "unit": "Unidad",
+  "unitReceipts": "un recibo = una cortesía",
+  "ttl": "Caducidad por defecto",
+  "withinDays": "en {days} días",
+  "flagged": "Reportes de doble gasto",
+  "flaggedHelp": "El emisor registra lo que emitió y lo que los workers reportaron como gastado. Es detección, no prevención, y nada se difunde fuera del círculo.",
+  "noFlagged": "Ningún recibo fue reportado como gastado dos veces.",
+  "col": {
+   "name": "círculo",
+   "balance": "saldo",
+   "earned": "ganados",
+   "spent": "gastados",
+   "expiring": "próximos a caducar",
+   "receipt": "recibo",
+   "worker": "worker",
+   "reports": "reportes",
+   "reason": "motivo"
+  }
  }
 }

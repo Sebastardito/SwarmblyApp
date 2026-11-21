@@ -9,6 +9,7 @@ const Monitor = (() => {
   const els = {};
   let monitor = null;
   let circles = null;
+  let creditsData = null;
   let refreshTimer = null;
 
   function init(el) {
@@ -27,6 +28,7 @@ const Monitor = (() => {
     els.cache = h("div.table-wrap");
     els.contribution = h("div.readouts");
     els.circles = h("div");
+    els.credits = h("div");
     UI.append(root,
       h("header.view-head", h("h1.view-title", t("monitor.title")), els.controls),
       h("p.view-lede", t("monitor.lede")),
@@ -37,6 +39,8 @@ const Monitor = (() => {
       h("section.panel", h("h2", t("monitor.peers")), els.peers),
       h("section.panel", h("h2", t("circle.title")), h("p.muted", t("circle.lede")),
         els.circles),
+      h("section.panel", h("h2", t("credits.title")), h("p.muted", t("credits.lede")),
+        els.credits),
       h("section.panel", h("h2", t("monitor.discovery")), h("p.muted", t("monitor.discoveryNote")), els.cache),
       h("section.panel", h("h2", t("monitor.contribution")), h("p.muted", t("monitor.contributionNote")),
         els.contribution));
@@ -48,11 +52,13 @@ const Monitor = (() => {
   async function refresh() {
     try { monitor = await Api.get("/api/monitor"); } catch (_) { monitor = null; }
     try { circles = await Api.get("/api/circles"); } catch (_) { circles = null; }
+    try { creditsData = await Api.get("/api/credits"); } catch (_) { creditsData = null; }
     render();
   }
 
   function onEvent(event) {
-    if (event.type === "app.swarm" || event.type.startsWith("circle.")) {
+    if (event.type === "app.swarm" || event.type.startsWith("circle.")
+        || event.type.startsWith("credit.")) {
       scheduleRefresh();
       return;
     }
@@ -82,6 +88,7 @@ const Monitor = (() => {
     renderCache(sw.discovered || []);
     renderContribution();
     renderCircles();
+    renderCredits();
   }
 
   function renderControls(sw, cfg) {
@@ -377,6 +384,51 @@ const Monitor = (() => {
       button(circle.is_owner ? t("circle.delete") : t("circle.leave"),
         () => leaveCircle(circle), "danger small")));
     return card;
+  }
+
+  // ---- reciprocity credits (3.5, D-020) ------------------------------------
+  // Local wallet only: no transfer, no export, no market. A receipt belongs
+  // to the worker it names, in that circle, and expires. The issuer also
+  // shows receipts reported spent twice (detection, not prevention).
+  function renderCredits() {
+    clear(els.credits);
+    const data = creditsData || {};
+    const items = data.circles || [];
+    UI.append(els.credits,
+      readout(t("credits.issued"), data.issued_count ?? 0, "measured"),
+      readout(t("credits.unit"), t("credits.unitReceipts"), "measured"),
+      readout(t("credits.ttl"), `${data.ttl_days ?? 90} d`, "measured"));
+    if (!items.length) {
+      els.credits.appendChild(h("p.empty", t("credits.empty")));
+    } else {
+      els.credits.appendChild(h("table.data",
+        h("thead", h("tr", ["name", "balance", "earned", "spent", "expiring"]
+          .map((k) => h("th", { scope: "col" }, t(`credits.col.${k}`))))),
+        h("tbody", items.map((item) => h("tr",
+          h("td", item.name || UI.shortId(item.circle_id)),
+          h("td", String(item.balance ?? 0)),
+          h("td", String(item.earned ?? 0)),
+          h("td", String(item.spent ?? 0)),
+          h("td", String(item.expiring_soon ?? 0),
+            h("span.muted", ` · ${t("credits.withinDays").replace("{days}",
+              data.expiring_soon_days ?? 7)}`)))))));
+    }
+    els.credits.appendChild(h("h4", t("credits.flagged")));
+    els.credits.appendChild(h("p.muted", t("credits.flaggedHelp")));
+    const flagged = data.flagged || [];
+    els.credits.appendChild(flagged.length
+      ? h("table.data",
+        h("thead", h("tr", ["receipt", "circle", "worker", "reports", "reason"]
+          .map((k) => h("th", { scope: "col" }, t(`credits.col.${k}`))))),
+        h("tbody", flagged.map((item) => h("tr",
+          h("td", h("code", { title: item.receipt_id },
+            UI.shortId(item.receipt_id))),
+          h("td", h("code", { title: item.circle_id },
+            UI.shortId(item.circle_id))),
+          h("td", h("code", { title: item.worker }, item.worker_short)),
+          h("td", String(item.reports ?? 0)),
+          h("td", item.reason || "—"))))))
+      : h("p.empty", t("credits.noFlagged")));
   }
 
   async function setCirclePassages(circle, enabled) {
