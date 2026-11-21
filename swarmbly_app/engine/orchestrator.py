@@ -35,8 +35,9 @@ from . import composer
 from .directory import Directory
 from .contract import _TOKENS_PER_WORD, build_contract, requested_words
 from .followup import standalone
-from .packets import (PacketPlan, build_message, contains_identifier, gamma_for,
-                      localise_instruction, measure_rho, minimal_objective)
+from .packets import (PacketPlan, build_message, build_search_message,
+                      contains_identifier, gamma_for, localise_instruction,
+                      measure_rho, minimal_objective)
 from .scheduler import LatencyStats, Scheduler, TaskFailed, run_levels
 
 PIPELINE_STAGES = [
@@ -164,7 +165,8 @@ class Orchestrator:
                  local_model: str = "", latency: LatencyStats | None = None,
                  stats_sink: Callable[..., None] | None = None,
                  local_pool_factory: Callable[[], Any] | None = None,
-                 speed: Any = None, role_stats: Any = None):
+                 speed: Any = None, role_stats: Any = None,
+                 public_query: Callable[[str, str], str] | None = None):
         self.nodes = nodes
         self.bus = bus
         self.local_stream = local_stream
@@ -177,6 +179,10 @@ class Orchestrator:
         # 3.5, D-018: learned per (node, role), kept the same way.
         from .scheduler import RoleStats
         self.role_stats = role_stats or RoleStats()
+        # WP4b: the requester's public-query guard (AppState owns the settings,
+        # glossary and private terms). A missing callback falls back to the
+        # same guard with no glossary.
+        self.public_query = public_query
         self.stats_sink = stats_sink
         self.local_pool_factory = local_pool_factory
 
@@ -186,7 +192,8 @@ class Orchestrator:
             history: list[dict[str, Any]] | None = None,
             passage_texts: list[str] | None = None,
             passage_peer_ids: set[str] | None = None,
-            task_roles: dict[str, str] | None = None) -> dict[str, Any]:
+            task_roles: dict[str, str] | None = None,
+            project_id: str = "") -> dict[str, Any]:
         """Execute one request. Returns ``routed`` = distributed | local | error.
 
         ``history`` is the conversation before ``text`` (role/content dicts).
@@ -311,7 +318,8 @@ class Orchestrator:
                                      router_meta, directory, tracker, request_id,
                                      started, cancel, mode, whole, compose,
                                      passage_texts=passage_texts,
-                                     task_roles=task_roles)
+                                     task_roles=task_roles,
+                                     project_id=project_id)
         except Cancelled:
             tracker.fail("FINAL RESPONSE", "interrupted by the user")
             return {"routed": "error", "reason": "interrupted by the user",
@@ -331,7 +339,8 @@ class Orchestrator:
     # -- the distributed path --------------------------------------------------------
     def _distributed(self, text, adm, decision, lane, routing_meta, router_meta,
                      directory, tracker, request_id, started, cancel, mode, whole=False,
-                     compose=False, passage_texts=None, task_roles=None):
+                     compose=False, passage_texts=None, task_roles=None,
+                     project_id=""):
         from swarmbly_v0 import planner
         from swarmbly_v0.schema import Plan, Task
         cfg = self.config()
@@ -405,15 +414,27 @@ class Orchestrator:
         evidence_blocks, evidence_report = self._evidence(plan, path, lang, lane, cfg)
         for task in plan.tasks:
             level_no, index = positions[task.task_id]
+            role = str((task_roles or {}).get(task.task_id)
+                       or getattr(task, "role", "") or "")
+            instruction = localise_instruction(
+                _with_block(task.instruction, evidence_blocks.get(task.task_id, "")),
+                lang, path)
+            if role == "search":
+                # WP4b, D-018: a search task carries ONLY a public query: no
+                # Γ, no predecessors, no conversation. If the guard cannot
+                # produce a query without the requester's private terms,
+                # nothing is sent and the request fails honestly.
+                instruction = self._public_query_for(task.instruction, project_id)
+                if not instruction:
+                    raise RuntimeError(
+                        "role 'search': the request has no public query without "
+                        "private terms; nothing was sent")
             plans[task.task_id] = PacketPlan(
                 task_id=task.task_id, wire_task_id="", level=level_no, index=index,
-                instruction=localise_instruction(
-                    _with_block(task.instruction, evidence_blocks.get(task.task_id, "")),
-                    lang, path),
+                instruction=instruction,
                 consumes=bool(consumed[task.task_id]),
                 depends_on=tuple(task.depends_on), lane=lane,
-                role=str((task_roles or {}).get(task.task_id)
-                         or getattr(task, "role", "") or ""))
+                role=role)
             gammas[task.task_id] = gamma_for(contract, objective, task.instruction,
                                              self._clamp(budgets[task.task_id], workers),
                                              lang)
@@ -423,6 +444,11 @@ class Orchestrator:
         def make_builder(task_id: str, carries: dict[str, str]):
             def build(attempt: int, family: str | None,
                       model: str | None = None) -> dict[str, Any]:
+                if plans[task_id].role == "search":
+                    # Only the public query; the scheduler injects the role.
+                    return build_search_message(
+                        plans[task_id], session_id, attempt,
+                        deadline_ms=int(timeout_s * 1000), tier=decision["tier"])
                 return build_message(
                     plans[task_id], gammas[task_id], session_id, attempt, carries,
                     positions, max_tokens=self._clamp(budgets[task_id], workers),
@@ -478,10 +504,14 @@ class Orchestrator:
         local_role_fallbacks: list[dict[str, Any]] = []
         local_rejected: list[str] = []
         tie_breaks: list[dict[str, Any]] = []
+        # Tasks whose result is corpus material: their text may only be
+        # forwarded to a destination allowed to receive passages (WP4b).
+        sensitive_tasks: set[str] = set()
         tie_break = bool(swarm_cfg.get("tie_break", True))
         embedder, embedder_name = self._embedder()
 
-        async def local_rescue(task_id: str, build, check, reason: str):
+        async def local_rescue(task_id: str, build, check, reason: str,
+                               passages: bool = False):
             """This device's model on the packet, then on the bare task.
 
             The bare task drops the contract header: on 22 Oct 2026 (P3d.1)
@@ -495,8 +525,10 @@ class Orchestrator:
             last = None
             for variant in (message, {"task": message.get("task") or {}}):
                 replica = await loop.run_in_executor(
-                    None, egress.carry(self._local_fallback), task_id, variant,
-                    self._clamp(budgets[task_id], []), reason)
+                    None, egress.carry(functools.partial(
+                        self._local_fallback, task_id, variant,
+                        self._clamp(budgets[task_id], []), reason,
+                        passages=passages)))
                 if replica is None:
                     break
                 last = replica
@@ -511,10 +543,15 @@ class Orchestrator:
             loop = asyncio.get_running_loop()
             check = validators.get(task_id)
             requested_role = plans[task_id].role
+            # A search task carries only its public query (no predecessors),
+            # so a corpus predecessor is not forwarded by it.
+            requires_passages = (requested_role != "search"
+                                 and bool(set(consumed[task_id]) & sensitive_tasks))
             try:
                 replicas = await scheduler.run_task(task_id, build, budgets[task_id],
                                                     validate=check,
-                                                    role=requested_role)
+                                                    role=requested_role,
+                                                    require_passages=requires_passages)
             except TaskFailed as exc:
                 # A search or corpus task has no truthful generic substitute:
                 # without its executor the right answer is an honest failure.
@@ -524,7 +561,8 @@ class Orchestrator:
                 # The task is run on this device's model rather than failing
                 # the whole answer (P3b.3, 22 Oct 2026: losing the largest
                 # node made one section fail and the request with it).
-                fallback, ok = await local_rescue(task_id, build, check, str(exc))
+                fallback, ok = await local_rescue(task_id, build, check, str(exc),
+                                                  passages=requires_passages)
                 if fallback is not None and requested_role:
                     local_role_fallbacks.append(
                         {"task": task_id, "role": requested_role,
@@ -543,7 +581,8 @@ class Orchestrator:
                 # them echoed the Spanish words, P3c.1): try this device's
                 # model before accepting a degraded answer.
                 fallback, ok = await local_rescue(task_id, build, check,
-                                                  "all replicas rejected")
+                                                  "all replicas rejected",
+                                                  passages=requires_passages)
                 if fallback is not None and ok:
                     replicas = [fallback]
                     local_fallbacks.append(task_id)
@@ -564,7 +603,8 @@ class Orchestrator:
                             k_min=1, k_max=1, start_number=len(scheduler.attempts),
                             reason="tie_break", free_only=True,
                             exclude={(r.node_id, r.family) for r in replicas},
-                            role=plans[task_id].role)
+                            role=plans[task_id].role,
+                            require_passages=requires_passages)
                     except TaskFailed:
                         extra = []
                     extra = [r for r in extra if not (r.telemetry or {}).get("degraded")]
@@ -585,6 +625,8 @@ class Orchestrator:
                                   and outline.sections[_order(task_id)].kind != "table"
                                   else None))))
             resolved[task_id] = outcome
+            if any(rep.executor == "corpus" for rep in replicas):
+                sensitive_tasks.add(task_id)
             carries[task_id] = planner.summarize_fragment(outcome["text"], typed=True)
             return outcome
 
@@ -672,7 +714,15 @@ class Orchestrator:
             tracker.skip("CONSENSUS / ALIGNMENT", waived)
 
         tracker.start("ASSEMBLY")
+        role_sources = self._role_sources(resolved)
         bridge_backend = LocalPromptBackend(self.local_stream, self.local_model)
+        if any(source.get("kind") == "corpus" for source in role_sources) \
+                and not self._local_model_passages_allowed():
+            # Corpus material is the requester's passage material. If this
+            # device's model is a third-party service without
+            # privacy.third_party_passages, no bridge text may be generated
+            # from it; the fragments are spliced without a bridge.
+            bridge_backend = LocalPromptBackend(None, "")
         if outline is not None:
             texts, seams, seam_policy = self._assemble_composition(
                 plan, outline, resolved, embedder)
@@ -757,6 +807,10 @@ class Orchestrator:
             "role_failed": role_failed,
             "role_outcomes": (scheduler.role_stats.snapshot()
                               if any(a.get("role") for a in attempts) else []),
+            # WP4b: material returned by the search/corpus executors, with the
+            # circle and member the requester sent to. Corpus entries are
+            # third-party passages, never the requester's own sources.
+            "role_sources": role_sources,
             "evidence": evidence_report,
             "tie_breaks": tie_breaks,
             "timeouts": scheduler.timeouts,
@@ -805,7 +859,10 @@ class Orchestrator:
         """
         meta = [{"node": r.node_id[:12], "family": r.family, "model": r.model,
                  "elapsed_ms": r.elapsed_ms, "telemetry": r.telemetry,
-                 "truncated": _is_truncated(r, budget)}
+                 "truncated": _is_truncated(r, budget),
+                 "sources": r.sources, "executor": r.executor,
+                 "circle_id": r.circle_id, "circle_name": r.circle_name,
+                 "member_name": r.member_name}
                 for r in replicas]
         if len(replicas) < 2:
             text = replicas[0].text
@@ -916,15 +973,74 @@ class Orchestrator:
                 blocks[task_id] = block
         return blocks, report
 
+    def _local_model_passages_allowed(self) -> bool:
+        """Whether this device's configured model may receive passages."""
+        from .. import egress
+        destination = egress.model_destination(self.config())
+        if destination.get("clase") == egress.THIRD_PARTY:
+            return bool(egress.policy().third_party_passages)
+        return True
+
+    @staticmethod
+    def _role_sources(resolved: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+        """Executor material returned by search/corpus, with honest origin.
+
+        Provenance comes from the destination the requester actually sent the
+        task to (circle and member), never from a worker's self-description.
+        """
+        out: list[dict[str, Any]] = []
+        fields = ("kind", "title", "span", "cite", "url", "snippet", "text",
+                  "provider", "label", "score")
+        for task_id, outcome in resolved.items():
+            for meta in outcome.get("replica_meta") or []:
+                executor = str(meta.get("executor") or "")
+                if executor not in ("search", "corpus"):
+                    continue
+                for source in meta.get("sources") or []:
+                    if not isinstance(source, dict):
+                        continue
+                    entry = {key: source.get(key) for key in fields
+                             if source.get(key) not in (None, "")}
+                    entry.update(task=task_id, node=str(meta.get("node") or ""),
+                                 executor=executor,
+                                 circle_id=str(meta.get("circle_id") or ""),
+                                 circle_name=str(meta.get("circle_name") or ""),
+                                 member_name=str(meta.get("member_name") or ""))
+                    out.append(entry)
+        return out
+
+    def _public_query_for(self, text: str, project_id: str = "") -> str:
+        """The requester's public-query guard, or a conservative fallback."""
+        if self.public_query is not None:
+            try:
+                return str(self.public_query(text, project_id) or "")
+            except Exception:
+                return ""
+        from .. import web_search
+        try:
+            detail = web_search.propose_query_details(text or "")
+            query = str(detail.get("query") or "").strip()[:160]
+            return query if query and not web_search.contains_private_terms(
+                query, web_search.private_terms(text or "")) else ""
+        except Exception:
+            return ""
+
     def _local_fallback(self, task_id: str, message: dict[str, Any], max_tokens: int,
-                        reason: str):
+                        reason: str, *, passages: bool = False):
         """Run one packet on this device's model; ``None`` if there is none."""
         from ..p2p.worker import render_packet_prompt
         from .scheduler import Replica
         backend = LocalPromptBackend(self.local_stream, self.local_model)
         started = time.monotonic()
-        text = backend.generate(render_packet_prompt(message), max_tokens=max_tokens,
-                                temperature=0.2)
+        # WP4b: a corpus result is treated as the requester's own passages. If
+        # the local model is a third-party service without
+        # privacy.third_party_passages, the egress gate raises inside
+        # LocalPromptBackend and this fallback yields nothing, so the task
+        # fails honestly instead of forwarding the passages.
+        from .. import egress
+        with egress.purpose(egress.PASSAGES if passages else egress.FRAGMENT):
+            text = backend.generate(render_packet_prompt(message), max_tokens=max_tokens,
+                                    temperature=0.2)
         if not text.strip():
             return None
         self.bus.publish("swarm.local_fallback", task=task_id, reason=reason[:160])
