@@ -200,3 +200,24 @@ def test_invalid_circle_name_refused(tmp_path):
     svc, _, _, _ = make_service(tmp_path)
     with pytest.raises(CircleError):
         svc.create_circle("   ")
+
+
+def test_forged_circle_listing_this_node_is_not_accepted(tmp_path):
+    """A peer cannot make this node a member of a circle it never joined."""
+    import asyncio
+    victim, _, dirs, _ = make_service(tmp_path)
+    attacker = IdentityManager(dirs.root / "attacker_key")
+    attacker_id = attacker.load_or_create().node_id
+    now = int(time.time())
+    forged = build_manifest(
+        identity_manager=attacker, circle_id="forgedcircle", name="Fake",
+        owner=attacker_id,
+        members=[{"node_id": attacker_id, "name": "a", "endpoints": []},
+                 {"node_id": victim.node_id, "name": "v", "endpoints": []}],
+        version=1, issued_at=now, expires_at=now + 3600)
+    reply = asyncio.run(victim.handle_control(
+        attacker_id, {"v": WIRE_VERSION, "type": "circle_manifest",
+                           "manifest": forged}))
+    assert reply is None
+    assert "forgedcircle" not in victim.manifests
+    assert victim.admits_local(attacker_id)[0] is (victim.mode() == "own_devices")

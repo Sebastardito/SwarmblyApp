@@ -1060,11 +1060,16 @@ class CircleService:
         circle_id = str(manifest.get("circle_id") or "")
         with self._lock:
             current = self.manifests.get(circle_id)
-            known = current is not None or circle_id in self.outgoing
-        if not known and not self._is_member(manifest, self.node_id) \
-                and not self._is_member(manifest, node_id):
-            # An unsolicited manifest of a circle neither side belongs to.
-            return None
+            pending = self.outgoing.get(circle_id)
+        if current is None:
+            # Membership never comes from someone else's say-so: a circle this
+            # node does not hold yet is accepted only from the owner of an
+            # invitation this node accepted (a pending join), never because a
+            # peer signed a manifest that happens to list this node. Without
+            # this, any connected peer could forge a circle of its own that
+            # lists this node and itself, and be admitted.
+            if pending is None or manifest.get("owner") != pending.get("owner"):
+                return None
         try:
             changed = self._store_manifest(manifest, now=int(time.time()))
         except CircleError as exc:
