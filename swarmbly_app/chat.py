@@ -102,6 +102,9 @@ class ChatService:
         self.retrieval_candidates: Callable[[], list] | None = None
         self.retrieval_meta: Callable[[], dict[str, Any]] | None = None
         self.self_node: str = ""          # this node's id prefix (set by AppState)
+        # 3.5, D-017: trusted circles for the destination class and the
+        # per-circle passages switches (set by AppState).
+        self.circles: Any = None
         # 3.1: called after a conversation changes (its project folder keeps a copy)
         self.on_conversation_changed: Callable[[str], None] | None = None
         self.on_conversation_deleted: Callable[[dict[str, Any]], None] | None = None
@@ -2351,6 +2354,39 @@ class ChatService:
             evidence[n] = relevant
         return evidence
 
+    def _swarm_passage_peers(self, orchestrator: Any
+                             ) -> tuple[bool, set[str] | None, str]:
+        """Whether and to whom this list wave may carry document passages.
+
+        D-017 keeps this separate from ``privacy.third_party_passages`` (a
+        model-service flag). In circle mode passages may go only to peers
+        whose shared circle has ``circle_passages`` on, so a mixed swarm sends
+        the grounded wave to those members and never to the others. In the
+        explicit my-own-devices mode the equivalent
+        ``circle.own_devices_passages`` switch decides; every peer is then
+        eligible. A wave with no remote destination stays local.
+        """
+        circles = self.circles
+        if circles is None:
+            return False, None, "no circle service is available"
+        if circles.mode() == "own_devices":
+            if circles.own_devices_passages():
+                return True, None, ""
+            return False, None, "the my-own-devices passages switch is off"
+        nodes = getattr(orchestrator, "nodes", None)
+        if nodes is None:
+            return False, None, "the swarm destinations are unknown"
+        try:
+            workers = [str(peer.node_id) for peer in nodes.available_workers()]
+        except Exception:
+            return False, None, "the swarm destinations are unknown"
+        eligible = {peer_id for peer_id in workers
+                    if circles.peer_passages_allowed(peer_id)[0]}
+        if not eligible:
+            return (False, set(),
+                    "no remote destination is in a circle with circle_passages on")
+        return True, eligible, ""
+
     def _run_list(self, request: ActiveRequest, user_text: str) -> None:
         """Waves of items through the existing batch path, then a table by code.
 
@@ -2384,6 +2420,8 @@ class ChatService:
         documents_used = False
         documents_withheld = False
         document_passages: list[str] = []
+        withheld_reason = ""
+        passage_peers: set[str] | None = None
         offset = 0
         try:
             orchestrator = self.orchestrator() if self.orchestrator is not None else None
@@ -2403,17 +2441,22 @@ class ChatService:
                                            source=job.source)
             if evidence:
                 documents_available = True
-            documents_allowed = (job.where != "swarm"
-                                 or egress.policy().third_party_passages)
+            if job.where == "swarm":
+                documents_allowed, passage_peers, withheld_reason = \
+                    self._swarm_passage_peers(orchestrator)
+            else:
+                documents_allowed, passage_peers, withheld_reason = True, None, ""
+            wave_passages: list[str] = []
             if evidence and not documents_allowed:
                 documents_withheld = True
                 prompt = recipes.build_list_prompt(job.operation, wave)
             else:
                 if evidence:
                     documents_used = True
-                    document_passages.extend(
-                        str(p.get("text") or "") for passages in evidence.values()
-                        for p in passages)
+                    wave_passages = [str(p.get("text") or "")
+                                     for passages in evidence.values()
+                                     for p in passages]
+                    document_passages.extend(wave_passages)
                 prompt = recipes.build_list_prompt(job.operation, wave, evidence)
             local_items = {n: item for n, item in enumerate(wave, 1)}
             wave_exec = "local"
@@ -2424,14 +2467,18 @@ class ChatService:
                     with egress.purpose(egress.QUESTION):
                         outcome = orchestrator.run(
                             prompt, mode="lan", request_id=request.request_id,
-                            cancel=request.stop_event)
+                            cancel=request.stop_event,
+                            passage_texts=wave_passages,
+                            passage_peer_ids=(passage_peers
+                                              if wave_passages else None))
                 except Exception as exc:
                     return self._fail(request, f"list wave {wave_no} failed: {exc}")
                 routed = outcome.get("routed")
                 if routed == "distributed":
                     wave_exec = "distributed"
                     metadata = outcome.get("metadata") or {}
-                    attempts.extend(metadata.get("attempts") or [])
+                    wave_attempts = list(metadata.get("attempts") or [])
+                    attempts.extend(wave_attempts)
                     tasks += int(metadata.get("n_tasks") or 0)
                     stages = outcome.get("stages") or stages
                     result_map = self._list_swarm_results(
@@ -2509,11 +2556,11 @@ class ChatService:
             request.receipt_ctx["passages"] = document_passages
         documents_note = ""
         if documents_withheld:
-            documents_note = ("No se usaron tus documentos: el enjambre no tiene permiso para "
-                              "recibir pasajes privados (privacy.third_party_passages)."
+            documents_note = ("No se usaron tus documentos: los pasajes hacia este enjambre "
+                              "están apagados (circle_passages / my own devices)."
                               if lang == "es" else
-                              "Your documents were not used: the swarm is not allowed to "
-                              "receive private passages (privacy.third_party_passages).")
+                              "Your documents were not used: passages to this swarm are "
+                              "off (circle_passages / my own devices).")
             answer_text = f"{answer_text}\n\n{documents_note}"
             request.receipt_ctx["passages_withheld"] = "the swarm"
         executed = ("distributed" if executed_waves and all(
@@ -2529,10 +2576,12 @@ class ChatService:
                      "documents_available": documents_available,
                      "documents_used": documents_used,
                      "documents_withheld": documents_withheld,
+                     "documents_withheld_reason": withheld_reason,
                      "documents": {"available": documents_available,
                                    "used": documents_used,
                                    "withheld": documents_withheld,
-                                   "note": documents_note},
+                                   "note": documents_note,
+                                   "reason": withheld_reason},
                      "privacy": {"tier": privacy["tier"], "lane": privacy["lane"],
                                  "sensitive": privacy["sensitive"]}}
         table_meta = {"by_code": True, "rows": len(job.items), "header": header,
@@ -2823,9 +2872,18 @@ class ChatService:
                     node = str(att.get("node", ""))
                     if self.self_node and node == self.self_node[:len(node)]:
                         continue          # this device's own models (local pool)
-                    extra_sends.append({"destino": f"nodo {node}", "clase": egress.OWN_NETWORK,
-                                        "tipo": egress.FRAGMENT, "bytes": att.get("bytes_out") or 0,
-                                        "motivo": f"fragmento {att.get('task', '')}"})
+                    if att.get("code") in ("E_CIRCLE_REQUIRED", "E_EGRESS_DENIED"):
+                        continue          # the gate refused: nothing was written
+                    extra_sends.append({
+                        "destino": f"nodo {node}",
+                        "clase": att.get("destination_class") or egress.OWN_NETWORK,
+                        "tipo": egress.FRAGMENT,
+                        "bytes": att.get("bytes_out") or 0,
+                        "motivo": f"fragmento {att.get('task', '')}",
+                        "circle_id": att.get("circle_id") or "",
+                        "circle_name": att.get("circle_name") or "",
+                        "member_name": att.get("member_name") or "",
+                        "passages": att.get("passages") or 0})
             ledger = request.ledger
             public = any(e.get("tipo") == egress.PUBLIC_QUERY and not e.get("bloqueado")
                          for e in (ledger.events if ledger else []))
@@ -2863,7 +2921,8 @@ class ChatService:
             meta["receipt"] = egress.build_receipt(
                 ledger, lane=ctx.get("lane", "no_informado"), route=route, answer=answer,
                 consent=consent, passages=ctx.get("passages") or [],
-                fragments=fragments, extra_sends=extra_sends, model_destination=dest)
+                fragments=fragments, extra_sends=extra_sends, model_destination=dest,
+                ignore_ledger_fragments=bool(distributed))
             if ctx.get("skill"):
                 # 3.4: which skill's body the model saw, by name and content hash
                 meta["receipt"]["skill"] = dict(ctx["skill"])

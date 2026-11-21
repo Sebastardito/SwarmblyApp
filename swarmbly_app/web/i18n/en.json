@@ -460,7 +460,8 @@
    "class": {
     "local": "local",
     "red_propia": "your network",
-    "terceros": "third party"
+    "terceros": "third party",
+    "circulo": "trusted circle"
    },
    "kind": {
     "pregunta": "the question",
@@ -485,7 +486,8 @@
    "consentNo": "needed and not given: nothing was looked up",
    "consentNotNeeded": "not needed",
    "consentBase": "Basis:",
-   "consentScope": "Scope:"
+   "consentScope": "Scope:",
+   "passagesShort": "passages"
   },
   "citeTitle": "Stable citation: the file's hash and the paragraph. It still holds if the project is moved or restored on another computer.",
   "anchor": {
@@ -1366,6 +1368,10 @@
    "node": "node",
    "endpoints": "endpoints",
    "role": "role"
-  }
+  },
+  "passages": "Document passages",
+  "passagesHelp": "When on, recipe 4 may attach passages of your documents to items sent to members of this circle. Off by default; separate from privacy.third_party_passages.",
+  "ownPassages": "Document passages to my own devices",
+  "ownPassagesHelp": "When on, recipe 4 may attach passages of your documents to items sent to peers in my-own-devices mode. Off by default; separate from privacy.third_party_passages."
  }
 }

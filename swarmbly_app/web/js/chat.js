@@ -1820,6 +1820,9 @@ const Explore = (() => {
     else parts.push(h("ul.sources", r.envios.map((e) => h("li",
       chip(t(`explore.receipt.class.${e.clase}`, e.clase), e.clase === "terceros" ? "warn" : ""),
       h("span", ` ${e.destino} · ${t(`explore.receipt.kind.${e.tipo}`, e.tipo)}`),
+      e.circle_name ? h("span.muted", ` · ${e.circle_name}`) : null,
+      e.member_name ? h("span.muted", ` · ${e.member_name}`) : null,
+      e.pasajes ? h("span.muted", ` · ${e.pasajes} ${t("explore.receipt.passagesShort")}`) : null,
       ["entidad_publica", "consulta_aprobada", "parte_consulta", "palabra_suelta", "id_resultado"].includes(e.tipo)
         ? h("code", ` ${e.valor}`) : null))));
     if ((r.tools || []).length) {

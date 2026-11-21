@@ -147,6 +147,7 @@ class AppState:
                                 self.config.all, self.get_orchestrator)
         self.chat.report_sink = self._auto_report
         self.chat.self_node = self.identity.node_id[:12]
+        self.chat.circles = self.circles
         self.chat.retriever = self._lce_retrieve
         self.chat.retrieval_active = self._lce_active
         self.chat.retrieval_candidates = lambda: list(getattr(self.lce, "last_candidates", []))

@@ -1421,10 +1421,22 @@ def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
                             name=str(name) if name else None,
                             endpoints=endpoints)
 
+    @app.post("/api/circles/own-devices/passages")
+    def circles_own_devices_passages(body: dict | None = None) -> dict:
+        body = body or {}
+        return _circle_call(state.circles.set_own_devices_passages,
+                            bool(body.get("enabled")))
+
     @app.post("/api/circles/notice/ack")
     def circles_notice_ack() -> dict:
         state.config.update({"circle.notice_pending": False})
         return state.circles.list_payload()
+
+    @app.post("/api/circles/{circle_id}/passages")
+    def circles_passages(circle_id: str, body: dict | None = None) -> dict:
+        body = body or {}
+        return _circle_call(state.circles.set_circle_passages, circle_id,
+                            bool(body.get("enabled")))
 
     @app.post("/api/circles/{circle_id}/invite")
     def circles_invite(circle_id: str, body: dict | None = None) -> dict:

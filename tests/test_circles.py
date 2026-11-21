@@ -8,8 +8,11 @@ import time
 
 import pytest
 
-from swarmbly_app.p2p.circles import E_CIRCLE_REQUIRED
+from swarmbly_app import egress
+from swarmbly_app.p2p.circles import E_CIRCLE_REQUIRED, CircleError
 from swarmbly_app.p2p.messages import packet, WIRE_VERSION
+from swarmbly_app.p2p.node import Peer, PeerError
+from swarmbly_app.recipes import normalise_list_job
 from swarmbly_app.state import AppState
 
 from conftest import FakeBackend
@@ -237,6 +240,212 @@ class TestJoinAndAdmission:
         assert connect(client, owner) is None
         assert not owner.nodes.available_workers()
 
+
+class TestHonestClassification:
+    """D-017: CIRCLE vs OWN_NETWORK, the gate, the receipt and the switches."""
+
+    def _joined(self, nodes):
+        owner, _ = nodes("cls_owner", worker=True)
+        member, _ = nodes("cls_member")
+        circle = owner.circles.create_circle("Familia")
+        invite = owner.circles.invite(
+            circle["circle_id"],
+            endpoints=[f"127.0.0.1:{owner.nodes.listen_port}"])
+        member.circles.accept_invitation(
+            invite["code"],
+            endpoints=[f"127.0.0.1:{member.nodes.listen_port}"])
+        assert wait_for(lambda: owner.circles.list_payload()["circles"][0]
+                        ["pending_joins"])
+        owner.circles.approve(circle["circle_id"], member.identity.node_id)
+        assert wait_for(lambda: bool(member.circles.list_payload()["circles"]))
+        assert wait_for(lambda: member.nodes.available_workers())
+        return owner, member, circle
+
+    def test_classification_per_mode(self, nodes):
+        owner, member, circle = self._joined(nodes)
+        dest = member.circles.classify_peer(owner.identity.node_id)
+        assert dest["clase"] == egress.CIRCLE
+        assert dest["circle_id"] == circle["circle_id"]
+        assert dest["circle_name"] == "Familia"
+        assert dest["member_name"] == "cls_owner"
+        # a member of no shared circle is refused, not labelled
+        stranger, _ = nodes("cls_stranger")
+        with pytest.raises(CircleError) as exc:
+            member.circles.classify_peer(stranger.identity.node_id)
+        assert exc.value.code == E_CIRCLE_REQUIRED
+        # the explicit 3.4 mode is OWN_NETWORK
+        own_owner, _ = nodes("own_owner", worker=True, mode="own_devices")
+        own_client, _ = nodes("own_client", mode="own_devices")
+        assert connect(own_client, own_owner) is not None
+        own = own_client.circles.classify_peer(own_owner.identity.node_id)
+        assert own["clase"] == egress.OWN_NETWORK
+        assert own["circle_id"] == ""
+
+    def test_non_member_refused_by_the_gate_before_any_write(
+            self, nodes, monkeypatch):
+        owner, _, _ = self._joined(nodes)
+        stranger, _ = nodes("gate_stranger")
+        owner.nodes.peers[stranger.identity.node_id] = Peer(
+            node_id=stranger.identity.node_id, address="127.0.0.1", port=1,
+            connected=True, authenticated=True, admitted=True, session=object())
+        writes = []
+
+        async def fake_write(session, message):
+            writes.append(message)
+
+        monkeypatch.setattr(owner.nodes, "_write", fake_write)
+        with pytest.raises(PeerError) as exc:
+            owner.nodes.dispatch(stranger.identity.node_id, task_message("gate:0"),
+                                 1.0)
+        assert exc.value.code == E_CIRCLE_REQUIRED
+        assert writes == []
+
+    def test_receipt_names_circle_and_member(self, nodes):
+        owner, member, circle = self._joined(nodes)
+        conv = member.chat.create_conversation(mode="lan")
+        member.chat.send(conv["id"], TEST_PROMPT, mode="lan", run_async=False)
+        final = member.chat.get_messages(conv["id"])[-1]
+        assert final["meta"]["status"] == "done", final["meta"]
+        receipt = final["meta"]["receipt"]
+        circle_sends = [e for e in receipt["envios"]
+                        if e.get("clase") == egress.CIRCLE]
+        assert circle_sends, receipt["envios"]
+        assert all(e.get("circle_name") == "Familia" for e in circle_sends)
+        assert all(e.get("member_name") == "cls_owner" for e in circle_sends)
+        assert all(e.get("destino", "").startswith("nodo ") for e in circle_sends), circle_sends
+        assert not any(e.get("clase") == egress.OWN_NETWORK
+                       for e in receipt["envios"] if e.get("tipo") == "fragmento")
+
+    def _joined_with_worker(self, nodes):
+        owner, owner_fake = nodes("list_owner", worker=True)
+        member, _ = nodes("list_member")
+        circle = owner.circles.create_circle("Familia")
+        invite = owner.circles.invite(
+            circle["circle_id"],
+            endpoints=[f"127.0.0.1:{owner.nodes.listen_port}"])
+        member.circles.accept_invitation(
+            invite["code"],
+            endpoints=[f"127.0.0.1:{member.nodes.listen_port}"])
+        assert wait_for(lambda: owner.circles.list_payload()["circles"][0]
+                        ["pending_joins"])
+        owner.circles.approve(circle["circle_id"], member.identity.node_id)
+        assert wait_for(lambda: bool(member.circles.list_payload()["circles"]))
+        assert wait_for(lambda: member.nodes.available_workers())
+        return owner, owner_fake, member, circle
+
+    def test_recipe_4_passages_need_the_circle_switch(self, nodes, tmp_path):
+        owner, owner_fake, member, circle = self._joined_with_worker(nodes)
+
+        def retriever(query, expansion="", project_id=""):
+            return [{"doc_id": "d1", "source": "notas.md", "rel": "notas.md",
+                     "anchor": "p1", "text": f"SENTINEL-PASSAGE for {query}",
+                     "score": 0.9}]
+
+        member.chat.retriever = retriever          # type: ignore[assignment]
+        member.chat.retrieval_active = lambda project_id="": True  # type: ignore[assignment]
+        project = member.projects.create("List passages", parent=tmp_path / "p")
+        items = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"]
+        job = normalise_list_job({
+            "items": items,
+            "operation": "Give the status of this item",
+            "where": "swarm", "source": {"kind": "pasted"}}, max_items=200)
+
+        def run_list():
+            conv = member.chat.create_conversation(mode="lan",
+                                                   project_id=project.id)
+            member.chat.send(conv["id"], job.operation, recipe="list",
+                             list_job=job.to_dict(), run_async=False)
+            return member.chat.get_messages(conv["id"])[-1]
+
+        off = run_list()
+        assert off["meta"].get("list"), off["meta"]
+        assert off["meta"]["list"]["documents_used"] is False
+        assert off["meta"]["list"]["documents_withheld"] is True
+        assert owner_fake.calls, off["meta"]
+
+        member.circles.set_circle_passages(circle["circle_id"], True)
+        owner_fake.calls.clear()
+        on = run_list()
+        assert on["meta"]["list"]["documents_used"] is True
+        assert on["meta"]["list"]["documents_withheld"] is False
+        prompts = [call["messages"][-1]["content"] for call in owner_fake.calls]
+        assert any("SENTINEL-PASSAGE for alpha" in p for p in prompts)
+        assert any("SENTINEL-PASSAGE for beta" in p for p in prompts)
+        sends = [e for e in on["meta"]["receipt"]["envios"]
+                 if e.get("clase") == egress.CIRCLE]
+        assert sends and all("pasajes" in e for e in sends)
+        # one fragment got each passage; the receipt counts them per destination
+        assert sum(e["pasajes"] for e in sends) == len(items)
+        assert on["meta"]["receipt"]["pasajes_enviados"] == len(items)
+
+    def test_mixed_circles_only_the_switched_circle_receives_passages(
+            self, nodes, tmp_path):
+        owner_a, fake_a = nodes("mix_a", worker=True)
+        owner_b, fake_b = nodes("mix_b", worker=True)
+        client, _ = nodes("mix_client")
+        for owner, name in ((owner_a, "Circle A"), (owner_b, "Circle B")):
+            circle = owner.circles.create_circle(name)
+            invite = owner.circles.invite(
+                circle["circle_id"],
+                endpoints=[f"127.0.0.1:{owner.nodes.listen_port}"])
+            client.circles.accept_invitation(
+                invite["code"],
+                endpoints=[f"127.0.0.1:{client.nodes.listen_port}"])
+            assert wait_for(lambda: owner.circles.list_payload()["circles"][0]
+                            ["pending_joins"])
+            owner.circles.approve(circle["circle_id"], client.identity.node_id)
+        assert wait_for(lambda: len(client.circles.list_payload()["circles"]) == 2)
+        circles = {c["name"]: c for c in client.circles.list_payload()["circles"]}
+        client.circles.set_circle_passages(circles["Circle A"]["circle_id"], True)
+        assert wait_for(lambda: len(client.nodes.available_workers()) == 2)
+
+        def retriever(query, expansion="", project_id=""):
+            return [{"doc_id": "d1", "source": "notas.md", "rel": "notas.md",
+                     "anchor": "p1", "text": f"SENTINEL-PASSAGE for {query}",
+                     "score": 0.9}]
+
+        client.chat.retriever = retriever          # type: ignore[assignment]
+        client.chat.retrieval_active = lambda project_id="": True  # type: ignore[assignment]
+        project = client.projects.create("Mixed circles", parent=tmp_path / "p")
+        items = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"]
+        job = normalise_list_job({
+            "items": items, "operation": "Give the status of this item",
+            "where": "swarm", "source": {"kind": "pasted"}}, max_items=200)
+        conv = client.chat.create_conversation(mode="lan", project_id=project.id)
+        client.chat.send(conv["id"], job.operation, recipe="list",
+                         list_job=job.to_dict(), run_async=False)
+        msg = client.chat.get_messages(conv["id"])[-1]
+        assert msg["meta"]["status"] == "done", msg["meta"]
+        assert msg["meta"]["list"]["documents_used"] is True
+        prompts_a = [call["messages"][-1]["content"] for call in fake_a.calls]
+        assert any("SENTINEL-PASSAGE for alpha" in p for p in prompts_a)
+        assert fake_b.calls == []
+        sends = [e for e in msg["meta"]["receipt"]["envios"]
+                 if e.get("clase") == egress.CIRCLE]
+        assert sends and {e.get("circle_name") for e in sends} == {"Circle A"}
+
+    def test_migration_and_the_two_passage_switches_are_separate(self, nodes):
+        owner, member, circle = self._joined(nodes)
+        cid = circle["circle_id"]
+        # a per-circle switch is off by default, even with the old flag on
+        member.config.update({"privacy": {"third_party_passages": True}})
+        assert member.circles.circle_passages(cid) is False
+        assert member.circles.peer_passages_allowed(owner.identity.node_id)[0] is False
+        assert member.circles.list_payload()["circles"][0]["circle_passages"] is False
+        # the switch is per circle and gates passages to that member
+        member.circles.set_circle_passages(cid, True)
+        assert member.circles.circle_passages(cid) is True
+        assert member.circles.peer_passages_allowed(owner.identity.node_id)[0] is True
+        assert member.circles.swarm_passages_allowed(
+            [owner.identity.node_id]) == (True, "")
+        member.circles.set_circle_passages(cid, False)
+        assert member.circles.peer_passages_allowed(owner.identity.node_id)[0] is False
+        # the my-own-devices switch has the same default and is separate
+        own_owner, _ = nodes("own_pass_owner", worker=True, mode="own_devices")
+        own_client, _ = nodes("own_pass_client", mode="own_devices")
+        assert own_client.circles.own_devices_passages() is False
+        own_client.config.update({"circle": {"own_devices_passages": True}})
+        assert own_client.circles.own_devices_passages() is True
 
 class TestCircleAPI:
     def test_routes_are_guarded_and_work(self, tmp_path, app_state):

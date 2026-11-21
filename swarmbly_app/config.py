@@ -131,6 +131,11 @@ DEFAULTS: dict[str, Any] = {
         "node_name": "",              # display name in manifests ("" = host name)
         "manifest_ttl_days": 30,      # owner re-signs a manifest after this
         "invitation_ttl_s": 604800,   # invitation lifetime (7 days)
+        # D-017: in the explicit my-own-devices mode, document passages may
+        # reach a peer only with this switch on. It never reuses
+        # privacy.third_party_passages (that one is about model services), and
+        # per-circle circle_passages defaults off as well.
+        "own_devices_passages": False,
     },
     "privacy": {
         "tier": "LOCAL",              # GLOBAL | TRUSTED | LOCAL

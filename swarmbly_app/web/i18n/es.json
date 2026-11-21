@@ -460,7 +460,8 @@
    "class": {
     "local": "local",
     "red_propia": "tu red",
-    "terceros": "terceros"
+    "terceros": "terceros",
+    "circulo": "círculo de confianza"
    },
    "kind": {
     "pregunta": "la pregunta",
@@ -485,7 +486,8 @@
    "consentNo": "hacía falta y no se dio: no se consultó nada",
    "consentNotNeeded": "no hacía falta",
    "consentBase": "Base:",
-   "consentScope": "Alcance:"
+   "consentScope": "Alcance:",
+   "passagesShort": "pasajes"
   },
   "citeTitle": "Cita estable: el hash del archivo y el párrafo. Sigue valiendo si el proyecto se mueve o se restaura en otra computadora.",
   "anchor": {
@@ -1377,6 +1379,10 @@
    "node": "nodo",
    "endpoints": "endpoints",
    "role": "rol"
-  }
+  },
+  "passages": "Pasajes de documentos",
+  "passagesHelp": "Si está activo, la receta 4 puede adjuntar pasajes de tus documentos a los elementos enviados a miembros de este círculo. Está apagado por defecto y es independiente de privacy.third_party_passages.",
+  "ownPassages": "Pasajes de documentos a mis propios dispositivos",
+  "ownPassagesHelp": "Si está activo, la receta 4 puede adjuntar pasajes de tus documentos a los elementos enviados a pares en modo mis propios dispositivos. Está apagado por defecto y es independiente de privacy.third_party_passages."
  }
 }

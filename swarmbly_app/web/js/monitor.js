@@ -240,6 +240,14 @@ const Monitor = (() => {
           button(t("circle.noticeSwitch"), switchToCircles, "primary small"),
           button(t("circle.noticeKeep"), acknowledgeNotice, "ghost small"))));
     }
+    if (data.admission_mode === "own_devices") {
+      const ownBox = h("input", { type: "checkbox" });
+      ownBox.checked = !!data.own_devices_passages;
+      ownBox.addEventListener("change", () => setOwnDevicesPassages(ownBox.checked));
+      els.circles.appendChild(h("div.passages-setting",
+        h("label.check", ownBox, h("span", t("circle.ownPassages"))),
+        h("p.muted", t("circle.ownPassagesHelp"))));
+    }
     const items = data.circles || [];
     if (!items.length) {
       els.circles.appendChild(h("p.empty", t("circle.none")));
@@ -281,6 +289,13 @@ const Monitor = (() => {
         h("thead", h("tr", ["name", "node", "endpoints", "role", ""]
           .map((k) => h("th", { scope: "col" }, k ? t(`circle.col.${k}`) : "")))),
         h("tbody", rows)));
+    const passagesBox = h("input", { type: "checkbox" });
+    passagesBox.checked = !!circle.circle_passages;
+    passagesBox.addEventListener("change", () =>
+      setCirclePassages(circle, passagesBox.checked));
+    card.appendChild(h("div.passages-setting",
+      h("label.check", passagesBox, h("span", t("circle.passages"))),
+      h("p.muted", t("circle.passagesHelp"))));
     if (circle.is_owner) {
       const requests = circle.pending_joins || [];
       card.appendChild(h("h4", t("circle.requests")));
@@ -307,6 +322,21 @@ const Monitor = (() => {
       button(circle.is_owner ? t("circle.delete") : t("circle.leave"),
         () => leaveCircle(circle), "danger small")));
     return card;
+  }
+
+  async function setCirclePassages(circle, enabled) {
+    try {
+      await Api.post(`/api/circles/${encodeURIComponent(circle.circle_id)}/passages`,
+        { enabled });
+      await refresh();
+    } catch (e) { UI.toast(e.message, "error"); await refresh(); }
+  }
+
+  async function setOwnDevicesPassages(enabled) {
+    try {
+      await Api.post("/api/circles/own-devices/passages", { enabled });
+      await refresh();
+    } catch (e) { UI.toast(e.message, "error"); await refresh(); }
   }
 
   async function createCircleDialog() {

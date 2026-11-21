@@ -180,7 +180,9 @@ class Orchestrator:
     # -- public entry -----------------------------------------------------------
     def run(self, text: str, *, mode: str = "lan", request_id: str | None = None,
             cancel: threading.Event | None = None,
-            history: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+            history: list[dict[str, Any]] | None = None,
+            passage_texts: list[str] | None = None,
+            passage_peer_ids: set[str] | None = None) -> dict[str, Any]:
         """Execute one request. Returns ``routed`` = distributed | local | error.
 
         ``history`` is the conversation before ``text`` (role/content dicts).
@@ -244,8 +246,11 @@ class Orchestrator:
         elif mode not in ("lan", "auto"):
             egress_block = f"mode {mode}: no network dispatch"
         pool = self.local_pool_factory() if self.local_pool_factory else None
-        directory = Directory(self.nodes, pool, remote_allowed=not egress_block)
+        directory = Directory(self.nodes, pool, remote_allowed=not egress_block,
+                              allowed_remote=passage_peer_ids)
         routing_meta["remote_allowed"] = not egress_block
+        if passage_peer_ids is not None:
+            routing_meta["passage_peer_filter"] = sorted(passage_peer_ids)
         routing_meta["local_pool"] = pool.models if pool else []
         if egress_block and pool is None:
             tracker.skip("ROUTING / DECOMPOSABILITY", egress_block)
@@ -300,7 +305,8 @@ class Orchestrator:
         try:
             return self._distributed(text, adm, decision, lane, routing_meta,
                                      router_meta, directory, tracker, request_id,
-                                     started, cancel, mode, whole, compose)
+                                     started, cancel, mode, whole, compose,
+                                     passage_texts=passage_texts)
         except Cancelled:
             tracker.fail("FINAL RESPONSE", "interrupted by the user")
             return {"routed": "error", "reason": "interrupted by the user",
@@ -320,7 +326,7 @@ class Orchestrator:
     # -- the distributed path --------------------------------------------------------
     def _distributed(self, text, adm, decision, lane, routing_meta, router_meta,
                      directory, tracker, request_id, started, cancel, mode, whole=False,
-                     compose=False):
+                     compose=False, passage_texts=None):
         from swarmbly_v0 import planner
         from swarmbly_v0.schema import Plan, Task
         cfg = self.config()
@@ -455,7 +461,7 @@ class Orchestrator:
             latency=self.latency,
             min_params_b=float(swarm_cfg.get("min_model_params_b", 1.5)),
             queue_retries=not (self.local_stream is not None and self.local_model),
-            speed=self.speed)
+            speed=self.speed, passage_texts=passage_texts)
         carries: dict[str, str] = {}
         resolved: dict[str, dict[str, Any]] = {}
         local_fallbacks: list[str] = []
