@@ -78,9 +78,15 @@ local families, aligned by the same consensus.
   initiator verifies it against the certificate received, then signs it back
   (detects a man in the middle). Replay protection by fresh nonces; per-peer
   attempt-id window; frame size cap; peer cap; keepalive.
-- **Admission of peers:** a handshake authenticates; it never authorises.
-  Worker gates (role, pause, kinds, budget, deadline, concurrency, lane/tier,
-  idle) run in code for every packet.
+- **Admission of peers:** a handshake authenticates; circle admission then
+  authorises. In the default circle-only mode a peer must be listed by a
+  valid, unexpired signed membership manifest that lists both nodes. It is
+  checked at the handshake and again at the worker gate, so revocation takes
+  effect. The explicit *my own devices* mode keeps the 3.4 LAN rule
+  (any authenticated peer in the LAN). A valid invitation opens a
+  control-only bootstrap session to send the signed join request; it never
+  receives tasks. Worker gates (role, pause, kinds, budget, deadline,
+  concurrency, lane/tier, idle) run in code for every packet.
 - **Local API:** loopback by default; Host allowlist; Origin check on
   mutations and WebSocket; per-launch token; CSP; untrusted strings escaped.
 - **Privacy:** LOCAL tier and SANITISABLE/SENSITIVE lanes never leave the
@@ -92,7 +98,7 @@ local families, aligned by the same consensus.
 sources/  wiki/  adapters/  capsules/   LCE planes (local only)
 output/   exports/ reports/             logical default output location
 identity/ node_key (0600)               cache/tls/ node.crt, node.key (0600)
-api_token (0600)                        logs/   app.db (SQLite)
+circles/ manifests, invitations, joins  api_token (0600)   logs/   app.db (SQLite)
 ```
 
 macOS `~/Library/Application Support/Swarmbly` · Linux `~/.local/share/swarmbly`

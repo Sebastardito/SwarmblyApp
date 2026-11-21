@@ -173,6 +173,41 @@ others. Settings → Swarm controls it:
 Workers serve the base model only. Your memory, sources and conversations are
 never used for other people's tasks.
 
+### Trusted circles · Círculos de confianza
+
+A **circle** is a list of members signed by its owner. Each version has a
+number and an expiry date, and it is the only thing that authorises a peer:
+
+1. **Create** a circle in **Swarm → Trusted circles** and give it a name (for
+   example *Familia* or *Lab*). This device is the owner.
+2. **Invite** a node: the app shows a code (`SWC1…`) and a QR. Send either to
+   the other person. The invitation is signed, expires (7 days by default) and
+   can be used once.
+3. **Accept** on the other device: paste the code in **Swarm → Trusted
+   circles → Accept invitation**. The device sends a signed join request. If
+   the owner is offline the request is kept and sent when it is reachable.
+4. **Approve** the request on the owner's device. The owner signs a new
+   manifest version and sends it to the newcomer; both nodes then list each
+   other.
+5. **Members** shows every node, its endpoints and its role. The owner can
+   **revoke** a member (a new version without it) or delete the circle; a
+   member can **leave**. Revocation is checked again for every task, so it
+   takes effect even on a connection that was already open. Older manifest
+   versions are rejected.
+
+**Who may connect.** New installations admit a peer only when both nodes are in
+a valid, unexpired circle manifest (*Only my circles*). An installation that
+already existed before 3.5 keeps the old LAN rule (*My own devices*, any
+authenticated peer on the LAN) and shows a notice in Swarm until you choose.
+Change it in **Settings → Swarm → Peer admission**. **Accepting an invitation
+is not membership yet**: the owner must approve it, and until then the
+connection can only carry the join request, never a task.
+
+The circle does not change the privacy tier or the receipt yet: peer traffic
+is still labelled `OWN_NETWORK` and the `CIRCLE` destination class with its
+egress gate arrives in WP2. Keep the node key private: 3.5 has no mutual TLS,
+so a stolen key can impersonate a member until the owner revokes it.
+
 ## 4. Memory
 
 The Local Cognitive Extension keeps a personal memory on this computer. It is
@@ -270,6 +305,23 @@ microtarea real), pares, caché de descubrimiento y tu contribución.
 simultáneas, tokens y segundos por tarea, solo inactivo o conectado a la
 corriente, y puedes pausar. Los workers sirven solo el modelo base; tu
 memoria y tus archivos nunca se usan.
+
+**Círculos de confianza.** Un círculo es una lista de miembros firmada por su
+dueño, con número de versión y caducidad. En **Swarm → Círculos de confianza**
+puedes crear uno, invitar a otro nodo (código `SWC1…` o QR, de un solo uso y
+con caducidad), aceptar una invitación y aprobar la solicitud de unión. El
+dueño firma una nueva versión del manifiesto al aprobar o revocar; los miembros
+se listan con sus endpoints y roles, y una revocación se comprueba otra vez en
+cada tarea, aunque la conexión ya estuviera abierta. Las versiones antiguas se
+rechazan. Una instalación nueva solo admite pares que estén en un manifiesto
+vigente (*Solo mis círculos*); una instalación anterior a 3.5 conserva la regla
+LAN de 3.4 (*Mis propios dispositivos*) y muestra un aviso hasta que elijas en
+**Ajustes → Swarm → Admisión de pares**. Aceptar una invitación no da
+membresía: el dueño tiene que aprobarla y, hasta entonces, la conexión solo
+puede llevar la solicitud, nunca una tarea. El recibo todavía etiqueta el
+tráfico entre pares como `OWN_NETWORK`; la clase `CIRCLE` y su puerta de salida
+llegan en WP2. Sin TLS mutuo en 3.5, protege la clave del nodo: una clave
+robada puede suplantar a un miembro hasta que el dueño lo revoque.
 
 **Memory.** C0 activa; C1 recupera pasajes de tus fuentes para las
 respuestas hechas en este equipo; C2–C4 en fases posteriores.

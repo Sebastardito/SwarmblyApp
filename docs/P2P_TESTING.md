@@ -5,6 +5,12 @@ discover each other (mDNS), authenticate (Ed25519 bound to TLS 1.3) and
 complete a real distributed micro-task — **without anyone typing an IP**.
 *[Español](#español) below.*
 
+> **3.5 note.** New installations admit peers only through a trusted circle
+> (D-015). This physical test keeps the 3.4 LAN behaviour on purpose: set
+> `circle.admission_mode` to `own_devices` on every node, or create a circle
+> and invite the other node (see *Trusted circles* in `USER_GUIDE.md`). The
+> demo scripts in section 0 set `own_devices` themselves.
+
 ## 0. Rehearsal on one machine (optional, 1 minute)
 
 ```bash
