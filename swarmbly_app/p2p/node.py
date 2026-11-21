@@ -1047,6 +1047,12 @@ class NodeManager:
             result = self.handshake.verify_ack(ack_message, nonce, observed)
             if result.node_id == self.node_id:
                 raise ValueError("connected to ourselves")
+            if result.node_id != node_id:
+                # The relay splices whoever it chooses; the end-to-end
+                # handshake says who is really there. A different member is
+                # not the one this node asked for, so the session is dropped
+                # instead of being registered under a wrong expectation.
+                raise ValueError("the relay paired this node with another node")
             final_ack = self.handshake.build_final_ack(
                 _nonce_bytes(ack_message.get("nonce", "")), observed,
                 self.handshake.advertisement)

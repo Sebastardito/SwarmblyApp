@@ -1,8 +1,9 @@
 """Circle relay (3.5, WP3 / D-016, D-023).
 
-The end-to-end tests import the umbrella's real prototype relay from
-``/Users/seb/Desktop/Dev/P2PAI/Swarmbly-AI_Clean`` and skip with a clear
-reason when that package is not importable. Everything else (manifest fields,
+The end-to-end tests import the umbrella's real prototype relay from the
+directory named by ``SWARMBLY_UMBRELLA`` or, when the App is the umbrella's
+``SwarmblyApp/`` subtree, from the umbrella root, and skip with a clear reason
+when that package is not importable. Everything else (manifest fields,
 pins, publishing, wrong-pin refusal) runs on the App alone.
 """
 
@@ -34,9 +35,21 @@ from swarmbly_app.state import AppState
 
 from conftest import FakeBackend
 
-UMBRELLA = Path("/Users/seb/Desktop/Dev/P2PAI/Swarmbly-AI_Clean")
+def _umbrella_root() -> Path | None:
+    """Where the umbrella's ``relay`` package lives, if anywhere."""
+    import os
+    configured = os.environ.get("SWARMBLY_UMBRELLA", "").strip()
+    if configured:
+        return Path(configured)
+    parent = Path(__file__).resolve().parents[2]   # umbrella/SwarmblyApp/tests
+    return parent if (parent / "relay" / "server.py").is_file() else None
+
+
+UMBRELLA = _umbrella_root()
 RELAY_IMPORT_ERROR = ""
 try:
+    if UMBRELLA is None:
+        raise ImportError("set SWARMBLY_UMBRELLA to the umbrella checkout")
     if str(UMBRELLA) not in sys.path:
         sys.path.insert(0, str(UMBRELLA))
     from relay.client import RelayAddress, RelayClient
