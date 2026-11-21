@@ -685,7 +685,8 @@ class ChatService:
                     with egress.purpose(egress.QUESTION):
                         outcome = self.orchestrator().run(
                             user_text, mode=mode, request_id=request.request_id,
-                            cancel=request.stop_event, history=context[:-1])
+                            cancel=request.stop_event, history=context[:-1],
+                            project_id=request.project_id)
                 except Exception as exc:
                     return self._fail(request, f"swarm execution failed: {exc}")
                 routed = outcome.get("routed")
@@ -2874,7 +2875,8 @@ class ChatService:
                         continue          # this device's own models (local pool)
                     if att.get("code") in ("E_CIRCLE_REQUIRED", "E_EGRESS_DENIED"):
                         continue          # the gate refused: nothing was written
-                    extra_sends.append({
+                    executor = str(att.get("executor") or "")
+                    entry = {
                         "destino": f"nodo {node}",
                         "clase": att.get("destination_class") or egress.OWN_NETWORK,
                         "tipo": egress.FRAGMENT,
@@ -2887,7 +2889,26 @@ class ChatService:
                         # 3.5, D-018: the node role this packet requested.
                         "role": att.get("role") or "",
                         **({"role_fallback": True}
-                           if att.get("role_fallback") else {})})
+                           if att.get("role_fallback") else {})}
+                    if executor == "search" and att.get("query"):
+                        # WP4b: the public query the member ran on the
+                        # requester's behalf. The requester cannot verify
+                        # which engine answered, and says so.
+                        entry.update(
+                            tipo=egress.PUBLIC_QUERY, valor=str(att["query"]),
+                            motivo=("consulta pública en nombre del solicitante: "
+                                    f"{node} la buscó por ti"),
+                            executor="search", on_behalf=True,
+                            engine_unverified=True)
+                    elif att.get("carries_passages"):
+                        entry.update(tipo=egress.PASSAGES,
+                                     motivo=f"pasajes a {node}",
+                                     passages=max(1, int(att.get("passages") or 0)))
+                        if executor:
+                            entry["executor"] = executor
+                    elif executor:
+                        entry["executor"] = executor
+                    extra_sends.append(entry)
             ledger = request.ledger
             public = any(e.get("tipo") == egress.PUBLIC_QUERY and not e.get("bloqueado")
                          for e in (ledger.events if ledger else []))

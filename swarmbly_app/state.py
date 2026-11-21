@@ -18,7 +18,8 @@ from .identity import IdentityManager, NodeIdentity
 from .inference.registry import BackendRegistry
 from .lce_adapter import LCEAdapter
 from .models import ModelManager, family_for
-from .node_roles import derive_roles
+from .node_roles import (configured_corpus_share, corpus_size_bucket,
+                         derive_roles, valid_corpus_name)
 from .paths import DataDirs
 from .p2p.node import NodeManager
 from .p2p.worker import WorkerService
@@ -74,11 +75,12 @@ def _build_advertisement(state: "AppState") -> dict:
     vm = psutil.virtual_memory()
     circles = getattr(state, "circles", None)
     # 3.5, D-018: node roles are only announced while this node is a worker
-    # and only for models it really shares. WP4a derives large_model and
-    # reasoner; search/corpus wait for their executors (WP4b). A role adds
-    # placement information, never a permission.
-    roles = derive_roles([str(m.get("version") or "") for m in models], cfg,
-                         announce=bool(worker_policy.get("kinds")))
+    # and only for models it really shares. large_model/reasoner come from the
+    # models; search/corpus only from the owner's explicit WP4b opt-in. A role
+    # adds placement information, never a permission.
+    roles = state._node_roles([str(m.get("version") or "") for m in models],
+                              announce=bool(worker_policy.get("kinds")),
+                              remote=True)
     return {
         "node_id": state.identity.node_id,
         "models": models,
@@ -445,6 +447,109 @@ class AppState:
                 egress.QUESTION if kind == "query" else egress.PASSAGES)
         return choice.backend.embed(texts, kind)
 
+    # -- node roles and executors (3.5, D-018) ------------------------------------
+    def _corpus_role(self, *, remote: bool = True) -> dict[str, Any] | None:
+        """The corpus metadata this node may advertise, if any.
+
+        The owner picks one project and the circles allowed to retrieve from
+        it. A remote advertisement requires at least one such circle that this
+        node still belongs to; the local pool may use the collection without a
+        circle because nothing leaves the computer. Only the display name and a
+        size bucket leave the node; no title, path or content does.
+        """
+        cfg = self.config.all()
+        share = configured_corpus_share(cfg)
+        if share is None:
+            return None
+        project = self.projects.get(share["project_id"])
+        if project is None:
+            return None
+        circle_ids: list[str] = []
+        if share["circle_ids"]:
+            payload = self.circles.list_payload() if getattr(self, "circles", None) else {}
+            local_ids = {str(c.get("circle_id")) for c in payload.get("circles") or []}
+            circle_ids = [cid for cid in share["circle_ids"] if cid in local_ids]
+        if remote and not circle_ids:
+            return None
+        try:
+            sources = self.lce.list_sources(roots=project.roots())
+            documents = sum(1 for entry in sources if not entry.get("glossary"))
+        except Exception:
+            return None
+        if documents <= 0:
+            return None
+        name = share["display_name"] or project.name.strip()
+        if not share["display_name"] and len(name) > 40:
+            name = name[:40].strip()
+        if not valid_corpus_name(name):
+            return None
+        return {"name": name, "size": corpus_size_bucket(documents),
+                "circle_ids": circle_ids}
+
+    def _node_roles(self, models: list[str], *, announce: bool = True,
+                    remote: bool = True) -> list[dict[str, Any]]:
+        """Node roles for ``models`` (large_model/reasoner/search/corpus)."""
+        corpus = self._corpus_role(remote=remote) if announce else None
+        corpus_meta = ({"name": corpus["name"], "size": corpus["size"]}
+                       if corpus else None)
+        return derive_roles(models, self.config.all(), announce=announce,
+                            corpus_share=corpus_meta)
+
+    def _worker_roles(self, models: list[str] | None = None, *,
+                      announce: bool = True, remote: bool = True
+                      ) -> list[dict[str, Any]]:
+        """Role provider for the worker: shared models and the same settings."""
+        if models is None:
+            models = self.worker.shared_models() if self.worker is not None else []
+        return self._node_roles(models, announce=announce, remote=remote)
+
+    def _circle_for(self, node_id: str) -> dict[str, Any] | None:
+        """The shared trusted circle that admits ``node_id``, if any.
+
+        Executors that send data to a third party (search) or read a shared
+        collection (corpus) require a circle; the explicit *my own devices*
+        mode is not enough. This is deliberately stricter than the 3.4 LAN
+        admission.
+        """
+        circles = getattr(self, "circles", None)
+        if circles is None or circles.mode() != "circle":
+            return None
+        try:
+            payload = circles.list_payload()
+        except Exception:
+            return None
+        for circle in payload.get("circles") or []:
+            if node_id in {str(m.get("node_id")) for m in circle.get("members") or []}:
+                return {"circle_id": str(circle.get("circle_id") or ""),
+                        "circle_name": str(circle.get("name") or "")}
+        return None
+
+    def _public_query(self, text: str, project_id: str = "") -> str:
+        """A public search query from a request, without the user's private
+        terms, or ``""`` when none can be produced.
+
+        Uses the same guard as the chat's public-search proposal and the same
+        160-character bound. Glossary entries and private glossary terms come
+        from the conversation's project (or the personal sources). If a private
+        term survives the guard, nothing is returned, so nothing is sent.
+        """
+        from . import web_search
+        try:
+            roots = self.c1_roots(project_id)
+            glossary = self.lce.glossary_entries(roots=roots)
+            private = web_search.private_terms(text or "")
+            for term in self.lce.glossary_private_terms(roots=roots):
+                if term not in private:
+                    private.append(term)
+            detail = web_search.propose_query_details(
+                text or "", glossary=glossary, private=private)
+            query = str(detail.get("query") or "").strip()[:160]
+            if not query or web_search.contains_private_terms(query, private):
+                return ""
+            return query
+        except Exception:
+            return ""
+
     # -- P2P lifecycle -----------------------------------------------------------
     def _circle_guard(self, node_id: str) -> tuple[bool, str, str]:
         """The worker gate of D-015: membership is checked again per task."""
@@ -458,7 +563,9 @@ class AppState:
             self.worker = WorkerService(
                 self.config, self.db, self.bus, self.identity_manager,
                 self.lce, lambda: self.backends.resolve(self.config.all()),
-                model_info=self.model_info, circle_guard=self._circle_guard)
+                model_info=self.model_info, circle_guard=self._circle_guard,
+                role_provider=self._worker_roles, circle_for=self._circle_for,
+                project_provider=lambda project_id: self.projects.get(project_id))
             self.nodes.start(task_handler=self.worker.handle,
                              cancel_handler=self.worker.cancel)
 
@@ -578,6 +685,7 @@ class AppState:
                 local_model=cfg["model"].get("model_name", ""),
                 latency=self.latency, speed=self.speed,
                 role_stats=self.role_stats, stats_sink=self._client_stats,
+                public_query=self._public_query,
                 local_pool_factory=self._local_pool)
         return self.orchestrator
 
@@ -593,7 +701,7 @@ class AppState:
         # The local pool advertises the roles its own models have, derived
         # exactly like a remote worker's but without the "shared" condition:
         # a role-aware plan can then run entirely on this one node.
-        roles = derive_roles(models, self.config.all(), announce=True)
+        roles = self._node_roles(models, announce=True, remote=False)
         return LocalPool(self.identity.node_id, self.worker, models, families,
                          parallel=int(model_cfg.get("local_parallel", 1) or 1),
                          roles=roles)

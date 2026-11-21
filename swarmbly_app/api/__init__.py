@@ -1333,10 +1333,10 @@ def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
     def swarm_status() -> dict:
         full = state.config.all()
         cfg = full["swarm"]
-        from ..node_roles import derive_roles
         if state.worker is not None:
-            roles = derive_roles(state.worker.shared_models(), full,
-                                 announce=bool(state.worker.policy().get("kinds")))
+            roles = state._node_roles(
+                state.worker.shared_models(), remote=True,
+                announce=bool(state.worker.policy().get("kinds")))
         else:
             roles = []
         return {
@@ -1355,6 +1355,13 @@ def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
                     "large_model_min_b"),
                 "reasoner_models": (full.get("node_roles") or {}).get(
                     "reasoner_models") or [],
+                "search": (full.get("node_roles") or {}).get("search") or
+                {"enabled": False},
+                "corpus": (full.get("node_roles") or {}).get("corpus") or {
+                    "project_id": "", "circle_ids": [], "display_name": ""},
+                # What the corpus role would show peers (name and bucket only).
+                "corpus_advertised": next(
+                    (role for role in roles if role.get("role") == "corpus"), None),
             },
             "worker": state.worker.status() if state.worker else None,
         }
