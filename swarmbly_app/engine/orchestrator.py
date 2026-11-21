@@ -1558,6 +1558,57 @@ def _select_whole(replicas, meta, embedder, lang: str | None,
 _ITEM_LINE = re.compile(r"^\s*[\[(]?(\d{1,3})[\]).:]\s+(.+?)\s*$", re.M)
 _TABLE_ROW = re.compile(r"^\s*\|\s*\**(\d{1,3})\**\s*\|(.*?)\|?\s*$", re.M)
 MAX_ITEM_ANSWER_WORDS = 4      # an answer on the line after its item is short
+# A model that cannot answer sometimes returns only its table's header (or the
+# separator under it). That is not an answer for any item (T10.17).
+_HEADER_CELLS = frozenset("""
+# nº n° no. number num item items elemento elementos
+answer respuesta result resultado value valor status estado
+""".split())
+_SEPARATOR_CELL = re.compile(r"^:?-{3,}:?$")
+
+
+def _table_cells(line: str) -> list[str]:
+    text = str(line or "").strip()
+    if not text.startswith("|"):
+        return []
+    return [cell.strip(" \t*_`>\"'«»") for cell in text.strip("|").split("|")]
+
+
+def _is_separator_row(line: str) -> bool:
+    cells = _table_cells(line)
+    return bool(cells) and all(_SEPARATOR_CELL.fullmatch(cell or "") for cell in cells)
+
+
+def _is_header_row(line: str) -> bool:
+    """A header row: every cell is a label, at least one is a known heading.
+
+    Data cells such as "Aliso" or "9" do not make a header, and a row with a
+    number in its first cell is data (even if a later cell says "Answer").
+    """
+    text = str(line or "").strip()
+    if not text.startswith("|"):
+        return False
+    cells = _table_cells(text)
+    if not cells or any(not cell for cell in cells):
+        return False
+    folded = [cell.casefold().strip(" .:") for cell in cells]
+    if any(cell and _SEPARATOR_CELL.fullmatch(cell) for cell in folded):
+        return False
+    known = [cell in _HEADER_CELLS for cell in folded]
+    if any(known) and all(
+            cell in _HEADER_CELLS or cell == "#" or re.fullmatch(r"\d{1,3}", cell)
+            for cell in folded):
+        return True
+    return any(known) and all(
+        cell in _HEADER_CELLS or cell == "#"
+        or re.fullmatch(r"[^\W\d_][\w .áéíóúñü-]{0,24}", cell, re.I)
+        for cell in cells)
+
+
+def _is_table_header_or_separator(text: str) -> bool:
+    lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    return bool(lines) and all(_is_separator_row(line) or _is_header_row(line)
+                              for line in lines)
 _LABEL_ANYWHERE = re.compile(r"(?:^|(?<=\s))[\[(]?(\d{1,3})[\]).:]\**\s+")
 # A label left inside a value: "1. 7. libro" (renumbered from 1 with the
 # original number kept, P3d.1) or "7.* Asunción".
@@ -1641,10 +1692,14 @@ def _parse_items(text: str, items: dict[int, str]) -> dict[int, str]:
     for row in _TABLE_ROW.finditer(text):
         n = int(row.group(1))
         if n in items and n not in found:
+            if _is_header_row(row.group(0)) or _is_separator_row(row.group(0)):
+                continue
             cells = [c.strip(_STRIP) for c in row.group(2).split("|")]
             cells = [c for c in cells if c and c.casefold() != items[n].strip(_STRIP).casefold()]
-            if cells:
-                found[n] = _item_value(cells[-1], items[n]) or cells[-1]
+            if cells and not all(_SEPARATOR_CELL.fullmatch(c or "") for c in cells):
+                value = _item_value(cells[-1], items[n]) or cells[-1]
+                if not _is_table_header_or_separator(value):
+                    found[n] = value
     missing = [n for n in items if n not in found]
     if missing:
         for line in text.splitlines():
@@ -1680,7 +1735,9 @@ def _parse_items(text: str, items: dict[int, str]) -> dict[int, str]:
                  for ln in text.split("```")[0 if not text.lstrip().startswith("```") else 1]
                  .splitlines()]
         lines = [ln for ln in lines if ln and ln.lower() not in ("markdown", "md", "text")
-                 and not ln.endswith(":")]
+                 and not ln.endswith(":")
+                 and not _is_table_header_or_separator(ln)
+                 and not _is_separator_row(ln)]
         if len(lines) == len(items):
             for n, line in zip(sorted(items), lines):
                 value = _item_value(line, items[n])
@@ -1711,15 +1768,19 @@ def _parse_single_item(text: str, item: str) -> str:
     row first, then the labelled value, then the substituted number.
     """
     text = text or ""
+    if _is_table_header_or_separator(text):
+        return ""
     # A single-row table may keep the item's own number in the first cell
     # ("| 2 | 9 |" for "Ficha 2"): read the last cell, not the row label.
     for row in _TABLE_ROW.finditer(text):
+        if _is_header_row(row.group(0)) or _is_separator_row(row.group(0)):
+            continue
         cells = [c.strip(_STRIP) for c in row.group(2).split("|")]
         cells = [c for c in cells
                  if c and c.casefold() != item.strip(_STRIP).rstrip(".;,").casefold()]
-        if cells:
+        if cells and not all(_SEPARATOR_CELL.fullmatch(c or "") for c in cells):
             value = _item_value(cells[-1], item) or cells[-1]
-            if value:
+            if value and not _is_table_header_or_separator(value):
                 return value
     parsed = _parse_items(text, {1: item})
     if 1 in parsed:
@@ -1731,6 +1792,8 @@ def _parse_single_item(text: str, item: str) -> str:
     if substituted:
         return substituted
     for line in text.splitlines():
+        if _is_table_header_or_separator(line) or _is_separator_row(line):
+            continue
         bare = re.sub(r"^\s*[-*•]\s*", "", line).strip()
         bare = re.sub(r"^\s*[\[(]?\d{1,3}[\]).:]\s*", "", bare).strip()
         value = _item_value(bare, item)
@@ -1749,7 +1812,11 @@ def _item_value(raw: str, item_text: str) -> str:
     elif _SEPARATOR.search(value):
         value = _SEPARATOR.split(value)[-1].strip(_STRIP)
     value = value.rstrip(".;,").strip()
-    return value if value and value.casefold() != item.casefold() else ""
+    if not value or value.casefold() == item.casefold():
+        return ""
+    if _is_table_header_or_separator(value) or _is_separator_row(value):
+        return ""
+    return value
 
 
 class _ItemCheck:

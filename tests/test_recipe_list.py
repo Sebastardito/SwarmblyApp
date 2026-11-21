@@ -342,6 +342,23 @@ def test_a_single_short_wave_is_not_retried(app_state):
     assert len(fake.calls) == 1
 
 
+def test_a_table_header_or_separator_is_not_an_item_answer():
+    from swarmbly_app.engine.orchestrator import _parse_items, _parse_single_item
+
+    header = "| # | Elemento | Respuesta |\n|---|---|---|"
+    assert _parse_items(header, {1: "Ficha uno", 2: "Ficha dos"}) == {}
+    assert _parse_single_item(header, "Ficha uno") == ""
+    numbered = "| 1 | Item | Answer |\n|---|---|---|"
+    assert _parse_items(numbered, {1: "Ficha uno"}) == {}
+    assert _parse_single_item(numbered, "Ficha uno") == ""
+    separator = "|---|---|---|"
+    assert _parse_items(separator, {1: "Ficha uno", 2: "Ficha dos"}) == {}
+    assert _parse_single_item(separator, "Ficha uno") == ""
+    # A real data row still parses.
+    assert _parse_items("| 1 | 9 |\n| 2 | 8 |",
+                        {1: "Ficha uno", 2: "Ficha dos"}) == {1: "9", 2: "8"}
+
+
 def test_item_text_echoed_with_its_own_number_is_parsed():
     from swarmbly_app.engine.orchestrator import _parse_items, _parse_single_item
 
