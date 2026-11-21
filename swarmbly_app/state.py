@@ -179,6 +179,13 @@ class AppState:
         # 3.1: projects — folders of their own, with their chats kept in them
         from .projects import ProjectRegistry
         self.projects = ProjectRegistry(self.config.all, self.config.update)
+        # 3.5, D-019: teams are stored plan templates, per user and optionally
+        # per project; the project registry decides where its file lives.
+        from .teams import TeamStore
+        self.teams = TeamStore(
+            self.dirs.root,
+            project_path=lambda pid: (project.path if (project := self.projects.get(pid))
+                                      else None))
         # 3.4: one broker for every tool call. Approvals are per project, or
         # personal when no project is active. The chat drives the optional
         # agent adapter; the broker is still the only path that invokes a tool.

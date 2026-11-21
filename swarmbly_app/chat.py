@@ -55,6 +55,7 @@ class ActiveRequest:
     list_job: Any = None           # 3.4 recipe 4: the validated ListJob
     skill: Any = None              # 3.4: the activated Skill (quoted material)
     use_tools: bool = False        # 3.4, D-011: this message drives tools via the agent runtime
+    team: Any = None               # 3.5, D-019: a stored team for this request
     task: str = ""                 # the user text this request answers
 
 
@@ -199,6 +200,7 @@ class ChatService:
              allow_public: bool = False,
              web_query: str = "", recipe: str = "",
              list_job: Any = None, skill: Any = None,
+             team: Any = None,
              use_tools: bool = False) -> tuple[dict[str, Any], dict[str, Any]]:
         """Store the user message and start generation.
 
@@ -250,6 +252,7 @@ class ChatService:
         request.recipe = recipe_id
         request.list_job = list_ready
         request.skill = skill
+        request.team = team
         if request.use_tools:
             # D-011: the agent loop is local; the model may still be remote,
             # and its destination policy is checked in the adapter.
@@ -682,17 +685,22 @@ class ChatService:
                 try:
                     # The conversation stays on this device: the orchestrator
                     # rewrites a follow-up locally into a standalone request.
+                    run_kwargs: dict[str, Any] = {
+                        "mode": mode, "request_id": request.request_id,
+                        "cancel": request.stop_event, "history": context[:-1],
+                        "project_id": request.project_id}
+                    if request.team is not None:
+                        # 3.5, D-019: a team replaces the planner, never a gate.
+                        run_kwargs["team"] = request.team
                     with egress.purpose(egress.QUESTION):
-                        outcome = self.orchestrator().run(
-                            user_text, mode=mode, request_id=request.request_id,
-                            cancel=request.stop_event, history=context[:-1],
-                            project_id=request.project_id)
+                        outcome = self.orchestrator().run(user_text, **run_kwargs)
                 except Exception as exc:
                     return self._fail(request, f"swarm execution failed: {exc}")
                 routed = outcome.get("routed")
                 if routed == "distributed":
                     self._finish_distributed(request, outcome["text"],
-                                             outcome["metadata"], outcome["stages"])
+                                             outcome["metadata"], outcome["stages"],
+                                             status=outcome.get("status"))
                     return
                 if routed == "error":
                     if outcome.get("status") == "stopped":
@@ -2415,6 +2423,7 @@ class ChatService:
         tasks = 0
         stages: list[dict[str, Any]] = []
         wave_meta: list[dict[str, Any]] = []
+        wave_failures: list[dict[str, Any]] = []
         local_reasons: list[str] = []
         executed_waves: list[str] = []
         documents_available = False
@@ -2484,15 +2493,35 @@ class ChatService:
                     stages = outcome.get("stages") or stages
                     result_map = self._list_swarm_results(
                         metadata, str(outcome.get("text") or ""), local_items)
+                    if metadata.get("status") in ("partial", "failed"):
+                        # D-019: a partial wave marks the items it could not
+                        # answer as failed with the step's reason; the other
+                        # items of the same wave keep their answers.
+                        reason = self._wave_failure_reason(metadata)
+                        for local_n in local_items:
+                            entry = result_map.get(local_n) or {}
+                            if entry.get("status") in (None, "missing"):
+                                result_map[local_n] = {
+                                    "answer": "", "status": "failed",
+                                    "agreement": 0.0, "reason": reason}
                 elif routed == "error":
                     if outcome.get("status") == "stopped":
                         return self._finish(request, None, status="stopped",
                                             note="interrupted by user",
                                             stages=outcome.get("stages"),
                                             extra={"recipe": "list"})
-                    return self._fail(request, str(outcome.get("reason") or "list wave failed"),
-                                      stages=outcome.get("stages"),
-                                      swarm=outcome.get("metadata"))
+                    # A failed wave no longer aborts the list: its own items
+                    # are marked failed and the following waves still run.
+                    reason = str(outcome.get("reason") or "list wave failed")
+                    metadata = outcome.get("metadata") or {}
+                    attempts.extend(list(metadata.get("attempts") or []))
+                    tasks += int(metadata.get("n_tasks") or 0)
+                    stages = outcome.get("stages") or stages
+                    wave_exec = "failed"
+                    wave_failures.append({"wave": wave_no, "reason": reason[:240]})
+                    result_map = {n: {"answer": "", "status": "failed",
+                                      "agreement": 0.0, "reason": reason[:240]}
+                                  for n in local_items}
                 else:
                     local_reasons.append(str(outcome.get("reason") or
                                              "the swarm path kept this wave local"))
@@ -2529,7 +2558,7 @@ class ChatService:
                   else ["#", "Item", "Answer", "Status"])
         table_rows: list[dict[str, Any]] = []
         rows_data: list[dict[str, Any]] = []
-        counts = {"answered": 0, "missing": 0, "disagreement": 0}
+        counts = {"answered": 0, "missing": 0, "disagreement": 0, "failed": 0}
         for n, item in enumerate(job.items, 1):
             answer = answers.get(n) or {"answer": "", "status": "missing", "agreement": 0.0}
             status = str(answer.get("status") or "missing")
@@ -2537,7 +2566,7 @@ class ChatService:
                 status = "missing"
             counts[status] += 1
             value = str(answer.get("answer") or "").strip()
-            if status == "missing" or not value:
+            if status in ("missing", "failed") or not value:
                 value = "—"
             item_cell = item
             if n in duplicate_map:
@@ -2548,11 +2577,19 @@ class ChatService:
             rows_data.append({"n": n, "item": item, "item_cell": item_cell,
                               "answer": value, "status": status,
                               "agreement": answer.get("agreement"),
+                              "reason": answer.get("reason") or "",
                               "duplicate_of": duplicate_map.get(n)})
         markdown = tables.render(header, table_rows, lang, source=False)
         summary = recipes.summary_line(len(job.items), counts["answered"],
-                                       counts["missing"], counts["disagreement"], lang)
+                                       counts["missing"], counts["disagreement"],
+                                       lang, failed=counts["failed"])
         answer_text = f"{markdown}\n\n{summary}"
+        if wave_failures:
+            answer_text += "\n\n" + ("Olas que fallaron:" if lang == "es"
+                                     else "Waves that failed:")
+            for failure in wave_failures:
+                answer_text += (f"\n- {'Ola' if lang == 'es' else 'Wave'} "
+                                f"{failure['wave']}: {failure['reason']}")
         if documents_used:
             request.receipt_ctx["passages"] = document_passages
         documents_note = ""
@@ -2568,11 +2605,17 @@ class ChatService:
             x == "distributed" for x in executed_waves)
                     else "local" if not executed_waves or all(x == "local" for x in executed_waves)
                     else "mixed")
+        usable = counts["answered"] + counts["disagreement"]
+        list_status = ("failed" if not usable else
+                       "complete" if not (counts["missing"] or counts["failed"])
+                       else "partial")
         list_meta = {"count": len(job.items), "answered": counts["answered"],
                      "missing": counts["missing"], "disagreement": counts["disagreement"],
+                     "failed": counts["failed"], "status": list_status,
                      "where": job.where, "waves": len(waves), "executed": executed,
                      "wave_size": wave_size, "duplicates": len(duplicates),
                      "retries": sum(1 for w in wave_meta if w.get("retried")),
+                     "wave_failures": wave_failures,
                      "partial_reasons": list(dict.fromkeys(local_reasons)),
                      "documents_available": documents_available,
                      "documents_used": documents_used,
@@ -2590,7 +2633,8 @@ class ChatService:
                       "rows_data": rows_data, "documents": [],
                       "empty": counts["missing"], "dropped": [], "computed": 0,
                       "duplicates": len(duplicates)}
-        extra = {"recipe": "list", "table": table_meta, "list": list_meta}
+        extra = {"recipe": "list", "table": table_meta, "list": list_meta,
+                 "answer_status": list_status}
         if executed == "local" and not attempts:
             model = (getattr(orchestrator, "local_model", "") if orchestrator else "") or ""
             result = GenerationResult(text=answer_text, model=model,
@@ -2599,8 +2643,14 @@ class ChatService:
             return self._finish(request, result, extra=extra)
         metadata = {"n_tasks": tasks or len(attempts), "attempts": attempts,
                     "truncated_tasks": [], "mode": "lan", "list": list_meta,
+                    "table": table_meta, "status": list_status,
+                    "missing_steps": [{"step": f"wave {failure['wave']}",
+                                       "status": "failed", "reason": "failed",
+                                       "detail": failure["reason"]}
+                                      for failure in wave_failures],
                     "waves": wave_meta, "partial_reasons": list_meta["partial_reasons"]}
-        return self._finish_distributed(request, answer_text, metadata, stages, extra=extra)
+        return self._finish_distributed(request, answer_text, metadata, stages,
+                                        extra=extra, status=list_status)
 
     @staticmethod
     def _degenerate_wave(local_items: dict[int, str],
@@ -2733,6 +2783,23 @@ class ChatService:
         return result_map, models[0], retried
 
     @staticmethod
+    def _wave_failure_reason(metadata: dict[str, Any]) -> str:
+        """The honest reason of a partial/failed list wave, short enough for a
+        table status and the answer's trailing note."""
+        missing = list((metadata or {}).get("missing_steps") or [])
+        for step in missing:
+            detail = str(step.get("detail") or "").strip()
+            if detail:
+                return " ".join(detail.split())[:240]
+            reason = str(step.get("reason") or "").strip()
+            if reason:
+                return reason
+        note = str((metadata or {}).get("partial_note") or "").strip()
+        if note:
+            return " ".join(note.split())[:240]
+        return "the wave did not complete"
+
+    @staticmethod
     def _list_swarm_results(metadata: dict[str, Any], text: str,
                             local_items: dict[int, str]) -> dict[int, dict[str, Any]]:
         """Per-item results from the existing item-vote metadata, or from the
@@ -2771,12 +2838,29 @@ class ChatService:
     def _finish_distributed(self, request: ActiveRequest, text: str,
                             metadata: dict[str, Any],
                             stages: list[dict[str, Any]],
-                            extra: dict[str, Any] | None = None) -> None:
+                            extra: dict[str, Any] | None = None,
+                            status: str | None = None) -> None:
         """Complete a distributed request: assembled text + SPEC §19 metadata."""
+        answer_status = status or str(metadata.get("status") or "complete")
+        if answer_status == "failed":
+            # Nothing usable completed: an honest failure, not a partial answer.
+            missing = list(metadata.get("missing_steps") or [])
+            detail = ""
+            for step in missing:
+                detail = str(step.get("detail") or step.get("reason") or "").strip()
+                if detail:
+                    break
+            reason = (" ".join(detail.split())[:240]
+                      or "no step could be completed")
+            return self._fail(request, reason, stages=stages, swarm=metadata)
         truncated = metadata.get("truncated_tasks") or []
         note = (f"output reached its token budget in {len(truncated)} task(s); the "
                 "answer may be incomplete" if truncated else "")
+        if answer_status == "partial":
+            note = "partial answer: some steps could not be completed"
         meta: dict[str, Any] = {"status": "done", "note": note,
+                                "answer_status": answer_status,
+                                "partial": answer_status == "partial",
                                 "mode": request.mode, "model": request.model,
                                 "request_id": request.request_id,
                                 "executed": "distributed", "swarm": metadata}

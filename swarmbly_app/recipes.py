@@ -526,12 +526,14 @@ def relevant_list_passages(item: str, passages: list[dict[str, Any]],
 
 
 def summary_line(count: int, answered: int, missing: int, disagreement: int,
-                 lang: str = "en") -> str:
+                 lang: str = "en", failed: int = 0) -> str:
     if lang == "es":
-        return (f"{count} elementos: {answered} respondidos, {missing} faltantes, "
-                f"{disagreement} en desacuerdo.")
-    return (f"{count} items: {answered} answered, {missing} missing, "
-            f"{disagreement} disagreement.")
+        base = (f"{count} elementos: {answered} respondidos, {missing} faltantes, "
+                f"{disagreement} en desacuerdo")
+        return base + (f", {failed} fallidos." if failed else ".")
+    base = (f"{count} items: {answered} answered, {missing} missing, "
+            f"{disagreement} disagreement")
+    return base + (f", {failed} failed." if failed else ".")
 
 
 def _tier_for(text: str, privacy_cfg: dict[str, Any]) -> dict[str, Any]:

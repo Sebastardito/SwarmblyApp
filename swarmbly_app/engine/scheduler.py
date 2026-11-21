@@ -311,7 +311,68 @@ class Replica:
 
 
 class TaskFailed(RuntimeError):
-    pass
+    """A task could not produce a usable replica.
+
+    ``reason`` is a small stable category the orchestrator can report per
+    step (``role_unavailable``, ``no_worker``, ``deadline``,
+    ``policy_refusal``, ``node_lost``, ``failed``); ``code`` is the last
+    stable wire/policy code when there is one.
+    """
+
+    def __init__(self, message: str, *, code: str = "", reason: str = ""):
+        super().__init__(message)
+        self.code = code
+        self.reason = reason
+        self.detail = message
+
+
+def _failure_reason(codes: set[str]) -> str:
+    """The honest category of a failed task, from the attempts' codes."""
+    if codes & {"E_DEADLINE", "E_TIMEOUT"}:
+        return "deadline"
+    if codes & {"E_CIRCLE_REQUIRED", "E_EGRESS_DENIED", "E_POLICY",
+                "E_TIER_VIOLATION"}:
+        return "policy_refusal"
+    if "E_ROLE_UNAVAILABLE" in codes:
+        return "role_unavailable"
+    if codes & {"E_TRANSPORT", "E_DISCONNECTED"}:
+        return "node_lost"
+    return "failed"
+
+
+@dataclass
+class StepState:
+    """What happened to one step of a plan (partial results, D-019)."""
+
+    status: str = "pending"        # pending|completed|failed|blocked
+    reason: str = ""               # stable category, not user prose
+    detail: str = ""               # short English detail for the record
+    blocked_by: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"status": self.status}
+        if self.reason:
+            out["reason"] = self.reason
+        if self.detail:
+            out["detail"] = self.detail
+        if self.blocked_by:
+            out["blocked_by"] = list(self.blocked_by)
+        return out
+
+
+@dataclass
+class LevelsOutcome:
+    """Results that survived, and the state of every step of the plan."""
+
+    results: dict[str, Any] = field(default_factory=dict)
+    states: dict[str, StepState] = field(default_factory=dict)
+
+    def state(self, task_id: str) -> StepState:
+        return self.states.setdefault(task_id, StepState())
+
+
+class RunCancelled(RuntimeError):
+    """The user stopped the request; this stays a stop, not a partial answer."""
 
 
 class Scheduler:
@@ -506,12 +567,14 @@ class Scheduler:
         if requested_role:
             if requested_role not in ("large_model", "reasoner", "search", "corpus"):
                 raise TaskFailed(
-                    f"{task_id}: role {requested_role!r} unavailable: unknown role")
+                    f"{task_id}: role {requested_role!r} unavailable: unknown role",
+                    code="E_ROLE_UNAVAILABLE", reason="role_unavailable")
             if not self._candidates(requested_role, require_passages):
                 if requested_role not in FALLBACK_ROLES:
                     raise TaskFailed(
                         f"{task_id}: role {requested_role!r} unavailable: no worker "
-                        "advertises it")
+                        "advertises it", code="E_ROLE_UNAVAILABLE",
+                        reason="role_unavailable")
                 role_fallback = True
                 effective_role = ""
         k_min = self.k_min if k_min is None else int(k_min)
@@ -589,7 +652,8 @@ class Scheduler:
             if not launch(reason, free_only=free_only):
                 break
         if not inflight:
-            raise TaskFailed(f"{task_id}: no connected worker available")
+            raise TaskFailed(f"{task_id}: no connected worker available",
+                             code="E_NO_WORKER", reason="no_worker")
 
         while inflight and len(accepted) < k_min:
             hedge_after, source, late = self._hedge_after(list(inflight.values()),
@@ -669,9 +733,12 @@ class Scheduler:
                 replica.telemetry = dict(replica.telemetry or {}, degraded=True)
             return [replica for replica, _ in rejected]
         if not accepted:
-            codes = ", ".join(sorted({a.code for a in self.attempts
-                                      if a.task_id == task_id and a.code}))
-            raise TaskFailed(f"{task_id}: all {number} attempt(s) failed ({codes})")
+            codes = {a.code for a in self.attempts
+                     if a.task_id == task_id and a.code}
+            joined = ", ".join(sorted(codes))
+            raise TaskFailed(
+                f"{task_id}: all {number} attempt(s) failed ({joined})",
+                code=next(iter(codes), ""), reason=_failure_reason(codes))
         return accepted
 
     def _hedge_after(self, attempts: list[Attempt], latency_key: str):
@@ -837,26 +904,98 @@ def verify_result(node_id: str, packet: dict[str, Any], result: dict[str, Any]) 
 
 async def run_levels(scheduler: Scheduler, order: list[str],
                      consumed_deps: dict[str, tuple[str, ...]],
-                     run_one: Callable[[str], Awaitable[Any]]) -> dict[str, Any]:
-    """Run tasks as soon as their consumed predecessors are done."""
-    results: dict[str, Any] = {}
+                     run_one: Callable[[str], Awaitable[Any]], *,
+                     outcome: LevelsOutcome | None = None,
+                     deadline: float | None = None,
+                     cancel: Any = None) -> LevelsOutcome:
+    """Run tasks as soon as their consumed predecessors are done.
+
+    A step that cannot be completed does not abort the whole plan (3.5,
+    D-019): its state is recorded, every step that depends on it is marked
+    ``blocked`` and never run, and independent steps continue. ``cancel``
+    (the user's stop) still raises :class:`RunCancelled`; the caller turns
+    that into a stop, never into a partial answer. ``deadline`` is a
+    ``time.monotonic()`` backstop: steps still waiting or running then are
+    marked failed with reason ``deadline``.
+    """
+    out = outcome if outcome is not None else LevelsOutcome()
+    for task_id in order:
+        out.state(task_id)
     remaining = list(order)
     running: dict[asyncio.Task, str] = {}
+
+    def mark_missing(reason: str, detail: str, tasks: list[str]) -> None:
+        for task_id in tasks:
+            state = out.state(task_id)
+            if state.status == "pending":
+                state.status, state.reason, state.detail = "failed", reason, detail
+
     try:
         while remaining or running:
+            if cancel is not None and cancel.is_set():
+                raise RunCancelled()
+            if deadline is not None and time.monotonic() >= deadline:
+                mark_missing("deadline", "the run exceeded its global deadline",
+                             list(remaining))
+                remaining.clear()
+                for task in list(running):
+                    task.cancel()
+                mark_missing("deadline", "the run exceeded its global deadline",
+                             list(running.values()))
+                running.clear()
+                break
+            # Dependencies that will never complete block their dependents;
+            # a blocked step is named with the step that blocked it, not run.
+            for task_id in list(remaining):
+                deps = consumed_deps.get(task_id, ())
+                blocked = [dep for dep in deps
+                           if dep in out.states
+                           and out.states[dep].status in ("failed", "blocked")]
+                if blocked:
+                    state = out.state(task_id)
+                    state.status, state.reason = "blocked", "blocked"
+                    state.blocked_by = tuple(blocked)
+                    state.detail = ("depends on " + ", ".join(blocked))
+                    remaining.remove(task_id)
             ready = [t for t in remaining
-                     if all(d in results for d in consumed_deps.get(t, ()))]
+                     if all(d in out.results for d in consumed_deps.get(t, ()))]
             for task_id in ready:
                 remaining.remove(task_id)
                 running[asyncio.ensure_future(run_one(task_id))] = task_id
             if not running:
-                raise TaskFailed("plan has unsatisfiable dependencies")
-            done, _ = await asyncio.wait(set(running),
+                if remaining:
+                    # No runnable step and no dependency that could explain
+                    # it: this plan cannot make progress.
+                    mark_missing("blocked",
+                                 "the plan has unsatisfiable dependencies",
+                                 list(remaining))
+                    remaining.clear()
+                break
+            timeout = None
+            if cancel is not None or deadline is not None:
+                timeout = 0.2
+            done, _ = await asyncio.wait(set(running), timeout=timeout,
                                          return_when=asyncio.FIRST_COMPLETED)
+            if not done:
+                continue
             for finished in done:
                 task_id = running.pop(finished)
-                results[task_id] = finished.result()   # re-raises TaskFailed
+                try:
+                    out.results[task_id] = finished.result()
+                except asyncio.CancelledError:
+                    out.state(task_id).status = "failed"
+                    out.state(task_id).reason = "cancelled"
+                except TaskFailed as exc:
+                    state = out.state(task_id)
+                    state.status, state.reason = "failed", (exc.reason or "failed")
+                    state.detail = str(exc)[:240]
+                except Exception as exc:  # a bug or a backend seam: one step, not all
+                    state = out.state(task_id)
+                    state.status, state.reason = "failed", "failed"
+                    state.detail = str(exc)[:240]
+                else:
+                    out.state(task_id).status = "completed"
     finally:
         for task in running:
             task.cancel()
-    return results
+    return out

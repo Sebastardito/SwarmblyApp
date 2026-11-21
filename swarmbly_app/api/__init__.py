@@ -897,6 +897,7 @@ def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
     @app.post("/api/conversations/{conv_id}/messages", status_code=202)
     def send_message(conv_id: str, body: dict[str, Any]) -> dict:
         from ..recipes import ListJobError
+        from ..teams import TeamError
         recipe = str(body.get("recipe") or "")
         list_job = body.get("list_job")
         text = str(body.get("text", "")).strip()
@@ -904,19 +905,27 @@ def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
             text = str(list_job.get("operation") or "").strip()
         if not text:
             raise HTTPException(status_code=400, detail="empty message")
+        conv = state.db.get_conversation(conv_id)
+        if conv is None:
+            raise HTTPException(status_code=404, detail="conversation not found")
+        project_id = str(conv.get("project_id") or "")
         skill_name = str(body.get("skill") or "").strip()
         skill_obj = None
         if skill_name:
-            conv = state.db.get_conversation(conv_id)
-            if conv is None:
-                raise HTTPException(status_code=404,
-                                    detail=f"unknown conversation {conv_id}")
-            project_id = str(conv.get("project_id") or "")
             if not project_id:
                 raise HTTPException(
                     status_code=400,
                     detail="skills belong to a project; open a project first")
             skill_obj = _load_skill(project_id, skill_name)
+        team_obj = None
+        team_id = str(body.get("team_id") or "").strip()
+        if team_id:
+            try:
+                team_obj = state.teams.get(team_id, project_id)
+            except TeamError as exc:
+                status = 404 if exc.code == "E_TEAM_UNKNOWN" else 400
+                raise HTTPException(status_code=status,
+                                    detail=f"{exc.code}: {exc.detail}") from exc
         try:
             user_msg, assistant_msg = state.chat.send(
                 conv_id, text,
@@ -925,6 +934,7 @@ def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
                 allow_public=bool(body.get("allow_public")),
                 web_query=str(body.get("web_query") or ""),
                 recipe=recipe, list_job=list_job, skill=skill_obj,
+                team=team_obj,
                 use_tools=bool(body.get("use_tools")))
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -1402,6 +1412,49 @@ def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
         state.config.update(changes)
         state.on_config_changed()
         return state.worker.status() if state.worker else {"policy": {}}
+
+    # ---- teams (3.5, D-019) -----------------------------------------------------------
+    def _team_call(action, *args, **kwargs):
+        from ..teams import (E_TEAM_BUILTIN, E_TEAM_UNKNOWN, TeamError)
+        try:
+            return action(*args, **kwargs)
+        except TeamError as exc:
+            if exc.code == E_TEAM_UNKNOWN:
+                status = 404
+            elif exc.code == E_TEAM_BUILTIN:
+                status = 403
+            else:
+                status = 400
+            raise HTTPException(status_code=status,
+                                detail=f"{exc.code}: {exc.detail}") from exc
+
+    @app.get("/api/teams")
+    def teams_list(project: str | None = None) -> dict:
+        return state.teams.payload(_project_id(project))
+
+    @app.post("/api/teams")
+    def teams_create(body: dict) -> dict:
+        project_id = _project_id(body.get("project_id"), body)
+        return _team_call(state.teams.create, body, project_id)
+
+    @app.put("/api/teams/{team_id}")
+    def teams_update(team_id: str, body: dict) -> dict:
+        project_id = _project_id(body.get("project_id"), body)
+        return _team_call(state.teams.update, team_id, body, project_id)
+
+    @app.delete("/api/teams/{team_id}")
+    def teams_delete(team_id: str, project: str | None = None) -> dict:
+        project_id = _project_id(project)
+        _team_call(state.teams.delete, team_id, project_id)
+        return {"deleted": team_id}
+
+    @app.post("/api/teams/{team_id}/duplicate")
+    def teams_duplicate(team_id: str, body: dict | None = None) -> dict:
+        body = body or {}
+        project_id = _project_id(body.get("project_id"), body)
+        name = body.get("name")
+        return _team_call(state.teams.duplicate, team_id, project_id,
+                          str(name) if name else None)
 
     # ---- trusted circles (3.5, D-015) ------------------------------------------------
     def _circle_call(action, *args, **kwargs):
