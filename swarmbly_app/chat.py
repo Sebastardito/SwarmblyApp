@@ -58,6 +58,7 @@ class ActiveRequest:
     team: Any = None               # 3.5, D-019: a stored team for this request
     task: str = ""                 # the user text this request answers
     lang: str = ""                 # T10.17: the conversation's language for this answer
+    partial_text: str = ""         # T10.17: what was already streamed before a stop
 
 
 # Possessives and "about me" in es/en/pt (not French "mes", the Spanish month);
@@ -909,6 +910,7 @@ class ChatService:
                 raise IncompleteSettings("no model selected")
 
             def on_delta(delta: str) -> None:
+                request.partial_text += delta
                 self.bus.publish("chat.delta", request_id=request.request_id,
                                  conversation_id=conv_id,
                                  message_id=request.message_id, delta=delta)
@@ -3164,6 +3166,13 @@ class ChatService:
         if result is not None:
             content = result.text
             meta.update(result.to_dict())
+        elif status == "stopped":
+            # A cancel must leave a message: what was already streamed plus a
+            # plain note saying the answer was stopped (T10.17).
+            partial = (request.partial_text or "").strip()
+            stopped = _stopped_note(request.lang or _lang(request.task or ""))
+            content = f"{partial}\n\n{stopped}" if partial else stopped
+            meta["partial"] = bool(partial)
         self._attach_receipt(request, meta, content)
         try:
             if result is not None:
@@ -3803,6 +3812,12 @@ _LIST_STATUS = {
     "en": {"answered": "answered", "missing": "missing",
            "disagreement": "disagreement", "failed": "failed"},
 }
+
+
+def _stopped_note(lang: str) -> str:
+    es = lang == "es"
+    return ("Se detuvo la respuesta a tu petición." if es
+            else "The answer was stopped at your request.")
 
 
 def _list_status_label(status: str, lang: str) -> str:
