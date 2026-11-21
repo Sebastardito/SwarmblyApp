@@ -1331,7 +1331,14 @@ def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
     # ---- swarm (Phase 2) --------------------------------------------------------------
     @app.get("/api/swarm")
     def swarm_status() -> dict:
-        cfg = state.config.all()["swarm"]
+        full = state.config.all()
+        cfg = full["swarm"]
+        from ..node_roles import derive_roles
+        if state.worker is not None:
+            roles = derive_roles(state.worker.shared_models(), full,
+                                 announce=bool(state.worker.policy().get("kinds")))
+        else:
+            roles = []
         return {
             **state.nodes.status(),
             "config": {k: cfg.get(k) for k in
@@ -1340,6 +1347,15 @@ def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
                         "worker_allow_internet", "worker_max_concurrent",
                         "worker_only_idle", "k_min", "k_max",
                         "n_fragments_max", "discovery_enabled")},
+            # 3.5, D-018: what this node advertises now, and the two settings
+            # that derive large_model/reasoner (search/corpus wait for WP4b).
+            "roles": roles,
+            "node_roles": {
+                "large_model_min_b": (full.get("node_roles") or {}).get(
+                    "large_model_min_b"),
+                "reasoner_models": (full.get("node_roles") or {}).get(
+                    "reasoner_models") or [],
+            },
             "worker": state.worker.status() if state.worker else None,
         }
 

@@ -18,6 +18,7 @@ from .identity import IdentityManager, NodeIdentity
 from .inference.registry import BackendRegistry
 from .lce_adapter import LCEAdapter
 from .models import ModelManager, family_for
+from .node_roles import derive_roles
 from .paths import DataDirs
 from .p2p.node import NodeManager
 from .p2p.worker import WorkerService
@@ -72,9 +73,16 @@ def _build_advertisement(state: "AppState") -> dict:
                            "ctx": None, "tok_per_s_est": None})
     vm = psutil.virtual_memory()
     circles = getattr(state, "circles", None)
+    # 3.5, D-018: node roles are only announced while this node is a worker
+    # and only for models it really shares. WP4a derives large_model and
+    # reasoner; search/corpus wait for their executors (WP4b). A role adds
+    # placement information, never a permission.
+    roles = derive_roles([str(m.get("version") or "") for m in models], cfg,
+                         announce=bool(worker_policy.get("kinds")))
     return {
         "node_id": state.identity.node_id,
         "models": models,
+        "roles": roles,
         "capabilities": {"tee": False, "attestation": None},
         "swarm": None,
         "resources": {"vram_mb": None, "ram_mb": int(vm.total // (1024 ** 2)),
@@ -141,8 +149,10 @@ class AppState:
         self.console = ConsoleReporter(self.bus, lambda: self.nodes.peers)
         self.orchestrator = None  # built lazily with a live local backend
         self.latency = None       # p95 history shared across orchestrator rebuilds
-        from .engine.scheduler import SpeedStats
+        from .engine.scheduler import RoleStats, SpeedStats
         self.speed = SpeedStats()  # tokens/s per (node, model), shared the same way
+        # 3.5, D-018: per-role outcomes per node, shared across requests.
+        self.role_stats = RoleStats()
         self.chat = ChatService(self.db, self.bus, self.backends,
                                 self.config.all, self.get_orchestrator)
         self.chat.report_sink = self._auto_report
@@ -566,7 +576,8 @@ class AppState:
             self.orchestrator = Orchestrator(
                 self.nodes, self.bus, local_stream, self.config.all,
                 local_model=cfg["model"].get("model_name", ""),
-                latency=self.latency, speed=self.speed, stats_sink=self._client_stats,
+                latency=self.latency, speed=self.speed,
+                role_stats=self.role_stats, stats_sink=self._client_stats,
                 local_pool_factory=self._local_pool)
         return self.orchestrator
 
@@ -579,8 +590,13 @@ class AppState:
             return None
         families = {m: family_for(m, (self.model_info(m) or {}).get("family", ""))
                     for m in models}
+        # The local pool advertises the roles its own models have, derived
+        # exactly like a remote worker's but without the "shared" condition:
+        # a role-aware plan can then run entirely on this one node.
+        roles = derive_roles(models, self.config.all(), announce=True)
         return LocalPool(self.identity.node_id, self.worker, models, families,
-                         parallel=int(model_cfg.get("local_parallel", 1) or 1))
+                         parallel=int(model_cfg.get("local_parallel", 1) or 1),
+                         roles=roles)
 
     def _auto_report(self, request_id: str) -> None:
         from .reports import render_report

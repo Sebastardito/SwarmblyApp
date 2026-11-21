@@ -39,13 +39,16 @@ class LocalPeer:
 
 class LocalPool:
     def __init__(self, node_id: str, worker, models: list[str], families: dict[str, str],
-                 parallel: int = 1):
+                 parallel: int = 1, roles: list[dict[str, Any]] | None = None):
         self.worker = worker
         self.models = list(models)
         self.peer = LocalPeer(
             node_id=node_id,
             advertisement={"models": [{"family": families.get(m) or family_for(m),
                                        "version": m} for m in self.models],
+                           # 3.5, D-018: same node-role derivation as a remote
+                           # worker, without the "shared" condition.
+                           "roles": list(roles or []),
                            "policy": {"kinds": ["generate"], "max_concurrent": max(1, parallel)}})
 
     async def dispatch(self, message: dict[str, Any], timeout_s: float) -> dict[str, Any]:
