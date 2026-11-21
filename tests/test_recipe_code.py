@@ -509,8 +509,11 @@ def test_recipe5_script_reads_the_text_and_the_spreadsheet(
 
 # ---- T10.17: the script writer is the configured chat model -----------------
 
-def test_code_uses_the_conversation_model_not_the_composition_writer(
+def test_code_uses_the_writer_role_and_falls_back_to_the_conversation_model(
         app_state, tmp_path, monkeypatch):
+    """Recipe 5 writes the script with the ``writer`` role (3.4 design); with
+    no writer configured it uses the conversation's model. Either way the
+    proposal records the model that really wrote it."""
     _as_available(monkeypatch, app_state)
     project, _ = _project(app_state, tmp_path)
 
@@ -520,11 +523,7 @@ def test_code_uses_the_conversation_model_not_the_composition_writer(
 
     fake = TwoModels("```python\nprint('ok')\n```")
     app_state.backends.resolve = lambda config=None: fake
-    app_state.config.update({
-        "model": {"model_name": "configured:7b"},
-        "compose": {"model": "big:27b"},
-        "roles": {"writer": {"model": "big:27b"}},
-    })
+    app_state.config.update({"model": {"model_name": "configured:7b"}})
     conv = app_state.chat.create_conversation(mode="local", model="configured:7b",
                                               project_id=project.id)
     proposal = app_state.chat.propose_code(
@@ -532,6 +531,13 @@ def test_code_uses_the_conversation_model_not_the_composition_writer(
         files=["hive.csv"])
     assert fake.calls[-1]["model"] == "configured:7b"
     assert proposal["model"] == "configured:7b"
+
+    app_state.config.update({"roles": {"writer": {"model": "big:27b"}}})
+    proposal = app_state.chat.propose_code(
+        conversation_id=conv["id"], question="sum the weights",
+        files=["hive.csv"])
+    assert fake.calls[-1]["model"] == "big:27b"
+    assert proposal["model"] == "big:27b"
     assert proposal["backend"] == "fake"
 
 

@@ -2050,10 +2050,13 @@ class ChatService:
     def _code_choice(self, cfg: dict[str, Any], model: str) -> Any:
         """The model the recipe-5 script writer uses.
 
-        The documented setting is the conversation's model (the one the chat
-        selector sends); ``compose.model`` and ``roles.writer`` are for
-        compositions with the user's sources and must not silently replace it
-        (T10.17: the evaluation saw a different model than the one configured).
+        As designed in 3.4 (recipe 5), the script is written by the
+        ``writer`` model role, which falls back to the conversation's model
+        when no writer is configured. The evaluation saw a larger model than
+        the conversation's because a writer was configured; that was the
+        documented behaviour, and what was missing was the record. The actual
+        model and backend are now recorded in the proposal, the metadata and
+        the receipt (T10.17).
         """
         from . import roles
         backend = self.registry.resolve(cfg)
@@ -2061,7 +2064,7 @@ class ChatService:
         if not model:
             listed = backend.list_models() or [""]
             model = str(listed[0] or "")
-        return roles.Choice("chat", model, backend)
+        return roles.choose("writer", cfg, backend, model, self.registry, passages=True)
 
     @staticmethod
     def _code_destination(choice: Any) -> dict[str, Any]:

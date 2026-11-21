@@ -27,10 +27,10 @@
 - **A table header is not a list answer.** Header and separator rows are
   rejected as missing by the list parser, so a model that only echoes its
   table header gets the item marked like any other empty answer.
-- **Recipe 5 records the model that wrote the script.** The script writer now
-  follows the conversation's configured model (not `compose.model` or the
-  composition writer), and `meta.code`/the receipt state the actual model and
-  backend.
+- **Recipe 5 records the model that wrote the script.** The script is still
+  written by the `writer` model role (the conversation's model when no writer
+  is configured), as designed in 3.4; the proposal, `meta.code` and the
+  receipt now state the actual model and backend.
 
 **First-launch sandbox preparation and doctor export, WP7 App part
 (R-005/R-014).**
