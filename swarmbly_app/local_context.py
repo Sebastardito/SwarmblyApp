@@ -260,6 +260,12 @@ def _inflection_variants(word: str) -> list[str]:
     return out[:24]
 
 
+def _concept_key(word: str) -> str:
+    """A short prefix that makes inflected labels meet (recolectar/recolectó)."""
+    folded = _query_stem(word)
+    return folded[:5] if len(folded) >= 4 else folded
+
+
 def glossary_equivalents(question: str, glossary: list[tuple[str, str]] | None) -> list[str]:
     """Every label of a glossary concept the question names, in any language.
 
@@ -268,7 +274,7 @@ def glossary_equivalents(question: str, glossary: list[tuple[str, str]] | None) 
     equivalent.
     """
     from .memory_capture import split_private_mark
-    words = {_query_stem(word) for word in _query_words(question)}
+    words = {_concept_key(word) for word in _query_words(question)}
     if not words:
         return []
     out: list[str] = []
@@ -279,7 +285,7 @@ def glossary_equivalents(question: str, glossary: list[tuple[str, str]] | None) 
             continue
         labels = [term, *[e.strip() for e in equivalents.split(",") if e.strip()]]
         labels = [label for label in labels if label]
-        stems = {_query_stem(label) for label in labels}
+        stems = {_concept_key(label) for label in labels}
         if not (words & stems):
             continue
         for label in labels:

@@ -2442,6 +2442,7 @@ class ChatService:
             "request_id": proposal["proposal_id"],
             "executed": "local",
             "recipe": "code",
+            "model_backend": writer_backend,
             "model_destination": destination,
             "code": {
                 "script_sha256": sha,
@@ -3531,6 +3532,29 @@ def _strip_tool_markup(text: str) -> str:
         return match.group(0)
 
     text = re.sub(r"(?is)```(?:json|tool_call|tool)?\s*(\{.*?\})\s*```", fenced, text)
+    # A JSON tool object anywhere in the prose, nested arguments included:
+    # scan real JSON values instead of guessing with a regex.
+    decoder = json.JSONDecoder()
+    pieces: list[str] = []
+    cursor = 0
+    while cursor < len(text):
+        start = text.find("{", cursor)
+        if start < 0:
+            pieces.append(text[cursor:])
+            break
+        pieces.append(text[cursor:start])
+        try:
+            value, end = decoder.raw_decode(text[start:])
+        except ValueError:
+            pieces.append("{")
+            cursor = start + 1
+            continue
+        if _tool_object(value):
+            cursor = start + end
+        else:
+            pieces.append(text[start:start + end])
+            cursor = start + end
+    text = "".join(pieces)
     # A bare JSON object on its own line(s): keep it only when it is not a tool call.
     def line(match: re.Match[str]) -> str:
         body = match.group(0).strip()
