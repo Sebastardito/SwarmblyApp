@@ -204,6 +204,12 @@ class Attempt:
     latency_key: str = ""
     started_at: float | None = None   # sent; reset when it leaves the slot queue
     hedged: bool = False              # already triggered a speed hedge
+    # D-017: the destination class and the circle/member the receipt names.
+    destination_class: str = ""
+    circle_id: str = ""
+    circle_name: str = ""
+    member_name: str = ""
+    passages: int = 0                 # document passages in this packet
 
     def to_dict(self) -> dict[str, Any]:
         out = self._base()
@@ -217,7 +223,10 @@ class Attempt:
                 "model": self.model, "reason": self.reason,
                 "status": self.status, "code": self.code,
                 "elapsed_ms": self.elapsed_ms, "tokens_out": self.tokens_out,
-                "bytes_out": self.bytes_out, "bytes_in": self.bytes_in}
+                "bytes_out": self.bytes_out, "bytes_in": self.bytes_in,
+                "destination_class": self.destination_class,
+                "circle_id": self.circle_id, "circle_name": self.circle_name,
+                "member_name": self.member_name, "passages": self.passages}
 
 
 @dataclass
@@ -240,7 +249,8 @@ class Scheduler:
                  timeout_s: float, hedge_fallback_s: float,
                  latency: LatencyStats, kind: str = "generate",
                  min_params_b: float = 0.0, queue_retries: bool = True,
-                 speed: SpeedStats | None = None):
+                 speed: SpeedStats | None = None,
+                 passage_texts: list[str] | None = None):
         self.nodes = nodes
         # Models below this size are not used (tags without a size always are).
         self.min_params_b = float(min_params_b)
@@ -250,6 +260,9 @@ class Scheduler:
         # (P3b.3': queued retries waited 50 s and then timed out anyway).
         self.queue_retries = bool(queue_retries)
         self.speed = speed or SpeedStats()
+        # D-017: the list recipe passes the texts it attached; each attempt
+        # records how many of them its packet really carried.
+        self.passage_texts = [str(text) for text in (passage_texts or []) if text]
         self._max_tokens = 0          # budget of the task being dispatched
         # After a timeout or a cancelled hedge the worker may still be
         # finishing (older workers ignore "cancel"): keep its slot for a
@@ -398,11 +411,14 @@ class Scheduler:
             used_nodes.add(peer.node_id)
             multi = len(peer.advertisement.get("models") or []) > 1
             message = build(number, family if multi else None, model if multi else None)
+            packet_text = str(message)
             attempt = Attempt(task_id, number, peer.node_id, family, reason,
                               model=model,
-                              bytes_out=len(str(message)),
+                              bytes_out=len(packet_text),
                               max_tokens=int(max_tokens), latency_key=latency_key,
-                              started_at=time.monotonic())
+                              started_at=time.monotonic(),
+                              passages=sum(1 for text in self.passage_texts
+                                           if text in packet_text))
             number += 1
             self.attempts.append(attempt)
             self._load[peer.node_id] += 1
@@ -553,6 +569,14 @@ class Scheduler:
                 await asyncio.sleep(wait)
             attempt.started_at = time.monotonic()
             try:
+                destination = self.nodes.classify_peer(node_id)
+            except Exception:
+                destination = {}
+            attempt.destination_class = str(destination.get("clase") or "")
+            attempt.circle_id = str(destination.get("circle_id") or "")
+            attempt.circle_name = str(destination.get("circle_name") or "")
+            attempt.member_name = str(destination.get("member_name") or "")
+            try:
                 result = await self.nodes.dispatch_async(node_id, message,
                                                          self.timeout_s)
             except asyncio.CancelledError:
@@ -562,6 +586,10 @@ class Scheduler:
                 attempt.status = "failed"
                 attempt.code = getattr(exc, "code", "") or "E_TRANSPORT"
                 attempt.note = str(getattr(exc, "detail", "") or exc)[:160]
+                if attempt.code in ("E_CIRCLE_REQUIRED", "E_EGRESS_DENIED"):
+                    # D-017: the gate refused before the write; no bytes left.
+                    attempt.bytes_out = 0
+                    attempt.passages = 0
                 if attempt.code in ("E_EXECUTION", "E_DEADLINE", "E_TRANSPORT"):
                     self.speed.record_failure(node_id)
                 if "backend unavailable" in attempt.note.lower():

@@ -24,6 +24,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from .. import egress
 from ..config import Config
 from ..db import Database
 from ..events import EventBus
@@ -621,6 +622,13 @@ class NodeManager:
                                                "peer disconnected"))
 
     # -- dispatch API (called from engine threads) ---------------------------------------
+    def classify_peer(self, node_id: str) -> dict[str, Any]:
+        """The destination class of a peer send (D-017), from the circle service."""
+        if self.circles is None:
+            raise CircleError(E_CIRCLE_REQUIRED,
+                              "circle service is not available")
+        return self.circles.classify_peer(node_id)
+
     def dispatch(self, node_id: str, packet_message: dict[str, Any],
                  timeout_s: float = 120.0) -> dict[str, Any]:
         return self._call(self.dispatch_async(node_id, packet_message, timeout_s),
@@ -636,6 +644,33 @@ class NodeManager:
             raise PeerError("E_CIRCLE_REQUIRED",
                             f"node {node_id[:12]} is not admitted to a circle")
         attempt_id = str(packet_message.get("attempt_id", ""))
+        # D-017: every peer send passes the egress gate before a byte is
+        # written. The class comes from the circle service, not from the
+        # address: a shared circle is CIRCLE, the explicit my-own-devices mode
+        # is OWN_NETWORK, and anything else is refused. A refusal raises before
+        # ``_write`` below, so no packet reaches the peer.
+        refusal: CircleError | None = None
+        try:
+            destination = self.classify_peer(node_id)
+        except CircleError as exc:
+            refusal = exc
+            destination = {"clase": "", "circle_id": "", "circle_name": "",
+                           "member_name": "", "member_node": node_id[:12]}
+        try:
+            egress.check_call(
+                f"peer://{node_id}", len(str(packet_message)),
+                f"fragmento {attempt_id}", kind=egress.FRAGMENT,
+                destination_class=str(destination.get("clase") or ""),
+                destination_label=f"nodo {node_id[:12]}",
+                circle_id=destination.get("circle_id", ""),
+                circle_name=destination.get("circle_name", ""),
+                member_name=destination.get("member_name", ""),
+                peer_node=node_id[:12],
+                **({"circle_required": True} if refusal is not None else {}))
+        except egress.EgressDenied as exc:
+            if refusal is not None:
+                raise PeerError(refusal.code, refusal.detail) from exc
+            raise PeerError("E_EGRESS_DENIED", str(exc)) from exc
         loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
         future.node_id = node_id  # type: ignore[attr-defined]

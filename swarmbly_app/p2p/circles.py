@@ -33,7 +33,7 @@ import zlib
 from pathlib import Path
 from typing import Any, Iterable
 
-from .. import qr
+from .. import egress, qr
 from ..identity import IdentityManager, b64url, b64url_decode
 from .messages import WIRE_VERSION, canonical_bytes, error, verify_signed
 
@@ -398,6 +398,13 @@ class CircleStore:
     def save_outgoing(self, records: dict[str, dict[str, Any]]) -> None:
         self._atomic_write(self._dir("outgoing") / "requests.json", records)
 
+    def load_settings(self) -> dict[str, Any]:
+        data = self._read(self._dir("settings") / "circle.json", {})
+        return data if isinstance(data, dict) else {}
+
+    def save_settings(self, settings: dict[str, Any]) -> None:
+        self._atomic_write(self._dir("settings") / "circle.json", settings)
+
 
 # ---------------------------------------------------------------------------
 # The service
@@ -417,6 +424,11 @@ class CircleService:
         self.invitations: dict[str, dict[str, Any]] = {}
         self.joins: dict[str, list[dict[str, Any]]] = {}
         self.outgoing: dict[str, dict[str, Any]] = {}
+        # 3.5, D-017: per-circle switches stored with the circle on this node,
+        # never inside the signed manifest (the owner's signature must not
+        # change when a member turns passages on). They default to off, so an
+        # existing privacy.third_party_passages=true never enables them.
+        self._settings: dict[str, bool] = {}
         self._load()
 
     # -- identity and configuration -----------------------------------------
@@ -432,6 +444,96 @@ class CircleService:
     def mode(self) -> str:
         mode = str(self.config.get("circle.admission_mode") or "circle")
         return mode if mode in ("circle", "own_devices") else "circle"
+
+    # -- D-017: destination class and passages to a circle -------------------
+    def circle_passages(self, circle_id: str) -> bool:
+        """Whether this node may attach document passages for this circle."""
+        with self._lock:
+            return bool(self._settings.get(circle_id, False))
+
+    def set_circle_passages(self, circle_id: str, enabled: bool) -> dict[str, Any]:
+        manifest = self._manifest(circle_id)
+        if not self._is_member(manifest, self.node_id):
+            raise CircleError(E_CIRCLE_NOT_MEMBER,
+                              "only a member of the circle can change its setting")
+        validate_manifest(manifest, now=int(time.time()))
+        with self._lock:
+            self._settings[circle_id] = bool(enabled)
+            self.store.save_settings({"passages": dict(self._settings)})
+        self.bus.publish("circle.passages", circle_id=circle_id,
+                         enabled=bool(enabled))
+        return {"circle_id": circle_id, "circle_passages": bool(enabled)}
+
+    def classify_peer(self, peer_node_id: str) -> dict[str, Any]:
+        """Classify one outbound task send for the egress gate (D-017).
+
+        In the explicit *my own devices* mode the 3.4 LAN rule is the
+        authorisation: ``OWN_NETWORK``. In circle-only mode the peer must be
+        listed by a valid shared manifest; it is then ``CIRCLE`` with the
+        circle and the member named. Anything else raises: a peer outside
+        every circle is refused, never labelled.
+        """
+        short = peer_node_id[:12]
+        if self.mode() == "own_devices":
+            return {"clase": egress.OWN_NETWORK, "circle_id": "",
+                    "circle_name": "", "member_name": "", "member_node": short}
+        if not _valid_node_id(peer_node_id):
+            raise CircleError(E_CIRCLE_SCHEMA, "invalid peer node_id")
+        candidates = self._local_candidates(peer_node_id)
+        if not candidates:
+            raise CircleError(E_CIRCLE_REQUIRED,
+                              "no valid, unexpired circle manifest lists both nodes")
+        # A peer may share more than one circle. Prefer a circle whose
+        # passages switch is on, so the receipt names the circle that
+        # governed the send; otherwise the first by name.
+        chosen = sorted(candidates, key=lambda m: (
+            not self.circle_passages(str(m["circle_id"])),
+            str(m.get("name") or "").casefold(), str(m["circle_id"])))[0]
+        member = self._member(chosen, peer_node_id) or {}
+        return {"clase": egress.CIRCLE,
+                "circle_id": str(chosen["circle_id"]),
+                "circle_name": str(chosen.get("name") or ""),
+                "member_name": str(member.get("name") or ""),
+                "member_node": short}
+
+    def own_devices_passages(self) -> bool:
+        return bool(self.config.get("circle.own_devices_passages"))
+
+    def peer_passages_allowed(self, peer_node_id: str) -> tuple[bool, str]:
+        """Whether passages may be attached to a send to this peer."""
+        if self.mode() == "own_devices":
+            if self.own_devices_passages():
+                return True, ""
+            return False, ("the my-own-devices passages switch is off")
+        candidates = self._local_candidates(peer_node_id)
+        for manifest in sorted(candidates, key=lambda m: (
+                str(m.get("name") or "").casefold(), str(m["circle_id"]))):
+            if self.circle_passages(str(manifest["circle_id"])):
+                return True, ""
+        return False, "no shared circle has circle_passages on"
+
+    def swarm_passages_allowed(self, peer_ids: Iterable[str]) -> tuple[bool, str]:
+        """Conservative check for a wave that one prompt may send to all peers.
+
+        Passages are attached only when every remote destination is allowed to
+        receive them. A wave with no remote destination stays local and is
+        always fine.
+        """
+        ids = [str(pid) for pid in peer_ids if str(pid)]
+        if not ids:
+            return True, "no remote destination"
+        for peer_id in ids:
+            allowed, why = self.peer_passages_allowed(peer_id)
+            if not allowed:
+                return False, why
+        return True, ""
+
+    def set_own_devices_passages(self, enabled: bool) -> dict[str, Any]:
+        if self.mode() != "own_devices":
+            raise CircleError(E_CIRCLE_SCHEMA,
+                              "the my-own-devices switch only applies in that mode")
+        self.config.update({"circle.own_devices_passages": bool(enabled)})
+        return {"own_devices_passages": bool(enabled)}
 
     def display_name(self) -> str:
         configured = str(self.config.get("circle.node_name") or "").strip()
@@ -484,6 +586,15 @@ class CircleService:
         self.invitations = self.store.load_invitations()
         self.joins = self.store.load_joins()
         self.outgoing = self.store.load_outgoing()
+        settings = self.store.load_settings()
+        passages = settings.get("passages") if isinstance(settings, dict) else {}
+        if isinstance(passages, dict):
+            self._settings = {str(cid): bool(value) for cid, value in passages.items()
+                              if isinstance(value, bool)}
+        # A setting for a circle this node no longer holds is dead weight.
+        for circle_id in list(self._settings):
+            if circle_id not in self.manifests:
+                self._settings.pop(circle_id, None)
         for circle_id, records in list(self.joins.items()):
             if not isinstance(records, list):
                 self.joins[circle_id] = []
@@ -1189,6 +1300,8 @@ class CircleService:
             with self._lock:
                 self.manifests.pop(circle_id, None)
                 self.store.delete_manifest(circle_id)
+                self._settings.pop(circle_id, None)
+                self.store.save_settings({"passages": dict(self._settings)})
             self.bus.publish("circle.dissolved", circle_id=circle_id)
             return
         if manifest["owner"] != self.node_id:
@@ -1325,6 +1438,8 @@ class CircleService:
                 self.store.delete_manifest(circle_id)
                 self.outgoing.pop(circle_id, None)
                 self.store.save_outgoing(self.outgoing)
+                self._settings.pop(circle_id, None)
+                self.store.save_settings({"passages": dict(self._settings)})
                 for nonce, record in list(self.invitations.items()):
                     if record.get("circle_id") == circle_id:
                         self.invitations.pop(nonce, None)
@@ -1346,6 +1461,8 @@ class CircleService:
             self.store.delete_manifest(circle_id)
             self.outgoing.pop(circle_id, None)
             self.store.save_outgoing(self.outgoing)
+            self._settings.pop(circle_id, None)
+            self.store.save_settings({"passages": dict(self._settings)})
             self.joins.pop(circle_id, None)
         self.bus.publish("circle.left", circle_id=circle_id)
         return {"left": circle_id}
@@ -1382,12 +1499,15 @@ class CircleService:
                 "issued_at": int(manifest["issued_at"]),
                 "expires_at": int(manifest["expires_at"]),
                 "members": [dict(m) for m in manifest["members"]],
+                "circle_passages": self.circle_passages(manifest["circle_id"]),
                 "pending_joins": joins.get(manifest["circle_id"], [])
                 if is_owner else [],
             })
         circles.sort(key=lambda c: c["name"].lower())
         return {
             "admission_mode": self.mode(),
+            "own_devices_passages": bool(
+                self.config.get("circle.own_devices_passages")),
             "notice_pending": bool(self.config.get("circle.notice_pending")),
             "own_devices_notice": bool(
                 self.config.get("circle.notice_pending"))

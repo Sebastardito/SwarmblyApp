@@ -66,6 +66,9 @@ class Directory:
     nodes: Any                      # NodeManager (remote peers) or None
     local: LocalPool | None = None
     remote_allowed: bool = True
+    # D-017: when a list wave carries document passages, only peers whose
+    # circle switch is on may receive it. ``None`` means no filter.
+    allowed_remote: set[str] | None = None
     peers: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -78,7 +81,9 @@ class Directory:
     def available_workers(self, kind: str = "generate") -> list[Any]:
         out = []
         if self.remote_allowed and self.nodes is not None:
-            out.extend(self.nodes.available_workers(kind))
+            out.extend(peer for peer in self.nodes.available_workers(kind)
+                       if self.allowed_remote is None
+                       or peer.node_id in self.allowed_remote)
         if self.local is not None:
             out.append(self.local.peer)
         return out
@@ -87,6 +92,15 @@ class Directory:
         return sum(max(1, int((w.advertisement.get("policy") or {})
                               .get("max_concurrent") or 1))
                    for w in self.available_workers())
+
+    def classify_peer(self, node_id: str) -> dict[str, Any]:
+        """Destination class for a send (D-017): local pool, circle, own network."""
+        if self.local is not None and node_id == self.local.peer.node_id:
+            return {"clase": egress.LOCAL, "circle_id": "", "circle_name": "",
+                    "member_name": "", "member_node": ""}
+        if not self.remote_allowed or self.nodes is None:
+            raise PeerError("E_TIER_VIOLATION", "remote dispatch not allowed")
+        return self.nodes.classify_peer(node_id)
 
     async def dispatch_async(self, node_id: str, message: dict[str, Any],
                              timeout_s: float) -> dict[str, Any]:
