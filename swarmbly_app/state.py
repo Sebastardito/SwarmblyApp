@@ -17,7 +17,7 @@ from .events import EventBus
 from .identity import IdentityManager, NodeIdentity
 from .inference.registry import BackendRegistry
 from .lce_adapter import LCEAdapter
-from .models import ModelManager
+from .models import ModelManager, family_for
 from .paths import DataDirs
 from .p2p.node import NodeManager
 from .p2p.worker import WorkerService
@@ -66,7 +66,7 @@ def _build_advertisement(state: "AppState") -> dict:
     if worker_policy.get("kinds") and state.worker is not None:
         for name in state.worker.shared_models():
             info = state.model_info(name)
-            models.append({"family": info.get("family") or name.split(":")[0],
+            models.append({"family": family_for(name, info.get("family", "")),
                            "version": name,
                            "quantization": info.get("quantization", ""),
                            "ctx": None, "tok_per_s_est": None})
@@ -553,7 +553,7 @@ class AppState:
         models = [m for m in (model_cfg.get("local_models") or []) if m]
         if not model_cfg.get("multi_model") or len(models) < 2 or self.worker is None:
             return None
-        families = {m: (self.model_info(m) or {}).get("family") or m.split(":")[0]
+        families = {m: family_for(m, (self.model_info(m) or {}).get("family", ""))
                     for m in models}
         return LocalPool(self.identity.node_id, self.worker, models, families,
                          parallel=int(model_cfg.get("local_parallel", 1) or 1))

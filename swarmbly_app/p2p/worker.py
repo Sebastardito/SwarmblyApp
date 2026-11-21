@@ -28,6 +28,7 @@ from ..events import EventBus
 from ..identity import IdentityManager
 from ..inference.base import Interrupted, StreamBackend
 from ..lce_adapter import LCEAdapter
+from ..models import family_for
 from .messages import canonical_bytes, error, result
 
 ALLOWED_KINDS = ("extract", "classify", "generate", "summarize",
@@ -223,7 +224,7 @@ class WorkerService:
         if wanted:
             matches = []
             for name in shared:
-                fam = (self.model_info(name) or {}).get("family") or model_family(name)
+                fam = family_for(name, (self.model_info(name) or {}).get("family", ""))
                 base = model_family(name)
                 if wanted in (fam, base, name) or base.startswith(wanted) \
                         or str(fam).startswith(wanted):
@@ -281,7 +282,7 @@ class WorkerService:
         tokens_out = (backend.last.completion_tokens
                       if backend.last is not None else None)
         profile = {
-            "model_family": info.get("family") or model_family(model_name),
+            "model_family": family_for(model_name, info.get("family", "")),
             "model_version": model_name,
             "quantization": info.get("quantization", ""),
             "prompt_template_id": "swarmbly-app/packet-v1",

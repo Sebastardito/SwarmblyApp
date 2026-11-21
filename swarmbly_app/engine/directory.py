@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .. import egress
+from ..models import family_for
 from ..p2p.node import PeerError
 
 
@@ -43,7 +44,7 @@ class LocalPool:
         self.models = list(models)
         self.peer = LocalPeer(
             node_id=node_id,
-            advertisement={"models": [{"family": families.get(m) or m.split(":")[0],
+            advertisement={"models": [{"family": families.get(m) or family_for(m),
                                        "version": m} for m in self.models],
                            "policy": {"kinds": ["generate"], "max_concurrent": max(1, parallel)}})
 

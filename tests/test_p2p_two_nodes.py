@@ -9,6 +9,7 @@ scheduling, consensus, assembly and metadata — is the production code path.
 from __future__ import annotations
 
 import itertools
+import sys
 import time
 
 import pytest
@@ -80,6 +81,14 @@ def nodes(tmp_path):
 
 
 class TestDiscoveryWithoutIPs:
+    # mDNS is multicast; GitHub's Windows runners do not deliver it reliably
+    # (the runner network blocks UDP 5353), and a skipped announcement would
+    # make these look like a product defect. The loopback handshake and task
+    # tests below run on Windows; only discovery is skipped there.
+    pytestmark = pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="mDNS multicast is not available on GitHub Windows runners")
+
     def test_mdns_discovery_and_handshake(self, nodes):
         """The v0.1 acceptance path: no IP is typed anywhere."""
         worker, _ = nodes("W", worker=True, lan=True)
@@ -201,7 +210,7 @@ class TestDistributed:
         swarm = final["meta"]["swarm"]
         assert final["meta"]["status"] == "done", final["meta"]
         assert swarm["consensus"] is not None
-        assert set(swarm["consensus"]["families"]) == {"llama3.2", "qwen2.5"}
+        assert set(swarm["consensus"]["families"]) == {"llama", "qwen2"}
         assert "not accuracy" in swarm["consensus"]["interpretation"]
         per_task_families = [set(b["families"]) for b in
                              swarm["consensus"]["per_task"].values()]
@@ -313,7 +322,7 @@ class TestLocalMultiModel:
         assert final["meta"]["executed"] == "distributed", final["meta"]
         assert swarm["router"]["whole_request_replicas"] is True
         assert swarm["n_tasks"] == 1
-        assert set(swarm["consensus"]["families"]) == {"llama3.2", "qwen2.5"}
+        assert set(swarm["consensus"]["families"]) == {"llama", "qwen2"}
 
     def test_prose_with_k1_streams_locally(self, nodes):
         client, _ = nodes("C", extra=self._multi())
