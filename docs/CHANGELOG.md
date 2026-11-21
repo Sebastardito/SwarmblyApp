@@ -1,6 +1,26 @@
 # Changelog
 
-## Unreleased — 3.5 (work in progress)
+## 0.8.0 — Teams and trusted circles (2026-11-21)
+
+Swarmbly AI 3.5. Teams and trusted circles. Trusted circles with signed
+membership manifests and invitations by code or QR, checked at the handshake
+and at the worker gate (new installs are circle-only); a `CIRCLE` destination
+class, with every peer send through the egress gate and receipts that name it;
+off-LAN work through the circle's own relay (pinned TLS, end-to-end TLS through
+the splice, the owner pushing each manifest version over the network); node
+roles (large model, reasoner, and opt-in search and corpus executors); teams as
+stored plan templates with honest partial results (complete, partial or
+failed; dependent steps blocked, never guessed); reciprocity credits as signed,
+non-transferable receipts, offered only to a busy worker, with double spends
+detected at the issuer; first-launch sandbox preparation with a 4 GiB floor and
+an explicit override (`--prepare-sandbox --force`, `{"force": true}`); a doctor
+export built from an allow-list; and the leftovers of the 3.4 evaluation (MCP
+suspensions shown to the user, no raw tool block, the conversation language in
+every recipe, recipe 5 on the writer role with the model actually used
+recorded). The P2P tests now also run on Windows. No sealed bank was run for
+this version: bank v5 is prepared and runs once, by the author, before the
+beta. Off-LAN runs between real machines and signed installers (Apple and
+Windows accounts) are still pending.
 
 **App leftovers from the 3.4 evaluation, WP9 (T10.17).**
 
