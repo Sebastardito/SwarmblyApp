@@ -11,10 +11,12 @@ the notice, the API and the doctor export ask:
 When a compile is requested it runs in one daemon thread and publishes
 ``sandbox.prepare`` events (``starting`` → ``compiling`` → ``ready``/``failed``),
 so the chat loop is never blocked. A machine with less than
-:data:`~swarmbly_app.sandbox.cache.MIN_FREE_MEMORY_BYTES` free is refused even
-when the user presses «Prepare now»: the peak is ~3.3 GB and a 4 GB floor keeps
-the OS out of swap. The raw failure reason stays local; the doctor export only
-sees its stable code.
+:data:`~swarmbly_app.sandbox.cache.MIN_FREE_MEMORY_BYTES` free is refused by
+the automatic/first-launch start and by a plain «Prepare now»: the peak is
+~3.3 GB and a 4 GB floor keeps the OS out of swap. An explicit, informed
+``force=True`` may override that floor (never automatically); it records
+``forced: true`` and the free memory at start, and the measured peak afterwards.
+The raw failure reason stays local; the doctor export only sees its stable code.
 """
 
 from __future__ import annotations
@@ -104,6 +106,11 @@ class SandboxPreparation:
             "estimate_basis": estimate["estimate_basis"],
             "can_prepare": bool(installed and status != "ready" and not running
                                 and estimate["enough_memory"]),
+            "can_force": bool(installed and status not in ("ready", "preparing")
+                              and not running
+                              and not estimate["enough_memory"]),
+            "forced": bool(state.get("forced")),
+            "started_free_memory_gb": state.get("started_free_memory_gb"),
             "notice": notice,
             "snoozed_until": _iso(snoozed_until) if snoozed_until else None,
             "measurement": _public_measurement(measurement),
@@ -134,8 +141,16 @@ class SandboxPreparation:
         return str(compiled.get("status") or "missing")
 
     # -- actions ------------------------------------------------------------
-    def start(self, *, trigger: str = "user") -> dict[str, Any]:
-        """Start the background compile when it is safe; never block the caller."""
+    def start(self, *, trigger: str = "user", force: bool = False) -> dict[str, Any]:
+        """Start the background compile; never block the caller.
+
+        ``force=True`` is the explicit, informed override for a machine below
+        the free-memory floor. The automatic trigger ignores it, so an
+        ``auto`` start is never forced; a plain start (``force=False``) keeps
+        the floor.
+        """
+        if trigger == "auto":
+            force = False
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 return {"started": False, "reason_code": "already_preparing",
@@ -146,6 +161,7 @@ class SandboxPreparation:
                     self.root, status="failed", stage="failed",
                     reason_code=_ERROR_REASONS["not_installed"],
                     reason="the optional sandbox extra is not installed",
+                    forced=False, started_free_memory_gb=None,
                     finished_at=cache.utc_now())
                 return {"started": False, "reason_code": "not_installed",
                         "status": self.status()}
@@ -156,7 +172,8 @@ class SandboxPreparation:
                 return {"started": False, "reason_code": "already_ready",
                         "status": self.status()}
             estimate = cache.estimate_prepare(self.root, memory_probe=self._memory)
-            if not estimate["enough_memory"]:
+            low_memory = not estimate["enough_memory"]
+            if low_memory and not force:
                 free = estimate["free_memory_gb"]
                 reason = (f"free memory could not be measured; at least "
                           f"{estimate['minimum_free_memory_gb']} GB are required"
@@ -166,15 +183,19 @@ class SandboxPreparation:
                 self._state = cache.write_state(
                     self.root, status="refused", stage="refused",
                     reason_code=_ERROR_REASONS["low_memory"],
-                    reason=reason, trigger=trigger,
+                    reason=reason, trigger=trigger, forced=False,
+                    started_free_memory_gb=None,
                     finished_at=cache.utc_now(), snoozed_until=0)
                 self._publish("refused", reason_code="low_memory",
                               free_memory_gb=estimate["free_memory_gb"],
                               minimum_free_memory_gb=estimate["minimum_free_memory_gb"])
                 return {"started": False, "reason_code": "low_memory",
                         "status": self.status()}
+            forced = bool(force)
             self._state = cache.write_state(
                 self.root, status="preparing", stage="starting", trigger=trigger,
+                forced=forced,
+                started_free_memory_gb=estimate["free_memory_gb"],
                 reason_code="", reason="", started_at=cache.utc_now(),
                 finished_at=None, elapsed_s=None, snoozed_until=0)
             self._publish("preparing", stage="starting")
@@ -240,6 +261,7 @@ class SandboxPreparation:
     def _publish(self, status: str, **fields: Any) -> None:
         if self.bus is None:
             return
+        fields.setdefault("forced", bool(self._state.get("forced")))
         try:
             self.bus.publish("sandbox.prepare", status=status, **fields)
         except Exception:

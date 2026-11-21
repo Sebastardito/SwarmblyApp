@@ -557,7 +557,8 @@ def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
         body = body or {}
         if body.get("consent") is False:
             raise HTTPException(status_code=400, detail="explicit consent is required")
-        result = state.sandbox.start(trigger="user")
+        # Only a real JSON true overrides the floor; strings or numbers do not.
+        result = state.sandbox.start(trigger="user", force=body.get("force") is True)
         if result.get("reason_code") == "low_memory":
             detail = (str((result.get("status") or {}).get("last_error"))
                       or "not enough free memory to prepare the sandbox")

@@ -122,7 +122,8 @@ def private_state(app_state, tmp_path, monkeypatch):
     from swarmbly_app.sandbox import cache as sandbox_cache
     sandbox_cache.write_state(
         app_state.dirs.root / "sandbox", status="failed", stage="failed",
-        reason_code="sandbox_compile_failed", reason=canaries["prompt"])
+        reason_code="sandbox_compile_failed", reason=canaries["prompt"],
+        forced=True, started_free_memory_gb=2.0)
     from swarmbly_app.sandbox import SandboxPreparation
     app_state.sandbox = SandboxPreparation(
         app_state.dirs.root / "sandbox", app_state.bus,
@@ -167,6 +168,7 @@ def test_export_schema_and_no_extra_top_level_keys(private_state):
     assert data["schema"] == doctor_export.SCHEMA_VERSION
     assert data["system"]["gpu"] == {"class": "unified", "count": 1}
     assert data["sandbox"]["status"] == "failed"
+    assert data["sandbox"]["forced"] is True
     assert data["sandbox"]["last_error_code"] == "sandbox_compile_failed"
     assert data["ollama"] == {"reachable": True, "model_tags": ["qwen2.5:3b"]}
     assert data["p2p"]["peers"] == 2 and data["p2p"]["circles"] == 1

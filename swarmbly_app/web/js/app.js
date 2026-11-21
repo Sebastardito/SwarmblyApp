@@ -225,9 +225,10 @@ const SandboxNotice = (() => {
     }
     if (state === "ready") {
       const m = s.measurement || {};
-      return t("sandbox.ready")
+      const line = t("sandbox.ready")
         .replace("{time}", m.elapsed_s ?? "—")
         .replace("{peak}", m.peak_rss_mib ?? "—");
+      return s.forced ? line + t("sandbox.forcedNote") : line;
     }
     if (state === "failed") {
       return t("sandbox.failed").replace("{reason}", s.last_error || t("sandbox.state.failed"));
@@ -241,10 +242,11 @@ const SandboxNotice = (() => {
       .replace("{memory}", s.expected_memory_gb ?? "—");
   }
 
-  async function prepare(onChange) {
+  async function prepare(onChange, force = false) {
     try {
-      await Api.post("/api/sandbox/prepare", { consent: true });
-      UI.toast(t("sandbox.preparingToast"), "ok");
+      await Api.post("/api/sandbox/prepare", { consent: true, force: !!force });
+      UI.toast(force ? t("sandbox.forcingToast") : t("sandbox.preparingToast"),
+        force ? "" : "ok");
     } catch (err) {
       UI.toast(err.message, "error");
     }
@@ -273,6 +275,9 @@ const SandboxNotice = (() => {
     if (s.installed && s.enough_memory === false) {
       box.appendChild(h("p.error", t("sandbox.free").replace("{free}", s.free_memory_gb ?? "—")
         .replace("{min}", s.minimum_free_memory_gb ?? "—")));
+      if (s.status !== "ready" && s.status !== "preparing") {
+        box.appendChild(h("p.sandbox-warning", t("sandbox.forceWarning")));
+      }
     }
     if (!compact && s.status === "ready") {
       const m = s.measurement || {};
@@ -282,9 +287,15 @@ const SandboxNotice = (() => {
         readout(t("sandbox.expected"), `${s.expected_seconds} s · ${s.expected_memory_gb} GB`, "estimated")));
     }
     const actions = h("div.sandbox-actions");
-    if (s.can_prepare && s.status !== "preparing") {
+    if (s.installed && s.status !== "ready" && s.status !== "preparing") {
+      // The plain action always keeps the floor; below it the API refuses and
+      // the explicit second button is the informed override.
       actions.appendChild(button(s.status === "failed" ? t("sandbox.retry") : t("sandbox.prepareNow"),
-        () => prepare(onChange), "primary small"));
+        () => prepare(onChange, false), "primary small"));
+    }
+    if (s.can_force && s.status !== "preparing") {
+      actions.appendChild(button(t("sandbox.prepareAnyway"),
+        () => prepare(onChange, true), "danger small"));
     }
     if (s.installed && s.status !== "ready" && s.status !== "preparing") {
       actions.appendChild(button(t("sandbox.later"), () => later(onChange), "ghost small"));

@@ -94,9 +94,9 @@ SCHEMA: dict[str, Any] = {
             "type": "object", "additionalProperties": False,
             "required": ["status", "installed", "cache_bytes", "expected_seconds",
                          "expected_memory_gb", "minimum_free_memory_gb",
-                         "free_memory_gb", "can_prepare", "prepared_at",
-                         "compile_seconds", "peak_memory_mib", "wasi_python",
-                         "last_error_code"],
+                         "free_memory_gb", "can_prepare", "forced",
+                         "prepared_at", "compile_seconds", "peak_memory_mib",
+                         "wasi_python", "last_error_code"],
             "properties": {
                 "status": {"enum": ["not_installed", "missing", "stale",
                                     "preparing", "ready", "failed", "refused"]},
@@ -107,6 +107,7 @@ SCHEMA: dict[str, Any] = {
                 "minimum_free_memory_gb": {"type": "number"},
                 "free_memory_gb": {"type": ["number", "null"]},
                 "can_prepare": {"type": "boolean"},
+                "forced": {"type": "boolean"},
                 "prepared_at": {"type": ["string", "null"]},
                 "compile_seconds": {"type": ["number", "null"]},
                 "peak_memory_mib": {"type": ["number", "null"]},
@@ -339,8 +340,8 @@ def _sandbox(state: Any) -> dict[str, Any]:
             "status": "not_installed", "installed": False, "cache_bytes": 0,
             "expected_seconds": 60.0, "expected_memory_gb": 3.3,
             "minimum_free_memory_gb": 4.0, "free_memory_gb": None,
-            "can_prepare": False, "prepared_at": None, "compile_seconds": None,
-            "peak_memory_mib": None, "wasi_python": None,
+            "can_prepare": False, "forced": False, "prepared_at": None,
+            "compile_seconds": None, "peak_memory_mib": None, "wasi_python": None,
             "last_error_code": None,
         }
     try:
@@ -350,8 +351,8 @@ def _sandbox(state: Any) -> dict[str, Any]:
             "status": "failed", "installed": False, "cache_bytes": 0,
             "expected_seconds": 60.0, "expected_memory_gb": 3.3,
             "minimum_free_memory_gb": 4.0, "free_memory_gb": None,
-            "can_prepare": False, "prepared_at": None, "compile_seconds": None,
-            "peak_memory_mib": None, "wasi_python": None,
+            "can_prepare": False, "forced": False, "prepared_at": None,
+            "compile_seconds": None, "peak_memory_mib": None, "wasi_python": None,
             "last_error_code": "sandbox_status_failed",
         }
     measurement = status.get("measurement") or {}
@@ -366,6 +367,7 @@ def _sandbox(state: Any) -> dict[str, Any]:
             status.get("minimum_free_memory_gb") or 4.0),
         "free_memory_gb": status.get("free_memory_gb"),
         "can_prepare": bool(status.get("can_prepare")),
+        "forced": bool(status.get("forced")),
         "prepared_at": measurement.get("prepared_at"),
         "compile_seconds": measurement.get("elapsed_s"),
         "peak_memory_mib": measurement.get("peak_rss_mib"),
@@ -461,7 +463,8 @@ def render_text(data: dict[str, Any]) -> str:
         f"(minimum {sandbox.get('minimum_free_memory_gb')} GB)",
         f"  prepared: {sandbox.get('prepared_at') or 'never'}; "
         f"compile {sandbox.get('compile_seconds')} s; "
-        f"peak {sandbox.get('peak_memory_mib')} MiB",
+        f"peak {sandbox.get('peak_memory_mib')} MiB; "
+        f"forced={'yes' if sandbox.get('forced') else 'no'}",
         f"  wasi-python: {sandbox.get('wasi_python') or 'unknown'}; "
         f"last error: {sandbox.get('last_error_code') or 'none'}",
         "",

@@ -36,6 +36,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--prepare-sandbox", action="store_true",
                         help="compile the optional sandbox cache and exit "
                              "(for the umbrella installer; no server is started)")
+    parser.add_argument("--force", action="store_true",
+                        help="with --prepare-sandbox, override the free-memory floor "
+                             "after an explicit warning; the umbrella installer "
+                             "never passes it by itself")
     args = parser.parse_args(argv)
 
     if args.prepare_sandbox:
@@ -200,8 +204,13 @@ def _prepare_sandbox(args) -> int:
     estimate = (f"{status['expected_seconds']:g} s and "
                 f"{status['expected_memory_gb']:g} GB expected; "
                 f"{status['free_memory_gb']} GB free")
+    force = bool(getattr(args, "force", False))
+    if force:
+        print("swarmbly-app: --force was given: the compile may take minutes and "
+              "slow this computer or swap; close other applications first.",
+              file=sys.stderr)
     print(f"swarmbly-app: preparing the sandbox cache ({estimate})…", flush=True)
-    started = preparation.start(trigger="installer")
+    started = preparation.start(trigger="installer", force=force)
     if started.get("reason_code") == "low_memory":
         print(f"swarmbly-app: refused: {started['status'].get('last_error')}",
               file=sys.stderr)

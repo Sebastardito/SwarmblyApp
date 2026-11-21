@@ -4,6 +4,7 @@ fake and the cache manifest is written through the same code path."""
 
 from __future__ import annotations
 
+import json
 import threading
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from swarmbly_app.events import EventBus
 from swarmbly_app.recipes import CodeUnavailableError
 from swarmbly_app.sandbox import cache
 from swarmbly_app.sandbox.prepare import SandboxPreparation
+from test_api_lce import make_client
 
 GIB = 1024 ** 3
 
@@ -100,7 +102,7 @@ def test_notice_only_when_extra_installed_and_cache_unready(tmp_path, monkeypatc
     assert status["status"] == "stale" and status["notice"] is True
 
 
-def test_low_memory_is_never_started_even_on_an_explicit_click(tmp_path):
+def test_low_memory_is_refused_without_force(tmp_path):
     fake = FakeRunner(tmp_path)
     preparation = make(tmp_path, runner=fake, free=2 * GIB)
     result = preparation.start(trigger="user")
@@ -108,8 +110,75 @@ def test_low_memory_is_never_started_even_on_an_explicit_click(tmp_path):
     assert fake.calls == 0 and not fake.started.is_set()
     status = preparation.status()
     assert status["status"] == "refused" and status["notice"] is True
-    assert status["can_prepare"] is False
+    assert status["can_prepare"] is False and status["can_force"] is True
+    assert status["forced"] is False
     assert status["last_error_code"] == "low_memory"
+
+
+def test_forced_start_below_the_floor_is_recorded(tmp_path):
+    bus = EventBus()
+    events: list[dict] = []
+    bus.subscribe(lambda event: events.append(event)
+                  if event["type"] == "sandbox.prepare" else None)
+    fake = FakeRunner(tmp_path)
+    fake.release.clear()
+    preparation = make(tmp_path, runner=fake, free=2 * GIB, bus=bus)
+
+    result = preparation.start(trigger="user", force=True)
+    assert result["started"] is True and result["reason_code"] == ""
+    assert fake.started.wait(2)
+    running = preparation.status()
+    assert running["status"] == "preparing"
+    assert running["forced"] is True
+    assert running["started_free_memory_gb"] == 2.0
+
+    fake.release.set()
+    final = preparation.wait(5)
+    assert final["status"] == "ready"
+    assert final["forced"] is True
+    assert final["started_free_memory_gb"] == 2.0
+    assert final["measurement"]["peak_rss_mib"] == 3300.0
+    state = cache.read_state(tmp_path)
+    assert state["forced"] is True
+    assert state["started_free_memory_gb"] == 2.0
+    assert state["peak_rss_mib"] == 3300.0
+    assert events and all(event["payload"].get("forced") is True
+                          for event in events)
+    assert {"preparing", "ready"} <= {
+        event["payload"].get("status") for event in events}
+
+
+def test_automatic_start_can_never_be_forced(tmp_path):
+    fake = FakeRunner(tmp_path)
+    preparation = make(tmp_path, runner=fake, free=2 * GIB)
+    # Even if a caller passes force, the automatic trigger ignores it and
+    # keeps the floor.
+    refused = preparation.start(trigger="auto", force=True)
+    assert refused["started"] is False and refused["reason_code"] == "low_memory"
+    assert refused["status"]["forced"] is False
+    assert fake.calls == 0
+
+
+def test_api_force_starts_below_the_floor(app_state, tmp_path):
+    fake = FakeRunner(tmp_path)
+    preparation = make(tmp_path, runner=fake, free=2 * GIB)
+    app_state.sandbox = preparation
+    client = make_client(app_state)
+
+    refused = client.post("/api/sandbox/prepare",
+                          json={"consent": True})
+    assert refused.status_code == 409
+    assert preparation.status()["status"] == "refused"
+
+    forced = client.post("/api/sandbox/prepare",
+                         json={"consent": True, "force": True})
+    assert forced.status_code == 200, forced.text
+    assert forced.json()["started"] is True
+    assert preparation.wait(5)["status"] == "ready"
+    status = client.get("/api/sandbox").json()
+    assert status["forced"] is True
+    assert status["started_free_memory_gb"] == 2.0
+    assert fake.calls == 1
 
 
 def test_request_during_preparation_runs_without_the_code_recipe(app_state, tmp_path,
@@ -176,6 +245,7 @@ def test_measurement_reaches_the_doctor_export(app_state, tmp_path, monkeypatch)
     assert data["sandbox"]["compile_seconds"] == 4.5
     assert data["sandbox"]["peak_memory_mib"] == 3300.0
     assert data["sandbox"]["wasi_python"] == "0.1.5"
+    assert data["sandbox"]["forced"] is False
 
 
 def test_failed_compile_is_visible_and_not_retried_silently(tmp_path):
@@ -207,12 +277,14 @@ class FakeCliPrep:
         self._start = start or {"started": True, "reason_code": "", "status": status}
         self._final = final or status
         self.started = 0
+        self.force_seen: bool | None = None
 
     def status(self) -> dict:
         return self._status
 
-    def start(self, *, trigger: str = "user") -> dict:
+    def start(self, *, trigger: str = "user", force: bool = False) -> dict:
         self.started += 1
+        self.force_seen = force
         return self._start
 
     def wait(self, timeout: float) -> dict:
@@ -244,6 +316,7 @@ def test_prepare_sandbox_flag_exit_codes(tmp_path, monkeypatch):
                                               "status": low})
     _install_fake_cli(monkeypatch, fake)
     assert cli.main(args) == 3
+    assert fake.force_seen is False
 
     failed = _base_status(status="failed", last_error="compile failed")
     fake = FakeCliPrep(_base_status(), start={"started": True, "reason_code": "",
@@ -264,3 +337,34 @@ def test_prepare_sandbox_flag_exit_codes(tmp_path, monkeypatch):
     _install_fake_cli(monkeypatch, already)
     assert cli.main(args) == 0
     assert already.started == 0
+
+
+def test_prepare_sandbox_force_flag(tmp_path, monkeypatch):
+    ready = _base_status(status="ready", measurement={"elapsed_s": 4.5,
+                                                      "peak_rss_mib": 3300.0})
+    fake = FakeCliPrep(
+        _base_status(), start={"started": True, "reason_code": "",
+                               "status": _base_status(status="preparing")},
+        final=ready)
+    _install_fake_cli(monkeypatch, fake)
+    assert cli.main(["--prepare-sandbox", "--force",
+                     "--data-dir", str(tmp_path)]) == 0
+    assert fake.force_seen is True
+
+
+def test_ui_force_strings_exist_in_english_and_spanish():
+    base = Path(__file__).resolve().parents[1] / "swarmbly_app" / "web" / "i18n"
+    for language in ("en", "es"):
+        data = json.loads((base / f"{language}.json").read_text(encoding="utf-8"))
+        sandbox = data["sandbox"]
+        for key in ("prepareAnyway", "forceWarning", "forcingToast", "forcedNote"):
+            assert sandbox.get(key), (language, key)
+    english = json.loads((base / "en.json").read_text(encoding="utf-8"))["sandbox"]
+    spanish = json.loads((base / "es.json").read_text(encoding="utf-8"))["sandbox"]
+    assert "Prepare anyway" in english["prepareAnyway"]
+    assert "Preparar de todos modos" in spanish["prepareAnyway"]
+    assert "swap" in english["forceWarning"] and "swap" in spanish["forceWarning"]
+    ui = (base.parent / "js" / "app.js").read_text(encoding="utf-8")
+    assert "sandbox.prepareAnyway" in ui
+    assert "sandbox.forceWarning" in ui
+    assert "s.can_force" in ui

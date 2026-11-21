@@ -555,3 +555,7 @@ pre.code-preview {
   font-size: 12.5px;
   line-height: 1.5;
 }
+
+/* Explicit low-memory override: a warning, not an error, and never the
+   default action. */
+.sandbox-warning { margin: 0; color: var(--pollen); font-size: 12.5px; }
