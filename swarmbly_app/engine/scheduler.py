@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from ..events import EventBus
+from ..node_roles import FALLBACK_ROLES, models_for_role
 from ..p2p.messages import verify_signed
 
 MAX_RESULT_CHARS = 64_000
@@ -154,6 +155,55 @@ class SpeedStats:
         return None if not tps else max_tokens / tps
 
 
+class RoleStats:
+    """Observed per-role outcomes per node, in memory (3.5, D-018).
+
+    A node's advertised role is a self-declared claim and is never trusted as
+    proof. Placement learns from what actually happened: a node whose role
+    attempt failed recently is deprioritised for that role for a while, but it
+    is still chosen when no other role-capable worker is left. Nothing here is
+    persisted or sent to peers.
+    """
+
+    FAILURE_MEMORY_S = 300.0
+
+    def __init__(self) -> None:
+        self._failed_at: dict[tuple[str, str], float] = {}
+        self._ok: dict[tuple[str, str], int] = {}
+        self._failed: dict[tuple[str, str], int] = {}
+
+    def record_success(self, node_id: str, role: str) -> None:
+        if not role:
+            return
+        key = (node_id, role)
+        self._ok[key] = self._ok.get(key, 0) + 1
+        self._failed_at.pop(key, None)
+
+    def record_failure(self, node_id: str, role: str) -> None:
+        if not role:
+            return
+        key = (node_id, role)
+        self._failed[key] = self._failed.get(key, 0) + 1
+        self._failed_at[key] = time.monotonic()
+
+    def recently_failed(self, node_id: str, role: str) -> bool:
+        at = self._failed_at.get((node_id, role))
+        return at is not None and time.monotonic() - at < self.FAILURE_MEMORY_S
+
+    def snapshot(self) -> list[dict[str, Any]]:
+        """What this requester observed, for the request metadata."""
+        now = time.monotonic()
+        out = []
+        for node_id, role in sorted(set(self._failed_at) | set(self._ok)):
+            at = self._failed_at.get((node_id, role))
+            out.append({"node": node_id[:12], "role": role,
+                        "failed_ago_s": (round(max(0.0, now - at), 1)
+                                         if at is not None else None),
+                        "ok": self._ok.get((node_id, role), 0),
+                        "failed": self._failed.get((node_id, role), 0)})
+        return out
+
+
 class LatencyStats:
     """Per (kind, budget-bucket) latency history for the p95 hedge timer."""
 
@@ -210,6 +260,10 @@ class Attempt:
     circle_name: str = ""
     member_name: str = ""
     passages: int = 0                 # document passages in this packet
+    # D-018: the node role the task asked for, and whether the requester had
+    # to fall back to a generic worker (large_model/reasoner only).
+    role: str = ""
+    role_fallback: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         out = self._base()
@@ -226,7 +280,9 @@ class Attempt:
                 "bytes_out": self.bytes_out, "bytes_in": self.bytes_in,
                 "destination_class": self.destination_class,
                 "circle_id": self.circle_id, "circle_name": self.circle_name,
-                "member_name": self.member_name, "passages": self.passages}
+                "member_name": self.member_name, "passages": self.passages,
+                "role": self.role,
+                **({"role_fallback": True} if self.role_fallback else {})}
 
 
 @dataclass
@@ -250,7 +306,8 @@ class Scheduler:
                  latency: LatencyStats, kind: str = "generate",
                  min_params_b: float = 0.0, queue_retries: bool = True,
                  speed: SpeedStats | None = None,
-                 passage_texts: list[str] | None = None):
+                 passage_texts: list[str] | None = None,
+                 role_stats: RoleStats | None = None):
         self.nodes = nodes
         # Models below this size are not used (tags without a size always are).
         self.min_params_b = float(min_params_b)
@@ -260,6 +317,8 @@ class Scheduler:
         # (P3b.3': queued retries waited 50 s and then timed out anyway).
         self.queue_retries = bool(queue_retries)
         self.speed = speed or SpeedStats()
+        # D-018: per-role outcomes per node, shared across requests by the app.
+        self.role_stats = role_stats or RoleStats()
         # D-017: the list recipe passes the texts it attached; each attempt
         # records how many of them its packet really carried.
         self.passage_texts = [str(text) for text in (passage_texts or []) if text]
@@ -292,23 +351,36 @@ class Scheduler:
         self._pair_used: collections.Counter = collections.Counter()  # spread over time
 
     # -- worker selection -------------------------------------------------------
-    def _candidates(self) -> list[tuple[Any, str, str]]:
+    def _candidates(self, role: str = "") -> list[tuple[Any, str, str]]:
         """(peer, family, model): per worker and family, its largest eligible model.
 
         Capability (parameter count from the tag) decides *which* model of a
         family a node runs; models below ``min_params_b`` are skipped. If that
         filter would leave no candidate at all, every model is allowed again
         (a small swarm must still answer).
+
+        With ``role`` (D-018) only workers that advertise it are candidates,
+        and for a model-bearing role only the models named by that role.
         """
         from .capability import eligible, rank_params
 
         def collect(min_b: float) -> list[tuple[Any, str, str]]:
             out = []
             for peer in self.nodes.available_workers(self.kind):
+                if role:
+                    entries = [entry for entry in (peer.advertisement.get("roles") or [])
+                               if isinstance(entry, dict) and entry.get("role") == role]
+                    if not entries:
+                        continue
+                    role_models = set(models_for_role(peer.advertisement, role))
+                else:
+                    role_models = set()
                 best: dict[str, str] = {}
                 for model in (peer.advertisement.get("models") or [{"family": "unknown"}]):
                     family = str(model.get("family") or "unknown")
                     version = str(model.get("version") or "")
+                    if version and role_models and version not in role_models:
+                        continue
                     if version and not eligible(version, min_b):
                         continue
                     if family not in best or rank_params(version) > rank_params(best[family]):
@@ -327,14 +399,14 @@ class Scheduler:
 
     def _select(self, used_pairs: set[tuple[str, str]], used_families: set[str],
                 used_nodes: set[str], free_only: bool = False,
-                max_tokens: int | None = None):
+                max_tokens: int | None = None, role: str = ""):
         """Best (peer, family, model). ``free_only``: only workers with a free
         slot — a hedge queued behind a busy worker adds load and saves no
         time (P3b.3, 22 Oct 2026: after the server left, hedges queued on the
         two remaining single-slot workers and every task missed its deadline)."""
         best = None
         best_key = None
-        for peer, family, model in self._candidates():
+        for peer, family, model in self._candidates(role):
             if (peer.node_id, family) in used_pairs:
                 continue
             busy = self.speed.busy(peer.node_id)
@@ -357,6 +429,9 @@ class Scheduler:
                    + (self._capacity(peer) if busy else 0),
                    too_slow,                           # then: can it finish in time?
                    self.speed.recently_failed(peer.node_id),   # and is it healthy?
+                   # D-018: a role that failed here recently goes after the
+                   # nodes this requester has not seen fail that role.
+                   self.role_stats.recently_failed(peer.node_id, role) if role else False,
                    -rank_params(model),                # then the most capable model
                    self._pair_load[(peer.node_id, family)],
                    self._pair_used[(peer.node_id, family)],  # spread across models
@@ -374,7 +449,8 @@ class Scheduler:
                        exclude: set[tuple[str, str]] | None = None,
                        start_number: int = 0,
                        reason: str = "initial",
-                       free_only: bool = False) -> list[Replica]:
+                       free_only: bool = False,
+                       role: str = "") -> list[Replica]:
         """Dispatch replicas of one task; return ≥1 verified replica or raise.
 
         ``validate`` rejects a signed, well-formed replica whose content is
@@ -384,6 +460,24 @@ class Scheduler:
         returned rather than failing the request (the monitor shows it).
         """
         rejected: list[tuple[Replica, Attempt]] = []
+        # D-018: only a worker that advertises the role may receive a role
+        # task. If none does, large_model/reasoner may degrade to the best
+        # generic worker (recorded); search/corpus cannot be substituted and
+        # the task fails instead of pretending.
+        requested_role = str(role or "")
+        role_fallback = False
+        effective_role = requested_role
+        if requested_role:
+            if requested_role not in ("large_model", "reasoner", "search", "corpus"):
+                raise TaskFailed(
+                    f"{task_id}: role {requested_role!r} unavailable: unknown role")
+            if not self._candidates(requested_role):
+                if requested_role not in FALLBACK_ROLES:
+                    raise TaskFailed(
+                        f"{task_id}: role {requested_role!r} unavailable: no worker "
+                        "advertises it")
+                role_fallback = True
+                effective_role = ""
         k_min = self.k_min if k_min is None else int(k_min)
         k_max = self.k_max if k_max is None else int(k_max)
         used_pairs: set[tuple[str, str]] = set(exclude or ())
@@ -402,7 +496,7 @@ class Scheduler:
                 return False
             choice = self._select(used_pairs, used_families, used_nodes,
                                   free_only=free_only or reason == "hedge",
-                                  max_tokens=max_tokens)
+                                  max_tokens=max_tokens, role=effective_role)
             if choice is None:
                 return False
             peer, family, model = choice
@@ -411,6 +505,17 @@ class Scheduler:
             used_nodes.add(peer.node_id)
             multi = len(peer.advertisement.get("models") or []) > 1
             message = build(number, family if multi else None, model if multi else None)
+            constraints = message.setdefault("constraints", {})
+            if effective_role:
+                # MINOR-safe packet extension (SPEC §3): older workers ignore
+                # it; a worker that knows it refuses an unadvertised role.
+                constraints["role"] = effective_role
+                if effective_role == "reasoner":
+                    constraints["think"] = True
+            elif role_fallback:
+                # The generic worker must not be sent a role it never claimed.
+                constraints.pop("role", None)
+                constraints.pop("think", None)
             packet_text = str(message)
             attempt = Attempt(task_id, number, peer.node_id, family, reason,
                               model=model,
@@ -418,7 +523,11 @@ class Scheduler:
                               max_tokens=int(max_tokens), latency_key=latency_key,
                               started_at=time.monotonic(),
                               passages=sum(1 for text in self.passage_texts
-                                           if text in packet_text))
+                                           if text in packet_text),
+                              role=requested_role, role_fallback=role_fallback)
+            if role_fallback:
+                attempt.note = (f"role {requested_role} unavailable, ran on "
+                                f"{peer.node_id[:12]} (generic worker)")
             number += 1
             self.attempts.append(attempt)
             self._load[peer.node_id] += 1
@@ -496,6 +605,8 @@ class Scheduler:
             self._load[attempt.node_id] -= 1
             self._pair_load[(attempt.node_id, attempt.family)] -= 1
             attempt.status = "cancelled_slow"   # slow, not dishonest (SPEC §11.4)
+            if attempt.role and not attempt.role_fallback:
+                self.role_stats.record_failure(attempt.node_id, attempt.role)
             if attempt.started_at is not None:
                 ran = time.monotonic() - attempt.started_at
                 self.speed.observe_elapsed_floor(attempt.node_id, attempt.model,
@@ -603,6 +714,8 @@ class Scheduler:
                     self.speed.observe_timeout(node_id, attempt.model,
                                                attempt.max_tokens or self._max_tokens,
                                                self.timeout_s)
+                if attempt.role and not attempt.role_fallback:
+                    self.role_stats.record_failure(node_id, attempt.role)
                 attempt.elapsed_ms = int((time.monotonic() - started) * 1000)
                 return None
         attempt.elapsed_ms = int((time.monotonic() - started) * 1000)
@@ -611,6 +724,8 @@ class Scheduler:
         if problem:
             attempt.status = "failed"
             attempt.code = problem
+            if attempt.role and not attempt.role_fallback:
+                self.role_stats.record_failure(node_id, attempt.role)
             return None
         profile = result.get("profile") or {}
         telemetry = result.get("telemetry") or {}
@@ -628,6 +743,8 @@ class Scheduler:
         self.speed.observe(node_id, str(profile.get("model_version") or attempt.model),
                            telemetry.get("tokens_out"), gen_ms)
         self.speed.record_success(node_id)
+        if attempt.role and not attempt.role_fallback:
+            self.role_stats.record_success(node_id, attempt.role)
         if attempt.latency_key and attempt.started_at is not None:
             self.speed.observe_elapsed(node_id, attempt.model, attempt.latency_key,
                                        max(0.1, time.monotonic() - attempt.started_at

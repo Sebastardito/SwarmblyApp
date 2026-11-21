@@ -135,6 +135,7 @@ class PacketPlan:
     consumes: bool
     depends_on: tuple[str, ...]
     lane: str
+    role: str = ""          # 3.5, D-018: node role this task needs, if any
 
 
 def build_message(pp: PacketPlan, gamma: dict[str, Any], session_id: bytes,

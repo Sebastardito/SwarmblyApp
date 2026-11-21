@@ -164,7 +164,7 @@ class Orchestrator:
                  local_model: str = "", latency: LatencyStats | None = None,
                  stats_sink: Callable[..., None] | None = None,
                  local_pool_factory: Callable[[], Any] | None = None,
-                 speed: Any = None):
+                 speed: Any = None, role_stats: Any = None):
         self.nodes = nodes
         self.bus = bus
         self.local_stream = local_stream
@@ -174,6 +174,9 @@ class Orchestrator:
         from .scheduler import SpeedStats
         # learned per (node, model); the app keeps one across orchestrator rebuilds
         self.speed = speed or SpeedStats()
+        # 3.5, D-018: learned per (node, role), kept the same way.
+        from .scheduler import RoleStats
+        self.role_stats = role_stats or RoleStats()
         self.stats_sink = stats_sink
         self.local_pool_factory = local_pool_factory
 
@@ -182,7 +185,8 @@ class Orchestrator:
             cancel: threading.Event | None = None,
             history: list[dict[str, Any]] | None = None,
             passage_texts: list[str] | None = None,
-            passage_peer_ids: set[str] | None = None) -> dict[str, Any]:
+            passage_peer_ids: set[str] | None = None,
+            task_roles: dict[str, str] | None = None) -> dict[str, Any]:
         """Execute one request. Returns ``routed`` = distributed | local | error.
 
         ``history`` is the conversation before ``text`` (role/content dicts).
@@ -306,7 +310,8 @@ class Orchestrator:
             return self._distributed(text, adm, decision, lane, routing_meta,
                                      router_meta, directory, tracker, request_id,
                                      started, cancel, mode, whole, compose,
-                                     passage_texts=passage_texts)
+                                     passage_texts=passage_texts,
+                                     task_roles=task_roles)
         except Cancelled:
             tracker.fail("FINAL RESPONSE", "interrupted by the user")
             return {"routed": "error", "reason": "interrupted by the user",
@@ -326,7 +331,7 @@ class Orchestrator:
     # -- the distributed path --------------------------------------------------------
     def _distributed(self, text, adm, decision, lane, routing_meta, router_meta,
                      directory, tracker, request_id, started, cancel, mode, whole=False,
-                     compose=False, passage_texts=None):
+                     compose=False, passage_texts=None, task_roles=None):
         from swarmbly_v0 import planner
         from swarmbly_v0.schema import Plan, Task
         cfg = self.config()
@@ -406,7 +411,9 @@ class Orchestrator:
                     _with_block(task.instruction, evidence_blocks.get(task.task_id, "")),
                     lang, path),
                 consumes=bool(consumed[task.task_id]),
-                depends_on=tuple(task.depends_on), lane=lane)
+                depends_on=tuple(task.depends_on), lane=lane,
+                role=str((task_roles or {}).get(task.task_id)
+                         or getattr(task, "role", "") or ""))
             gammas[task.task_id] = gamma_for(contract, objective, task.instruction,
                                              self._clamp(budgets[task.task_id], workers),
                                              lang)
@@ -449,8 +456,10 @@ class Orchestrator:
         tracker.complete("NODE SELECTION", workers=len(workers), families=families,
                          local_pool=any(getattr(w, "source", "") == "local" for w in workers),
                          k_min=k_min, k_max=k_max,
+                         roles_requested=sorted({p.role for p in plans.values() if p.role}),
                          policy="maximise model-family diversity per task, "
-                                "then distinct machines, then lowest load")
+                                "then distinct machines, then lowest load; "
+                                "a role task only on a worker advertising it")
 
         scheduler = Scheduler(
             directory, self.bus, request_id, k_min=k_min, k_max=k_max,
@@ -461,10 +470,12 @@ class Orchestrator:
             latency=self.latency,
             min_params_b=float(swarm_cfg.get("min_model_params_b", 1.5)),
             queue_retries=not (self.local_stream is not None and self.local_model),
-            speed=self.speed, passage_texts=passage_texts)
+            speed=self.speed, passage_texts=passage_texts,
+            role_stats=self.role_stats)
         carries: dict[str, str] = {}
         resolved: dict[str, dict[str, Any]] = {}
         local_fallbacks: list[str] = []
+        local_role_fallbacks: list[dict[str, Any]] = []
         local_rejected: list[str] = []
         tie_breaks: list[dict[str, Any]] = []
         tie_break = bool(swarm_cfg.get("tie_break", True))
@@ -499,15 +510,26 @@ class Orchestrator:
             build = make_builder(task_id, carries)
             loop = asyncio.get_running_loop()
             check = validators.get(task_id)
+            requested_role = plans[task_id].role
             try:
                 replicas = await scheduler.run_task(task_id, build, budgets[task_id],
-                                                    validate=check)
+                                                    validate=check,
+                                                    role=requested_role)
             except TaskFailed as exc:
+                # A search or corpus task has no truthful generic substitute:
+                # without its executor the right answer is an honest failure.
+                if requested_role and requested_role not in ("large_model", "reasoner"):
+                    raise
                 # Every remote attempt failed (node gone, deadline, policy).
                 # The task is run on this device's model rather than failing
                 # the whole answer (P3b.3, 22 Oct 2026: losing the largest
                 # node made one section fail and the request with it).
                 fallback, ok = await local_rescue(task_id, build, check, str(exc))
+                if fallback is not None and requested_role:
+                    local_role_fallbacks.append(
+                        {"task": task_id, "role": requested_role,
+                         "node": self.local_model or "local model",
+                         "reason": "no role worker answered"})
                 if fallback is None:
                     raise
                 if not ok:
@@ -541,7 +563,8 @@ class Orchestrator:
                             task_id, build, budgets[task_id], validate=check,
                             k_min=1, k_max=1, start_number=len(scheduler.attempts),
                             reason="tie_break", free_only=True,
-                            exclude={(r.node_id, r.family) for r in replicas})
+                            exclude={(r.node_id, r.family) for r in replicas},
+                            role=plans[task_id].role)
                     except TaskFailed:
                         extra = []
                     extra = [r for r in extra if not (r.telemetry or {}).get("degraded")]
@@ -597,8 +620,18 @@ class Orchestrator:
         attempts = [a.to_dict() for a in scheduler.attempts]
         accepted = [a for a in scheduler.attempts if a.status in ("accepted", "degraded")]
         failed = [a for a in scheduler.attempts if a.status == "failed"]
+        role_fallbacks = [
+            {"task": a["task"], "role": a["role"], "node": a["node"]}
+            for a in attempts if a.get("role_fallback")] + local_role_fallbacks
+        role_failed = [
+            {"task": a.task_id, "role": a.role, "node": a.node_id[:12],
+             "code": a.code}
+            for a in failed if a.role]
+        if role_fallbacks:
+            routing_meta["role_unavailable"] = role_fallbacks
         tracker.complete("DISPATCHING", attempts=len(attempts), hedges=scheduler.hedges,
                          retries=scheduler.retries, rejected_quality=scheduler.rejected,
+                         role_fallbacks=role_fallbacks, role_failed=role_failed,
                          hedge_timer=",".join(sorted(scheduler.hedge_timer_source)))
         tracker.complete("MODEL EXECUTION",
                          gen_ms_total=sum(int((a.get("telemetry") or {}).get("gen_ms") or 0)
@@ -718,6 +751,12 @@ class Orchestrator:
             "rejected_quality": scheduler.rejected,
             "local_fallback_tasks": sorted(local_fallbacks),
             "local_fallback_rejected": sorted(set(local_rejected)),
+            # 3.5, D-018: requested roles, honest substitutions and what this
+            # requester observed per (node, role). Never the peer's own claim.
+            "role_fallbacks": role_fallbacks,
+            "role_failed": role_failed,
+            "role_outcomes": (scheduler.role_stats.snapshot()
+                              if any(a.get("role") for a in attempts) else []),
             "evidence": evidence_report,
             "tie_breaks": tie_breaks,
             "timeouts": scheduler.timeouts,

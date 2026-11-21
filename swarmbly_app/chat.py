@@ -2883,7 +2883,11 @@ class ChatService:
                         "circle_id": att.get("circle_id") or "",
                         "circle_name": att.get("circle_name") or "",
                         "member_name": att.get("member_name") or "",
-                        "passages": att.get("passages") or 0})
+                        "passages": att.get("passages") or 0,
+                        # 3.5, D-018: the node role this packet requested.
+                        "role": att.get("role") or "",
+                        **({"role_fallback": True}
+                           if att.get("role_fallback") else {})})
             ledger = request.ledger
             public = any(e.get("tipo") == egress.PUBLIC_QUERY and not e.get("bloqueado")
                          for e in (ledger.events if ledger else []))

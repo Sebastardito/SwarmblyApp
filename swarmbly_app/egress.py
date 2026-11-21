@@ -447,9 +447,13 @@ def build_receipt(ledger: Ledger | None, *, lane: str, route: str, answer: str,
                  "bytes": int(ev.get("bytes", 0) or 0), "motivo": ev.get("motivo", "")}
         # D-017: a peer send names the circle and the member; a list wave that
         # carried document passages says how many reached this destination.
-        for key in ("circle_id", "circle_name", "member_name"):
+        for key in ("circle_id", "circle_name", "member_name", "role"):
             if ev.get(key):
                 entry[key] = str(ev[key])
+        if ev.get("role_fallback"):
+            # D-018: a role the requester asked for was answered by a generic
+            # worker; the receipt says so instead of implying the role ran.
+            entry["role_fallback"] = True
         if ev.get("passages") not in (None, ""):
             try:
                 entry["pasajes"] = int(ev.get("passages") or 0)

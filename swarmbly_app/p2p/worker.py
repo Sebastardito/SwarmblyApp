@@ -29,11 +29,13 @@ from ..identity import IdentityManager
 from ..inference.base import Interrupted, StreamBackend
 from ..lce_adapter import LCEAdapter
 from ..models import family_for
+from ..node_roles import derive_roles, models_for_role
 from .messages import canonical_bytes, error, result
 
 ALLOWED_KINDS = ("extract", "classify", "generate", "summarize",
                  "transform", "judge")
 MAX_DEADLINE_MS = 10 * 60 * 1000
+E_ROLE_UNAVAILABLE = "E_ROLE_UNAVAILABLE"
 
 
 class PromptBackend:
@@ -47,13 +49,24 @@ class PromptBackend:
         self.adapter = None  # invariant I2: no personal adapter on workers
         self._interrupt = interrupt
         self.last = None
+        self.applied_think: bool | None = None
 
     def generate(self, prompt: str, **kw: Any) -> str:
+        call: dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": kw.get("max_tokens", 800),
+            "temperature": kw.get("temperature", 0.2),
+            "interrupt": self._interrupt,
+        }
+        # 3.5, D-018: a reasoner packet carries think: true. Only a backend
+        # that accepts the parameter receives it; the others keep today's
+        # behaviour (the prompt is unchanged and nothing is faked).
+        think = kw.get("think")
+        if isinstance(think, bool) and getattr(self._stream, "accepts_think", False):
+            call["think"] = think
+            self.applied_think = think
         out = self._stream.stream_chat(
-            [{"role": "user", "content": prompt}], model=self.model,
-            max_tokens=kw.get("max_tokens", 800),
-            temperature=kw.get("temperature", 0.2),
-            interrupt=self._interrupt)
+            [{"role": "user", "content": prompt}], **call)
         self.last = out
         return out.text
 
@@ -82,6 +95,23 @@ class WorkerService:
         self._lock = threading.Lock()
         # (requesting node, attempt_id) -> cancel flag checked between tokens
         self._cancels: dict[tuple[str, str], threading.Event] = {}
+
+    # -- node roles (3.5, D-018) --------------------------------------------------
+    def node_roles(self, models: list[str] | None = None) -> list[dict[str, Any]]:
+        """Roles this worker can run for ``models`` (default: what it shares)."""
+        offered = self.shared_models() if models is None else list(models)
+        return derive_roles(offered, self.config.all(), announce=True)
+
+    def role_names(self, models: list[str] | None = None) -> set[str]:
+        return {str(role.get("role")) for role in self.node_roles(models)
+                if isinstance(role, dict)}
+
+    def _role_models(self, role: str, models: list[str]) -> list[str]:
+        advertisement = {
+            "models": [{"version": name} for name in models],
+            "roles": self.node_roles(models),
+        }
+        return models_for_role(advertisement, role)
 
     # -- policy -----------------------------------------------------------------
     def shared_models(self) -> list[str]:
@@ -140,6 +170,14 @@ class WorkerService:
             return error("E_POLICY", "worker paused by its owner", attempt_id)
         if not policy["allow_lan"]:  # v0.1 peers are LAN peers by construction
             return error("E_POLICY", "LAN requests not accepted", attempt_id)
+        # 3.5, D-018: a role task is only accepted when this node advertises
+        # the role. Refused before any model is loaded, slot taken or byte
+        # generated, so a false claim executes nothing.
+        requested_role = str((message.get("constraints") or {}).get("role") or "")
+        if requested_role and requested_role not in self.role_names():
+            return error(E_ROLE_UNAVAILABLE,
+                         f"role {requested_role!r} is not advertised by this node",
+                         attempt_id)
         lane = str(message.get("lane", "PUBLIC"))
         if lane == "SENSITIVE":
             return error("E_LANE_VIOLATION",
@@ -252,11 +290,30 @@ class WorkerService:
         started = time.monotonic()
         attempt_id = str(message.get("attempt_id", ""))
         prompt = render_packet_prompt(message)
-        model_name = self._pick_model(message, models)
+        offered = self.shared_models() if models is None else list(models)
         task = message.get("task") or {}
         constraints = message.get("constraints") or {}
+        role = str(constraints.get("role") or "")
+        if role and role not in self.role_names(offered):
+            # Defence in depth: the packet may arrive through execute_local
+            # (or a future path) without passing handle().
+            return error(E_ROLE_UNAVAILABLE,
+                         f"role {role!r} is not advertised by this node",
+                         attempt_id)
+        model_name = self._pick_model(message, models)
+        if role:
+            role_models = self._role_models(role, offered)
+            if role_models:
+                exact = str(constraints.get("model") or "")
+                from ..engine.capability import rank_params
+                model_name = exact if exact in role_models else max(
+                    role_models, key=rank_params)
         max_tokens = int((task.get("expects") or {}).get("max_tokens") or 400)
         temperature = float(constraints.get("temperature", 0.2) or 0.2)
+        # 3.5, D-018: think travels only where a backend accepts it (below).
+        think = constraints.get("think")
+        if not isinstance(think, bool):
+            think = True if role == "reasoner" else None
         try:
             stream = self.backend_factory()
         except Exception as exc:
@@ -274,10 +331,10 @@ class WorkerService:
             if guard is not None:
                 guard.forbid_sink(self._forbidden_sink)
                 text = guard.execute(backend, prompt, max_tokens=max_tokens,
-                                     temperature=temperature)
+                                     temperature=temperature, think=think)
             else:
                 text = backend.generate(prompt, max_tokens=max_tokens,
-                                        temperature=temperature)
+                                        temperature=temperature, think=think)
         except Interrupted:
             return error("E_DEADLINE", "deadline reached during generation",
                          attempt_id)
@@ -298,6 +355,10 @@ class WorkerService:
             "sampling_params": {"temperature": temperature,
                                 "max_tokens": max_tokens},
             "seed": None,
+            # app extension (D-018): what the backend really received; absent
+            # when it does not accept think, so nothing is simulated.
+            **({"think": backend.applied_think}
+               if isinstance(backend.applied_think, bool) else {}),
         }
         finish_reason = (getattr(backend.last, "finish_reason", "") or ""
                          if backend.last is not None else "")
