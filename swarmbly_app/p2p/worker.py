@@ -66,7 +66,8 @@ def model_family(name: str) -> str:
 class WorkerService:
     def __init__(self, config: Config, db: Database, bus: EventBus,
                  identity: IdentityManager, lce: LCEAdapter,
-                 backend_factory, model_info: Callable[[str], dict] | None = None):
+                 backend_factory, model_info: Callable[[str], dict] | None = None,
+                 circle_guard: Callable[[str], tuple[bool, str, str]] | None = None):
         self.config = config
         self.db = db
         self.bus = bus
@@ -74,6 +75,9 @@ class WorkerService:
         self.lce = lce
         self.backend_factory = backend_factory  # () -> StreamBackend
         self.model_info = model_info or (lambda name: {})
+        # D-015: the worker gate asks the circle service again, so revocation
+        # takes effect even on an already-open session.
+        self.circle_guard = circle_guard or (lambda node_id: (True, "", ""))
         self._tasks_now = 0
         self._lock = threading.Lock()
         # (requesting node, attempt_id) -> cancel flag checked between tokens
@@ -125,6 +129,11 @@ class WorkerService:
         if policy["third_party_backend"]:
             return error("E_POLICY", "this node's model is a third-party service; it never "
                          "serves the swarm", attempt_id)
+        allowed, code, detail = self.circle_guard(node_id)
+        if not allowed:
+            return error(code or "E_CIRCLE_REQUIRED",
+                         detail or "sender is not in a shared trusted circle",
+                         attempt_id)
         if not policy["enabled"]:
             return error("E_POLICY", "worker role disabled", attempt_id)
         if policy["paused"]:

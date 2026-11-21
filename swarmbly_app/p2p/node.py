@@ -29,6 +29,7 @@ from ..db import Database
 from ..events import EventBus
 from ..identity import IdentityManager
 from .discovery import DiscoveredNode, DiscoveryService
+from .circles import CONTROL_TYPES, CircleError
 from .handshake import (Handshake, HandshakeResult, sign_advertisement_update,
                         validate_advertisement, verify_advertisement_update)
 from .messages import WIRE_VERSION, error
@@ -53,6 +54,7 @@ class Peer:
     advertisement: dict[str, Any] = field(default_factory=dict)
     connected: bool = False
     authenticated: bool = False       # Ed25519 handshake bound to TLS succeeded
+    admitted: bool = True             # circle admission (False: join bootstrap)
     source: str = "manual"            # mdns | manual | inbound
     first_seen: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
@@ -79,6 +81,7 @@ class Peer:
             # (identity proven), not "capability verified by a task".
             "verified": self.authenticated,
             "authenticated": self.authenticated,
+            "admitted": self.admitted,
             "worker": self.is_worker,
             "source": self.source,
             "models": self.advertisement.get("models", []),
@@ -101,6 +104,7 @@ class NodeManager:
         self.build_advertisement = advertisement_builder
         self._dirs = dirs
         self.handshake = Handshake(identity, {})
+        self.circles = None               # set by AppState after construction
         self.peers: dict[str, Peer] = {}
         self._pending: dict[str, asyncio.Future] = {}
         self._pending_lock = threading.Lock()
@@ -313,6 +317,13 @@ class NodeManager:
         self._dialing.add(key)
         try:
             self.handshake.advertisement = self._advertisement()
+            self.handshake.join_token = ""
+            if self.circles is not None:
+                try:
+                    self.handshake.join_token = self.circles.pending_join_token(
+                        host, port)
+                except Exception:
+                    self.handshake.join_token = ""
             hello_msg, nonce = self.handshake.build_hello()
             try:
                 session, ack_message, observed = await dial(host, port, hello_msg)
@@ -337,6 +348,7 @@ class NodeManager:
             return await self._register(result, session, source=source,
                                         listen_port=port)
         finally:
+            self.handshake.join_token = ""
             self._dialing.discard(key)
 
     def connect_manual(self, host: str, port: int, wait: bool = False):
@@ -366,14 +378,16 @@ class NodeManager:
             if result.node_id == self.node_id:
                 raise ValueError("connected to ourselves")
             await self._register(result, session, source="inbound",
-                                 listen_port=_listen_port(result.advertisement))
+                                 listen_port=_listen_port(result.advertisement),
+                                 join_token=str(hello_message.get("join_token") or ""))
         except Exception as exc:
             session.close()
             self.bus.publish("node.handshake_failed", address=session.address,
                              reason=str(exc)[:120])
 
     async def _register(self, result: HandshakeResult, session: PeerSession,
-                        source: str, listen_port: int | None) -> Peer | None:
+                        source: str, listen_port: int | None,
+                        join_token: str = "") -> Peer | None:
         node_id = result.node_id
         advertisement = result.advertisement
         problems = validate_advertisement(advertisement, expected_node_id=node_id)
@@ -382,6 +396,31 @@ class NodeManager:
             self.bus.publish("node.rejected", node_id=node_id[:12],
                              reason="; ".join(problems[:2]))
             return None
+        admitted = True
+        if self.circles is not None:
+            ok, code, detail = self.circles.admit(node_id, advertisement)
+            if not ok:
+                # A valid invitation (or a pending join addressed to this
+                # owner) opens a control-only bootstrap session. It is never
+                # an admitted peer: dispatch skips it and the worker gate
+                # refuses every task until a manifest lists both nodes.
+                bootstrap = self.circles.bootstrap_allowed(
+                    node_id, join_token) or self.circles.stale_bootstrap_allowed(
+                    node_id, advertisement)
+                if not bootstrap:
+                    try:
+                        await self._write(session, error(code, detail, None))
+                    except Exception:
+                        pass
+                    session.close()
+                    self.bus.publish(
+                        "node.rejected", node_id=node_id[:12],
+                        reason=f"{code}: {detail}")
+                    return None
+                admitted = False
+                self.bus.publish("node.bootstrap", node_id=node_id,
+                                 short_id=node_id[:12],
+                                 address=session.address, source=source)
         session.node_id = node_id
         session.write_lock = asyncio.Lock()
         session.connected_at = time.time()
@@ -407,16 +446,20 @@ class NodeManager:
         peer.advertisement = advertisement
         peer.connected = True
         peer.authenticated = True
+        peer.admitted = admitted
         peer.last_seen = time.time()
         peer.session = session
-        if self.discovery is not None:
+        if self.discovery is not None and admitted:
             self.discovery.mark_verified(node_id, session.address)
         self.db.upsert_node(node_id, peer.address, peer.port,
                             verified=True, profile=advertisement)
         self.bus.publish("node.connected", node_id=node_id,
                          short_id=node_id[:12], address=peer.address,
-                         source=source, worker=peer.is_worker)
+                         source=source, worker=peer.is_worker,
+                         admitted=admitted)
         self._spawn(self._read_loop(session, node_id))
+        if self.circles is not None:
+            self._spawn(self.circles.on_peer_connected(peer))
         return peer
 
     async def _read_loop(self, session: PeerSession, node_id: str) -> None:
@@ -496,6 +539,27 @@ class NodeManager:
             peer.advertisement = adv
             self.bus.publish("node.updated", node_id=node_id,
                              short_id=node_id[:12], worker=peer.is_worker)
+        elif mtype in CONTROL_TYPES:
+            # D-021: circle control rides on the same TLS session; older
+            # nodes ignore an unknown type (SPEC §3).
+            if self.circles is not None:
+                try:
+                    reply = await self.circles.handle_control(node_id, message)
+                    if reply is not None:
+                        await self._write(session, reply)
+                except CircleError as exc:
+                    try:
+                        await self._write(session, error(
+                            exc.code, exc.detail, message.get("attempt_id")))
+                    except Exception:
+                        pass
+                except Exception as exc:
+                    try:
+                        await self._write(session, error(
+                            "E_CIRCLE_SCHEMA", str(exc)[:160],
+                            message.get("attempt_id")))
+                    except Exception:
+                        pass
         # Unknown types are ignored (SPEC §3: MINOR additions are tolerated).
 
     async def _handle_task(self, node_id: str, session: PeerSession,
@@ -568,6 +632,9 @@ class NodeManager:
         peer = self.peers.get(node_id)
         if peer is None or not peer.connected or peer.session is None:
             raise PeerError("E_DISCONNECTED", f"node {node_id[:12]} not connected")
+        if not peer.admitted:
+            raise PeerError("E_CIRCLE_REQUIRED",
+                            f"node {node_id[:12]} is not admitted to a circle")
         attempt_id = str(packet_message.get("attempt_id", ""))
         loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
@@ -598,6 +665,54 @@ class NodeManager:
         except Exception:
             pass
 
+    # -- control plane (circles) -------------------------------------------------
+    async def send_control_async(self, node_id: str,
+                                 message: dict[str, Any]) -> bool:
+        peer = self.peers.get(node_id)
+        if peer is None or not peer.connected or peer.session is None:
+            return False
+        await self._write(peer.session, message)
+        return True
+
+    def send_control(self, node_id: str, message: dict[str, Any]) -> bool:
+        """Send one control message from a non-P2P thread."""
+        try:
+            return bool(self._call(self.send_control_async(node_id, message),
+                                   timeout=10))
+        except Exception:
+            return False
+
+    async def drop_peer_async(self, node_id: str, reason: str = "") -> None:
+        peer = self.peers.get(node_id)
+        session = getattr(peer, "session", None)
+        if peer is None or session is None:
+            return
+        try:
+            await self._write(session, error(
+                "E_CIRCLE_REMOVED", reason or "removed from the circle"))
+        except Exception:
+            pass
+        peer.admitted = False
+        session.close()
+
+    def drop_peer(self, node_id: str, reason: str = "") -> None:
+        try:
+            self._call(self.drop_peer_async(node_id, reason), timeout=10)
+        except Exception:
+            peer = self.peers.get(node_id)
+            session = getattr(peer, "session", None)
+            if session is not None:
+                session.close()
+
+    def mark_admitted(self, node_id: str) -> None:
+        """A manifest now lists both nodes: a bootstrap session becomes a
+        normal admitted peer."""
+        peer = self.peers.get(node_id)
+        if peer is not None and not peer.admitted:
+            peer.admitted = True
+            self.bus.publish("node.admitted", node_id=node_id,
+                             short_id=node_id[:12])
+
     @property
     def loop(self) -> asyncio.AbstractEventLoop | None:
         return self._loop
@@ -621,7 +736,9 @@ class NodeManager:
             "connected_count": sum(1 for p in peers if p.connected),
             "verified_count": sum(1 for p in peers if p.authenticated),
             "authenticated_count": sum(1 for p in peers if p.authenticated and p.connected),
+            "admitted_count": sum(1 for p in peers if p.admitted and p.connected),
             "unreachable_count": sum(1 for p in peers if not p.connected),
+            "circles": self.circles.summary() if self.circles is not None else None,
         }
 
     def available_workers(self, kind: str = "generate") -> list[Peer]:
@@ -630,7 +747,8 @@ class NodeManager:
         kinds and is never offered a task."""
         out = []
         for peer in self.peers.values():
-            if not (peer.connected and peer.authenticated and peer.session):
+            if not (peer.connected and peer.authenticated and peer.admitted
+                    and peer.session):
                 continue
             kinds = (peer.advertisement.get("policy") or {}).get("kinds") or []
             if kind not in kinds:

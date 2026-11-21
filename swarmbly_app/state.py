@@ -71,6 +71,7 @@ def _build_advertisement(state: "AppState") -> dict:
                            "quantization": info.get("quantization", ""),
                            "ctx": None, "tok_per_s_est": None})
     vm = psutil.virtual_memory()
+    circles = getattr(state, "circles", None)
     return {
         "node_id": state.identity.node_id,
         "models": models,
@@ -85,6 +86,9 @@ def _build_advertisement(state: "AppState") -> dict:
                    "kinds": list(worker_policy.get("kinds", [])),
                    # app extension: concurrent tasks this node accepts
                    "max_concurrent": int(worker_policy.get("max_concurrent", 1))},
+        # 3.5, D-021: manifest versions this node holds. A claim admits
+        # nothing; the receiver checks its own signed manifest.
+        "circle_versions": circles.advertised_versions() if circles else [],
         "reputation": None,  # self-reported reputation is never trusted (SPEC §12)
         "endpoint": {"port": state.nodes.listen_port},
     }
@@ -124,6 +128,14 @@ class AppState:
         self.nodes = NodeManager(self.identity_manager, self.config, self.db,
                                  self.bus, lambda: _build_advertisement(self),
                                  dirs=self.dirs)
+        # 3.5, D-015: signed circle manifests and invitations. The node
+        # manager consults this service at the handshake; the worker consults
+        # it again for every task.
+        from .p2p.circles import CircleService
+        self.circles = CircleService(self.identity_manager, self.config,
+                                     self.dirs, self.bus)
+        self.circles.attach(self.nodes)
+        self.nodes.circles = self.circles
         self.worker: WorkerService | None = None
         from .console import ConsoleReporter
         self.console = ConsoleReporter(self.bus, lambda: self.nodes.peers)
@@ -423,12 +435,19 @@ class AppState:
         return choice.backend.embed(texts, kind)
 
     # -- P2P lifecycle -----------------------------------------------------------
+    def _circle_guard(self, node_id: str) -> tuple[bool, str, str]:
+        """The worker gate of D-015: membership is checked again per task."""
+        circles = getattr(self, "circles", None)
+        if circles is None:
+            return True, "", ""
+        return circles.admits_local(node_id)
+
     def start_p2p(self) -> None:
         if self.worker is None:
             self.worker = WorkerService(
                 self.config, self.db, self.bus, self.identity_manager,
                 self.lce, lambda: self.backends.resolve(self.config.all()),
-                model_info=self.model_info)
+                model_info=self.model_info, circle_guard=self._circle_guard)
             self.nodes.start(task_handler=self.worker.handle,
                              cancel_handler=self.worker.cancel)
 

@@ -33,6 +33,9 @@ def make_node(tmp_path, name, *, worker=False, model="fake-model:1b",
     cfg = {"swarm": {"p2p_port": next(_ports), "lan_enabled": lan,
                      "worker_enabled": worker, "worker_max_concurrent": concurrent,
                      "timeout_ms": 8000, "hedge_fallback_ms": 3000},
+           # These tests exercise the 3.4 LAN path; circle admission has its
+           # own tests below and new installs default to circle-only.
+           "circle": {"admission_mode": "own_devices"},
            "privacy": {"tier": "GLOBAL"},
            "model": {"model_name": model}}
     for section, values in (extra or {}).items():
