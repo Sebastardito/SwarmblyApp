@@ -2045,12 +2045,20 @@ class ChatService:
         return samples
 
     def _code_choice(self, cfg: dict[str, Any], model: str) -> Any:
+        """The model the recipe-5 script writer uses.
+
+        The documented setting is the conversation's model (the one the chat
+        selector sends); ``compose.model`` and ``roles.writer`` are for
+        compositions with the user's sources and must not silently replace it
+        (T10.17: the evaluation saw a different model than the one configured).
+        """
         from . import roles
         backend = self.registry.resolve(cfg)
+        model = str(model or (cfg.get("model") or {}).get("model_name") or "")
         if not model:
             listed = backend.list_models() or [""]
             model = str(listed[0] or "")
-        return roles.choose("writer", cfg, backend, model, self.registry, passages=True)
+        return roles.Choice("chat", model, backend)
 
     @staticmethod
     def _code_destination(choice: Any) -> dict[str, Any]:
@@ -2075,6 +2083,9 @@ class ChatService:
             "watchdog_only": self._code_platform_guard() == "watchdog",
             "corrections": proposal["corrections"],
             "corrections_left": max(0, cfg["max_corrections"] - proposal["corrections"]),
+            "model": proposal.get("model") or proposal.get("writer_model") or "",
+            "backend": proposal.get("writer_backend", ""),
+            "lang": proposal.get("lang", ""),
             "available": True,
         }
 
@@ -2111,7 +2122,8 @@ class ChatService:
                 raise CodeRecipeError("that conversation belongs to another project")
             project_id = conv_project
             mode = mode or str(conv.get("mode") or "")
-            model = model or str(conv.get("model") or "")
+            model = (model or str(conv.get("model") or "")
+                     or str((cfg.get("model") or {}).get("model_name") or ""))
         else:
             project_id = str(project_id or "")
             conv = self.create_conversation(title=question[:56], mode=mode,
@@ -2170,6 +2182,10 @@ class ChatService:
         script = parse_code_script(getattr(result, "text", "") or "",
                                    self._code_cfg()["max_script"])
         script_sha = hashlib.sha256(script.encode("utf-8")).hexdigest()
+        actual_model = str(getattr(result, "model", "") or choice.model or "")
+        backend_name = str(getattr(choice.backend, "name", "")
+                           or getattr(choice.backend, "backend", "")
+                           or type(choice.backend).__name__)
         proposal = {
             "proposal_id": proposal_id,
             "conversation_id": conversation_id,
@@ -2184,7 +2200,9 @@ class ChatService:
             "correction_of": str(correction_of or ""),
             "status": "proposed",
             "created_at": time.time(),
-            "model": choice.model,
+            "model": actual_model,
+            "writer_model": actual_model,
+            "writer_backend": backend_name,
             "lang": code_lang,
             "mode": mode or str(conv.get("mode") or cfg["swarm"].get("mode") or "local"),
             "ledger_events": events,
@@ -2413,11 +2431,13 @@ class ChatService:
                 "url": (f"/api/recipes/code/runs/{run_id}/files/{quote(name, safe='/')}"
                         if run_id else ""),
             })
+        writer_model = str(proposal.get("model") or proposal.get("writer_model") or "")
+        writer_backend = str(proposal.get("writer_backend") or "")
         meta: dict[str, Any] = {
             "status": "done",
             "note": reason,
             "mode": proposal.get("mode") or "local",
-            "model": proposal.get("model") or "",
+            "model": writer_model,
             "request_id": proposal["proposal_id"],
             "executed": "local",
             "recipe": "code",
@@ -2429,6 +2449,8 @@ class ChatService:
                 "elapsed_s": float(data.get("elapsed_s") or 0.0),
                 "approved_by": "user",
                 "corrections": int(proposal.get("corrections") or 0),
+                "model": writer_model,
+                "backend": writer_backend,
             },
             "code_run": {
                 "proposal_id": proposal["proposal_id"],
@@ -2468,7 +2490,8 @@ class ChatService:
                                            answer=content, consent=consent,
                                            model_destination=destination)
             receipt["recipe"] = "code"
-            receipt["code"] = {"script_sha256": sha, "trapped": trapped}
+            receipt["code"] = {"script_sha256": sha, "trapped": trapped,
+                               "model": writer_model, "backend": writer_backend}
             meta["receipt"] = receipt
         except Exception as exc:
             meta["receipt_error"] = str(exc)[:200]
