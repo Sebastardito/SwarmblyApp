@@ -2,6 +2,50 @@
 
 ## Unreleased — 3.5 (work in progress)
 
+**First-launch sandbox preparation and doctor export, WP7 App part
+(R-005/R-014).**
+
+- **The sandbox cache is a first-launch step** (`sandbox/cache.py`,
+  `sandbox/prepare.py`, `state.py`). After start-up, when the optional
+  `[sandbox]` extra is installed and the compiled cache is missing or stale,
+  the App shows a notice with the expected time and memory (about 5 s / 3.3 GB
+  on Apple Silicon, about 60 s on a 2-vCPU machine) and offers **Prepare now**
+  / **Later**, in the web UI and in the first-run assistant. The compile runs
+  in one daemon thread (`preparing` → `ready`, or `failed` with the reason) and
+  publishes `sandbox.prepare` events, so chat is never blocked. A machine with
+  fewer than **4 GiB free** is refused, even from **Prepare now**; `Later`
+  hides the notice for a week. The measured wall time and peak RSS are stored
+  next to the cache and never leave the computer.
+- **Recipe 5 never compiles inside a request.** An unprepared, stale,
+  preparing, failed or memory-refused cache reports unavailable with the
+  reason and the request continues without the code recipe. The one-time
+  compile happens only from the notice/Settings or from the installer flag.
+- **API and CLI.** `GET /api/sandbox`, `POST /api/sandbox/prepare`,
+  `POST /api/sandbox/defer`; `swarmbly-app --prepare-sandbox` compiles and
+  exits with stable codes (0 ready, 1 failed, 2 extra missing, 3 not enough
+  free memory, 4 bad data directory) so the umbrella installer can run it at
+  install time. `docs/INSTALL.md` documents the call.
+- **Doctor export** (`doctor_export.py`, `recent_errors.py`, `db.recent_failures`).
+  `GET /api/doctor/export/preview` returns the exact JSON and text strings;
+  `POST /api/doctor/export` writes that same snapshot, and the UI shows both
+  files before saving. The export contains only App/LCE/Core versions,
+  OS/architecture, Python, CPU/RAM/GPU class, installed extras, Ollama
+  reachability and model tags, the sandbox state and compile measurements, P2P
+  counts (listening, peers, circles, relay configured, relay/push codes) and
+  the last error codes with timestamps. It never carries node ids or keys,
+  names, circle names or ids, member names, IPs or host names, paths under the
+  user's home, project names, document titles, prompts, answers, glossary,
+  memory, API keys or the relay host. A schema validator ships with the module
+  and the tests. `swarmbly-app doctor-export` writes both files.
+- **Docs and tests.** User guide EN/ES (first launch, doctor export),
+  INSTALL (installer flag and exit codes), LIMITATIONS (what the export
+  contains and never contains) and this entry. `tests/test_first_launch.py`
+  covers the notice conditions, the 4 GiB refusal, background transitions, a
+  request during preparation and the CLI exit codes;
+  `tests/test_doctor_export.py` builds an export from a fixture full of
+  private canaries, validates the schema and asserts that the preview and the
+  saved files are byte-for-byte equal.
+
 **Off-LAN through the circle relay, WP3 (D-016/D-023).**
 
 - **Relay in the circle.** The owner sets `relay: {host, port,

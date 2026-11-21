@@ -195,6 +195,27 @@ Limitations are documented, never hidden. *[Español](#español) below.*
     restart resets its byte counters (a budget, not accounting), and a member
     can spend the relay's bandwidth up to those limits.
 
+37. **The sandbox cache is prepared at first launch, not normally inside a request.** The
+    first code recipe needs a one-time WebAssembly compile that peaks at about
+    3.3 GB. The App shows a notice with the expected time (about 5 s on Apple
+    Silicon, about 60 s on a 2-vCPU machine) and memory, refuses to start with
+    fewer than 4 GB free even when the user presses *Prepare now*, and runs
+    the compile in the background. Until the cache is ready, recipe 5 is
+    unavailable with the reason (preparing, not prepared, failed or too little
+    free memory) and the answer continues without it: the one-time compile
+    never happens inside a request. A cache recorded by another `wasi-python`
+    or Python version is stale and is prepared again.
+    The measurement stays local and is the only compile data in the export.
+38. **The doctor export is allow-listed, not redacted.** It contains versions,
+    OS/architecture, Python, CPU/RAM/GPU class, installed extras, Ollama
+    reachability and model tags, the sandbox state and measurements, P2P
+    counts, relay/push status codes and the last error codes with timestamps.
+    It does not contain node ids or keys, names, circle names or ids, member
+    names, IP addresses or host names, paths under the user's home, project
+    names, document titles, prompts, answers, glossary, memory, API keys or
+    the relay host. Model tags are the local Ollama names. Read the preview
+    before attaching the file; the App writes exactly that preview.
+
 ### Protocol appendix: credit control messages (D-020/D-021)
 
 The App already keeps its MINOR-safe extension list in item 16 above, so this
@@ -344,3 +365,24 @@ consult.
     control (`credit_receipt`, `credit_spend`, `credit_spent`) se documentan
     con sus campos, firma y validación en el apéndice en inglés de arriba; son
     MINOR-safe y un nodo antiguo ignora un tipo desconocido (SPEC §3).
+
+37. La caché del sandbox se prepara, no se compila dentro de una solicitud:
+    la primera receta de código necesita una compilación WebAssembly de unos
+    3,3 GB de pico. La App muestra un aviso con el tiempo y la memoria
+    previstos, no la inicia con menos de 4 GB libres ni al pulsar *Preparar
+    ahora*, y la ejecuta en segundo plano. Hasta que la caché está lista, la
+    receta 5 no está disponible con la razón (preparando, sin preparar, falló
+    o poca memoria libre) y la respuesta sigue sin ella: la compilación nunca
+    ocurre dentro de una solicitud. Una caché de otra versión de
+    `wasi-python` o de Python se considera desactualizada.
+    38. La exportación de diagnóstico es una lista blanca, no un texto
+    redactado: contiene versiones, sistema y arquitectura, Python, clase de
+    CPU/RAM/GPU, complementos, si Ollama responde y sus etiquetas de modelo,
+    el estado y las mediciones del sandbox, contadores P2P, códigos de
+    relay/envío y los últimos códigos de error con fecha. No contiene
+    identificadores de nodo ni claves, nombres, nombres de círculo o sus
+    identificadores, nombres de miembros, IP ni nombres de host, rutas bajo tu carpeta
+    personal, nombres de proyectos, títulos de documentos, preguntas,
+    respuestas, glosario, memoria, claves de API ni el host del relay. Lee la
+    vista previa antes de adjuntarla: la App escribe exactamente esa vista
+    previa.

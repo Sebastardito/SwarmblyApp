@@ -399,7 +399,40 @@ With the download permission on, *Download* asks for confirmation and Ollama
 does the rest; progress shows in the app and can be cancelled. Some licences
 restrict commercial use; the dialog says so.
 
-## 7. Without a window (headless)
+## 7. First launch: the code sandbox and the doctor export
+
+**The code recipe compiles once.** On first use, recipe 5 (data with code)
+compiles the WebAssembly Python module. That takes about 5 s and 3.3 GB of
+memory on an Apple-silicon Mac and about 60 s on a 2-vCPU machine with 8 GB.
+Swarmbly now prepares it from the first launch instead of inside a request:
+when the optional `[sandbox]` extra is installed and the compiled cache is
+missing or stale, a notice appears in the app and in the first-run assistant.
+It shows the expected time and memory and offers **Prepare now** / **Later**.
+If you choose **Later**, the notice hides for a week and recipe 5 stays
+unavailable until you prepare it from Settings or with the installer flag.
+The compile runs in the background (`preparing`, then `ready`, or `failed`
+with the reason); the chat keeps working. Until it is ready, recipe 5 reports
+why it is unavailable and the answer continues without it; the compile is
+never paid inside a request. With less than 4 GB of free memory Swarmbly does
+not start the compile, even from **Prepare now**; close other applications or
+use a machine with more memory.
+The measured compile time and peak memory stay local and appear in the doctor
+export. The same step is available in **Settings → System**.
+
+**Doctor export.** **Settings → System → Doctor export → Review and save…**
+writes one JSON and one readable text file. The screen shows the exact text
+and JSON before saving, and saving writes that same snapshot. Attach either
+file to a bug report: it contains only App/LCE/Core versions, OS and
+architecture, Python version, CPU/RAM/GPU class, installed extras, whether
+Ollama answers and its model tags, the sandbox state and compile measurements,
+P2P counts (listening, peers, circles, relay configured and push codes), and
+the last error codes with timestamps. It never contains node ids or keys,
+names, circle names or ids, member names, IP addresses or host names, paths
+under your home, project names, document titles, prompts, answers, glossary,
+memory, API keys or the relay host. On the command line:
+`swarmbly-app doctor-export`.
+
+## 8. Without a window (headless)
 
 ```bash
 ./launch.sh --headless                        # or: swarmbly-app headless
@@ -411,7 +444,7 @@ swarmbly-app config set model.model_name llama3.2:3b
 Useful for a second computer or a Raspberry Pi that only lends compute.
 `swarmbly-app status` prints version, node id and data directory.
 
-## 8. Keyboard and accessibility
+## 9. Keyboard and accessibility
 
 Every control is reachable with the keyboard and shows a visible focus ring;
 *Skip to content* is the first tab stop. *Reduce motion* (Settings → General,
@@ -633,6 +666,39 @@ Recommended, General, Models, Swarm, Privacy, Results, Permissions y System.
 Mínimo de respuestas por microtarea = réplicas desde el inicio; máximo =
 techo incluyendo intentos extra. Las descargas muestran tamaño y licencia y
 requieren el permiso correspondiente.
+
+**Primer arranque: el sandbox de código y la exportación de diagnóstico.**
+La receta 5 compila una vez el Python WebAssembly: unos 5 s y 3,3 GB de
+memoria en un Mac Apple Silicon, unos 60 s en una máquina de 2 vCPU con 8 GB.
+La App lo prepara desde el primer arranque, no dentro de una solicitud: si el
+complemento opcional `[sandbox]` está instalado y la caché compilada falta o
+está desactualizada, aparece un aviso en la app y en el asistente inicial con
+el tiempo y la memoria previstos y los botones **Preparar ahora** / **Más
+tarde**. Si eliges **Más tarde**, el aviso se oculta una semana y la receta 5
+sigue sin estar disponible hasta que la prepares desde Ajustes o con la opción
+del instalador. La compilación ocurre en segundo plano (`preparando`, luego `listo`,
+o `falló` con la razón) y el chat sigue funcionando. Hasta que está lista, la
+receta 5 explica por qué no está disponible y la respuesta continúa sin ella;
+la compilación nunca se paga dentro de una solicitud.
+Con menos de 4 GB de memoria libre la App no inicia la compilación, ni
+siquiera al pulsar **Preparar ahora**; cierra otras aplicaciones o usa una
+computadora con más memoria. El tiempo y el pico de memoria medidos se quedan
+en este equipo y aparecen en la exportación de diagnóstico; el mismo paso está
+en **Ajustes → Sistema**.
+**Exportación de diagnóstico.** **Ajustes → Sistema → Exportación de
+diagnóstico → Revisar y guardar…** escribe un JSON y un texto legible. La
+pantalla muestra el texto y el JSON exactos antes de guardar, y al guardar se
+escribe esa misma instantánea. Adjunta cualquiera de los dos a un informe de
+error: solo contiene versiones de App/LCE/Core, sistema y arquitectura,
+versión de Python, clase de CPU/RAM/GPU, complementos instalados, si Ollama
+responde y sus etiquetas de modelo, el estado del sandbox y sus mediciones,
+contadores P2P (escucha, pares, círculos, relay configurado y códigos de envío)
+y los últimos códigos de error con fecha. Nunca contiene identificadores de
+nodo ni claves, nombres, nombres de círculo o sus identificadores, nombres de
+miembros, direcciones IP ni nombres de host, rutas bajo tu carpeta personal,
+nombres de proyectos, títulos de documentos, preguntas, respuestas, glosario,
+memoria, claves de API ni el host del relay. En la terminal:
+`swarmbly-app doctor-export`.
 
 **Sin ventana:** `./launch.sh --headless` y `swarmbly-app config set …` para
 equipos que solo prestan cómputo. **Accesibilidad:** todo es operable con
