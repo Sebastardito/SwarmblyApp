@@ -1204,7 +1204,8 @@ class ChatService:
                         request.receipt_ctx["inventory"] = inv
                 given_list = inv if (inv is not None and ccfg.get("inventory")
                                      and ccfg.get("checklist", True)) else None
-                blocks.append(_sources_block(sources, user_text, gloss_pairs, inventory=given_list))
+                blocks.append(_sources_block(sources, user_text, gloss_pairs,
+                                             inventory=given_list, lang=lang_now))
                 from .compose import conflict_block, conflicts
                 compared = list(sources)
                 if (ccfg.get("conflicts_web") and (web_found or {}).get("results")
@@ -1248,7 +1249,8 @@ class ChatService:
                     docs = self.document_list(request.project_id)
                 except Exception:
                     docs = []
-                block = _documents_block(docs, user_text, _doc_labels(history, sources))
+                block = _documents_block(docs, user_text, _doc_labels(history, sources),
+                                         lang=lang_now)
                 if not sources:
                     block += "\n" + _NOTHING_FOUND.get(_lang(user_text), _NOTHING_FOUND["en"])
                     if web_found is None and request.receipt_ctx.get("web_offer") is None:
@@ -4213,8 +4215,9 @@ _DOCS_HEAD = {
 
 
 def _documents_block(docs: list[dict[str, Any]], user_text: str,
-                     labels: dict[str, tuple[str, str]] | None = None) -> str:
-    lang = _lang(user_text)
+                     labels: dict[str, tuple[str, str]] | None = None,
+                     lang: str = "") -> str:
+    lang = lang or _lang(user_text)
     lines = [_DOCS_HEAD.get(lang, _DOCS_HEAD["en"])]
     labels = labels or {}
     for d in docs[:60]:
@@ -4232,14 +4235,16 @@ def _documents_block(docs: list[dict[str, Any]], user_text: str,
 
 def _sources_block(sources: list[dict[str, Any]], user_text: str,
                    pairs: list[tuple[str, str]] | None = None,
-                   inventory: dict[str, Any] | None = None) -> str:
+                   inventory: dict[str, Any] | None = None,
+                   lang: str = "") -> str:
     """LCE C1: retrieved paragraphs for a local answer, with their origin.
 
     The user's term is written next to the first equivalent of it in each
     paragraph ("inbreeding («endogamia»)", "Mimus («cucuves»)"), only in what
     the model reads: the 7B model kept saying the sources did not mention
     "endogamia" when they spoke of inbreeding (sixth test, third run)."""
-    head = _SOURCES_HEAD.get(_lang(user_text), _SOURCES_HEAD["en"])
+    lang = lang or _lang(user_text)
+    head = _SOURCES_HEAD.get(lang, _SOURCES_HEAD["en"])
     lines = [head]
     q = _fold_word(user_text)
     asked = []
@@ -4271,7 +4276,6 @@ def _sources_block(sources: list[dict[str, Any]], user_text: str,
     # them less as the block grew (no citation at all with 4,400 prompt tokens,
     # open battery of 9 November 2026). A short reminder at the end, next to
     # the question, brought the labels back without losing content.
-    lang = _lang(user_text)
     lines.append("")
     if inventory is not None:
         # F1 (3.2): the requirements of a composition, read by code, replace the
