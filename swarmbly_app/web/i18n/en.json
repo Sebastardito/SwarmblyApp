@@ -1,6 +1,7 @@
 {
  "nav": {
   "chat": "Chat",
+  "teams": "Teams",
   "swarm": "Swarm",
   "memory": "Memory",
   "settings": "Settings",
@@ -117,6 +118,11 @@
   "export": "Export",
   "delete": "Delete",
   "placeholder": "Ask something. Lists and itemised tasks can be shared with the swarm.",
+  "team": "Team",
+  "teamNone": "No team",
+  "hint.team": "A stored team runs this message as its plan. Privacy, role and passage rules still apply.",
+  "partial": "partial answer",
+  "partialTitle": "Some steps could not be completed; the answer names them and why.",
   "attach": "Attach text",
   "attachHint": "Text files up to 200 KB, read on this computer",
   "attachTooBig": "{name} is larger than 200 KB",
@@ -244,9 +250,9 @@
   "authorName": "Author's name (exact)",
   "authorServices": "Services",
   "authorService": {
-    "orcid": "ORCID",
-    "openalex": "OpenAlex",
-    "pubmed": "PubMed"
+   "orcid": "ORCID",
+   "openalex": "OpenAlex",
+   "pubmed": "PubMed"
   },
   "authorConsent": "This name will be sent to: {hosts}. It is a person's name.",
   "authorNoService": "no service selected",
@@ -541,7 +547,6 @@
   "noneMarked": "none marked",
   "largeModelMin": "Large model from",
   "reasonerModels": "Reasoning models",
-
   "graph": "Map",
   "graphLabel": "Map of this node and its peers",
   "graphEmpty": "No peers yet. Turn on the local network or connect by address.",
@@ -1417,5 +1422,52 @@
   "corpusPickFirst": "Choose a project in Settings → Swarm first.",
   "ownPassages": "Document passages to my own devices",
   "ownPassagesHelp": "When on, recipe 4 may attach passages of your documents to items sent to peers in my-own-devices mode. Off by default; separate from privacy.third_party_passages."
+ },
+ "teams": {
+  "title": "Teams",
+  "lede": "A team is a stored plan: named steps, each with an optional node role and dependencies on earlier steps. The same team runs on one computer (its local model pool) or across circle members, by role. A team never adds a permission.",
+  "create": "New team",
+  "createTitle": "New team",
+  "editTitle": "Edit team",
+  "edit": "Edit",
+  "delete": "Delete",
+  "duplicate": "Duplicate",
+  "use": "Use in chat",
+  "builtin": "example",
+  "own": "yours",
+  "project": "this project",
+  "none": "No teams yet. Create one or duplicate an example.",
+  "loadFailed": "The teams could not be read: {e}",
+  "storage": "Stored in {path}",
+  "name": "Name",
+  "description": "Description",
+  "step": "Step {n}",
+  "stepName": "Step name",
+  "instruction": "Instruction template",
+  "depends": "Runs after",
+  "after": "after",
+  "addStep": "Add step",
+  "removeStep": "Remove",
+  "save": "Save",
+  "saved": "Team saved",
+  "deleted": "Team deleted",
+  "nameRequired": "The team needs a name.",
+  "stepsRequired": "Every step needs a name and an instruction.",
+  "placeholderRequired": "At least one step must contain {request}.",
+  "requestHint": "Use {request} where the user's message belongs. A step may depend only on earlier steps.",
+  "duplicateHint": "The copy is yours; the example stays read-only.",
+  "copySuffix": "copy",
+  "deleteConfirm": "Delete the team “{name}”?",
+  "deleteHint": "This only removes the stored template; answers already made are not touched.",
+  "picked": "Team “{name}” will run the next message.",
+  "unnamedStep": "unnamed step",
+  "roleLabel": "Node role",
+  "role": {
+   "none": "No role (any worker)",
+   "search": "search",
+   "corpus": "corpus",
+   "large_model": "large model",
+   "reasoner": "reasoner"
+  }
  }
 }

@@ -1,6 +1,7 @@
 {
  "nav": {
   "chat": "Chat",
+  "teams": "Equipos",
   "swarm": "Enjambre",
   "memory": "Memoria",
   "settings": "Ajustes",
@@ -117,6 +118,11 @@
   "export": "Exportar",
   "delete": "Eliminar",
   "placeholder": "Pregunta algo. Las listas y tareas por ítems pueden compartirse con el enjambre.",
+  "team": "Equipo",
+  "teamNone": "Sin equipo",
+  "hint.team": "Un equipo guardado ejecuta este mensaje como su plan. Las reglas de privacidad, rol y pasajes siguen aplicando.",
+  "partial": "respuesta parcial",
+  "partialTitle": "Algunos pasos no se pudieron completar; la respuesta los nombra y dice por qué.",
   "attach": "Adjuntar texto",
   "attachHint": "Archivos de texto de hasta 200 KB, leídos en esta computadora",
   "attachTooBig": "{name} supera los 200 KB",
@@ -244,9 +250,9 @@
   "authorName": "Nombre del autor (exacto)",
   "authorServices": "Servicios",
   "authorService": {
-    "orcid": "ORCID",
-    "openalex": "OpenAlex",
-    "pubmed": "PubMed"
+   "orcid": "ORCID",
+   "openalex": "OpenAlex",
+   "pubmed": "PubMed"
   },
   "authorConsent": "Este nombre se enviará a: {hosts}. Es el nombre de una persona.",
   "authorNoService": "ningún servicio seleccionado",
@@ -541,7 +547,6 @@
   "noneMarked": "ninguno marcado",
   "largeModelMin": "Modelo grande desde",
   "reasonerModels": "Modelos de razonamiento",
-
   "graph": "Mapa",
   "graphLabel": "Mapa de este nodo y sus pares",
   "graphEmpty": "Aún no hay pares. Activa la red local o conecta por dirección.",
@@ -1428,5 +1433,52 @@
   "corpusPickFirst": "Elige primero un proyecto en Ajustes → Swarm.",
   "ownPassages": "Pasajes de documentos a mis propios dispositivos",
   "ownPassagesHelp": "Si está activo, la receta 4 puede adjuntar pasajes de tus documentos a los elementos enviados a pares en modo mis propios dispositivos. Está apagado por defecto y es independiente de privacy.third_party_passages."
+ },
+ "teams": {
+  "title": "Equipos",
+  "lede": "Un equipo es un plan guardado: pasos con nombre, cada uno con un rol de nodo opcional y dependencias de pasos anteriores. El mismo equipo corre en una computadora (su pool local de modelos) o entre miembros del círculo, por rol. Un equipo nunca agrega un permiso.",
+  "create": "Nuevo equipo",
+  "createTitle": "Nuevo equipo",
+  "editTitle": "Editar equipo",
+  "edit": "Editar",
+  "delete": "Eliminar",
+  "duplicate": "Duplicar",
+  "use": "Usar en el chat",
+  "builtin": "ejemplo",
+  "own": "tuyo",
+  "project": "este proyecto",
+  "none": "Todavía no hay equipos. Crea uno o duplica un ejemplo.",
+  "loadFailed": "No se pudieron leer los equipos: {e}",
+  "storage": "Guardado en {path}",
+  "name": "Nombre",
+  "description": "Descripción",
+  "step": "Paso {n}",
+  "stepName": "Nombre del paso",
+  "instruction": "Plantilla de instrucción",
+  "depends": "Corre después de",
+  "after": "después de",
+  "addStep": "Agregar paso",
+  "removeStep": "Quitar",
+  "save": "Guardar",
+  "saved": "Equipo guardado",
+  "deleted": "Equipo eliminado",
+  "nameRequired": "El equipo necesita un nombre.",
+  "stepsRequired": "Cada paso necesita un nombre y una instrucción.",
+  "placeholderRequired": "Al menos un paso debe contener {request}.",
+  "requestHint": "Usa {request} donde va el mensaje del usuario. Un paso solo puede depender de pasos anteriores.",
+  "duplicateHint": "La copia es tuya; el ejemplo sigue siendo de solo lectura.",
+  "copySuffix": "copia",
+  "deleteConfirm": "¿Eliminar el equipo «{name}»?",
+  "deleteHint": "Solo se quita la plantilla guardada; las respuestas ya hechas no se tocan.",
+  "picked": "El equipo «{name}» ejecutará el próximo mensaje.",
+  "unnamedStep": "paso sin nombre",
+  "roleLabel": "Rol de nodo",
+  "role": {
+   "none": "Sin rol (cualquier nodo)",
+   "search": "búsqueda",
+   "corpus": "corpus",
+   "large_model": "modelo grande",
+   "reasoner": "razonador"
+  }
  }
 }
