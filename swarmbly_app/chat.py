@@ -320,19 +320,31 @@ class ChatService:
     def _agent_update(self, request: ActiveRequest, run: Any) -> None:
         """Publish a pause for approval, or finish the message and its receipt."""
         state = run.state
+        notes = self._agent_suspensions(request, run)
+        stages = [{"stage": "TOOL", "status": note.get("status", "skipped"),
+                   "detail": {"tool": note.get("tool", ""),
+                              "reason": note.get("reason", ""),
+                              "instead": note.get("instead", "")}}
+                  for note in notes]
         if getattr(state, "status", "") == "awaiting_approval":
             card = self.agent.pending_card(run)
             summary = self.agent.summary(run)
             summary["pending"] = card
+            summary["suspensions"] = notes
             note = self._agent_wait_text(card)
+            warning = self._suspension_text(notes, _lang(request.task or ""))
             meta = {
                 "status": "awaiting_approval", "note": note,
                 "mode": "local", "model": request.model,
                 "request_id": request.request_id, "executed": "local",
                 "use_tools": True, "agent": summary,
             }
+            if notes:
+                meta["suspensions"] = notes
             try:
-                self.db.update_message(request.message_id, content="", meta=meta)
+                self.db.update_message(request.message_id,
+                                       content=(warning or note), meta=meta,
+                                       **({"stages": stages} if stages else {}))
                 self.db.touch_conversation(request.conversation_id)
             except Exception:
                 pass
@@ -346,6 +358,7 @@ class ChatService:
         content = self._agent_answer(request, run)
         status = "done" if getattr(state, "status", "") == "done" else "stopped"
         summary = self.agent.summary(run)
+        summary["suspensions"] = notes
         meta: dict[str, Any] = {
             "status": status,
             "note": self._agent_stop_text(summary.get("stop_reason", ""), request),
@@ -353,6 +366,8 @@ class ChatService:
             "request_id": request.request_id, "executed": "local",
             "use_tools": True, "agent": summary,
         }
+        if notes:
+            meta["suspensions"] = notes
         if run.last_model:
             meta["model"] = run.last_model.get("model") or request.model
             meta["completion_tokens"] = run.last_model.get("completion_tokens")
@@ -368,7 +383,8 @@ class ChatService:
         except Exception as exc:       # a receipt problem never loses the answer
             meta["receipt_error"] = str(exc)[:200]
         try:
-            self.db.update_message(request.message_id, content=content, meta=meta)
+            self.db.update_message(request.message_id, content=content, meta=meta,
+                                   **({"stages": stages} if stages else {}))
             self.db.finish_request(request.request_id, status, meta)
             self.db.touch_conversation(request.conversation_id)
         except Exception:
@@ -445,6 +461,18 @@ class ChatService:
         if reason == "max_tool_calls":
             return ("Se detuvo al alcanzar el máximo de llamadas a herramientas."
                     if es else "Stopped at the maximum number of tool calls.")
+        if reason.startswith("loop_guard"):
+            tool = reason.split(":", 1)[1].strip() if ":" in reason else ""
+            if es:
+                return (f"Se detuvo el bucle de herramientas: {tool} se pidió varias veces "
+                        "con los mismos argumentos." if tool else
+                        "Se detuvo el bucle de herramientas: la misma llamada se repitió.")
+            return (f"The tool loop was stopped: {tool} was requested several times with "
+                    "the same arguments." if tool else
+                    "The tool loop was stopped: the same call repeated.")
+        if reason == "approval_required":
+            return ("La herramienta no se ejecutó: espera tu aprobación." if es
+                    else "The tool did not run: it is waiting for your approval.")
         if reason == "stopped_by_user":
             return "Detenido a tu petición." if es else "Stopped at your request."
         if reason == "app_restarted":
@@ -455,15 +483,114 @@ class ChatService:
                     else "The model could not continue; nothing else ran.")
         return ""
 
+    @staticmethod
+    def _step_text(step: Any) -> str:
+        """The prose of one step, without a raw tool-call block."""
+        action = getattr(step, "action", None)
+        if action is None or hasattr(action, "tool"):
+            return ""
+        if not hasattr(action, "text"):
+            return ""
+        return _strip_tool_markup(str(getattr(action, "text", "") or ""))
+
+    def _agent_suspensions(self, request: ActiveRequest, run: Any) -> list[dict[str, str]]:
+        """Tools that did not run, why, and what the answer did instead.
+
+        The runtime reports a denied call as an error observation and a loop
+        guard as a stop reason; neither reached the user. This gathers both,
+        plus a tool that stopped answering, so the answer and its stages can
+        say which tool was suspended and why.
+        """
+        state = run.state
+        lang = _lang(request.task or "")
+        es = lang == "es"
+        out: list[dict[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        has_answer = any(self._step_text(step) for step in getattr(state, "steps", []) or [])
+        instead = ("La respuesta se escribió sin esa herramienta." if es
+                   else "The answer was written without that tool.") if has_answer else (
+                   "No se ejecutó nada más." if es else "Nothing else ran.")
+
+        def add(tool: str, reason: str, status: str = "skipped") -> None:
+            key = (tool, reason)
+            if key in seen:
+                return
+            seen.add(key)
+            out.append({"tool": tool, "reason": reason, "instead": instead,
+                        "status": status})
+
+        for step in getattr(state, "steps", []) or []:
+            observation = getattr(step, "observation", None)
+            action = getattr(step, "action", None)
+            if observation is None or getattr(observation, "ok", True):
+                continue
+            tool = str(getattr(observation, "tool", "") or getattr(action, "tool", "") or "")
+            content = " ".join(str(getattr(observation, "content", "") or "").split())
+            reason = _suspension_reason(content, es)
+            if reason:
+                add(tool or ("?" if es else "unknown tool"), reason, "failed")
+
+        pending = getattr(state, "pending", None)
+        if getattr(state, "status", "") == "awaiting_approval" and pending is not None:
+            tool = str(getattr(pending, "tool", "") or "")
+            why = " ".join(str(getattr(state, "pending_reason", "") or "").split())
+            reason = (("espera tu aprobación" if es else "waiting for your approval")
+                      + (f": {why}" if why else ""))
+            add(tool, reason, "awaiting_approval")
+
+        stop_reason = str(getattr(state, "stop_reason", "") or "")
+        if stop_reason.startswith("loop_guard"):
+            tool = stop_reason.split(":", 1)[1].strip() if ":" in stop_reason else ""
+            add(tool, ("el bucle de herramientas se detuvo por repetición" if es
+                       else "the tool loop stopped because the same call repeated"),
+                "stopped")
+        elif stop_reason in ("max_tool_calls", "max_steps"):
+            add("", ("se alcanzó el límite de herramientas del mensaje" if es
+                     else "the message's tool limit was reached"), "stopped")
+
+        approvals = {str(item.get("tool") or ""): str(item.get("decision") or "")
+                     for item in getattr(run, "approvals", []) or []}
+        for tool, decision in approvals.items():
+            if decision == "denied":
+                add(tool, ("la política de la app rechazó la llamada" if es
+                           else "the app's policy refused the call"), "failed")
+        return out
+
+    @staticmethod
+    def _suspension_text(notes: list[dict[str, str]], lang: str) -> str:
+        if not notes:
+            return ""
+        es = lang == "es"
+        lines = []
+        for note in notes:
+            tool = note.get("tool") or ("una herramienta" if es else "a tool")
+            reason = note.get("reason") or ("no se ejecutó" if es else "did not run")
+            instead = note.get("instead") or ""
+            lines.append(
+                (f"Aviso: no se pudo usar {tool}: {reason}. {instead}" if es
+                 else f"Note: {tool} could not be used: {reason}. {instead}").strip())
+        return "\n".join(lines)
+
     def _agent_answer(self, request: ActiveRequest, run: Any) -> str:
         """The final answer, or the last tool data when the run stopped early."""
         state = run.state
+        lang = _lang(request.task or "")
+        notes = self._agent_suspensions(request, run)
+        warning = self._suspension_text(notes, lang)
         for step in reversed(getattr(state, "steps", []) or []):
-            action = step.action
-            if hasattr(action, "text") and not hasattr(action, "tool"):
-                return str(action.text)
+            text = self._step_text(step)
+            if text:
+                return f"{warning}\n\n{text}".strip() if warning else text
         note = self._agent_stop_text(
             str(getattr(state, "stop_reason", "") or ""), request)
+        stop_reason = str(getattr(state, "stop_reason", "") or "")
+        if stop_reason.startswith(("loop_guard", "max_tool_calls", "max_steps")):
+            # The loop guard stopped the run: never return raw tool markup or a
+            # tool dump as if it were the answer.
+            honest = ("No se escribió una respuesta: se detuvo el bucle de herramientas."
+                      if lang == "es" else
+                      "No prose answer was produced: the tool loop was stopped.")
+            return "\n\n".join(x for x in (warning, note, honest) if x).strip()
         observation = None
         for step in reversed(getattr(state, "steps", []) or []):
             if step.observation is not None:
@@ -472,17 +599,19 @@ class ChatService:
         if observation is None:
             reason = str(getattr(state, "stop_reason", "") or "")
             if reason.startswith("generate_error"):
-                return f"{note}\n{reason}".strip()
-            return note or ("No answer was produced." if not str(
-                self.config().get("language") or "en").lower().startswith("es")
-                else "No se produjo una respuesta.")
+                base = f"{note}\n{reason}".strip()
+            else:
+                base = note or ("No answer was produced." if lang != "es"
+                                else "No se produjo una respuesta.")
+            return f"{warning}\n\n{base}".strip() if warning else base
         label = (f"[tool result: {observation.tool}; "
                  f"source={observation.source or 'unknown'}; "
                  f"sha256={observation.sha256}")
         if observation.truncated:
             label += "; truncated"
         label += "]"
-        return f"{note}\n\n{label}\n<<<\n{observation.content}\n>>>".strip()
+        body = f"{note}\n\n{label}\n<<<\n{observation.content}\n>>>".strip()
+        return f"{warning}\n\n{body}".strip() if warning else body
 
     def _whole_small_documents(self, sources: list[dict[str, Any]], project_id: str,
                                named: list[str] | tuple[str, ...] = (),
@@ -3233,6 +3362,100 @@ _SOURCES_HEAD = {
 
 
 WHOLE_DOC_CHARS = 6000          # a document this short is given whole (3.1)
+def _tool_object(value: Any) -> bool:
+    """True when a JSON object is a tool call, not the user's data."""
+    if not isinstance(value, dict):
+        return False
+    keys = {str(key).lower() for key in value}
+    return bool(keys & {"action", "tool", "tool_call", "function_call", "name",
+                        "arguments", "parameters"}) and bool(
+        keys & {"action", "tool", "tool_call", "function_call", "arguments",
+                "parameters"})
+
+
+def _strip_tool_markup(text: str) -> str:
+    """Remove the model's raw tool-call block from a final answer.
+
+    A small model asked for a final answer after a tool loop sometimes emits
+    its protocol JSON (or tag form) as prose. Returning that to the user is
+    worse than returning nothing: the App strips fenced and bare tool objects,
+    XML-ish tool tags and the protocol's own markers, keeping any prose around
+    them.
+    """
+    text = str(text or "")
+    if not text:
+        return ""
+    # <tool_call>…</tool_call>, <function_call>…</function_call>, and the
+    # protocol markers some models emit (<|tool_call|> … <|/tool_call|>).
+    text = re.sub(r"(?is)<tool_call\b.*?>.*?</tool_call\s*>", " ", text)
+    text = re.sub(r"(?is)<function_call\b.*?>.*?</function_call\s*>", " ", text)
+    text = re.sub(r"(?is)<\|?tool_call\|?>.*?<\|?/tool_call\|?>", " ", text)
+    text = re.sub(r"(?is)<\|?function_call\|?>.*?<\|?/function_call\|?>", " ", text)
+
+    def fenced(match: re.Match[str]) -> str:
+        body = match.group(1).strip()
+        try:
+            if _tool_object(json.loads(body)):
+                return " "
+        except (ValueError, TypeError):
+            pass
+        return match.group(0)
+
+    text = re.sub(r"(?is)```(?:json|tool_call|tool)?\s*(\{.*?\})\s*```", fenced, text)
+    # A bare JSON object on its own line(s): keep it only when it is not a tool call.
+    def line(match: re.Match[str]) -> str:
+        body = match.group(0).strip()
+        try:
+            if _tool_object(json.loads(body)):
+                return ""
+        except (ValueError, TypeError):
+            pass
+        return match.group(0)
+
+    text = re.sub(r"(?m)^\s*\{.*?\}\s*$", line, text, flags=re.S)
+    # Protocol markers without a payload ("<|tool_call|>" alone).
+    text = re.sub(r"(?i)<\|?/?(?:tool_call|function_call)\|?>", " ", text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _suspension_reason(content: str, es: bool) -> str:
+    """A plain reason for a tool observation that did not succeed."""
+    low = (content or "").lower()
+    if not low:
+        return ""
+    if "suspended" in low:
+        return ("el servidor MCP está suspendido" if es
+                else "the MCP server is suspended")
+    if "did not answer" in low or "timed out" in low or "timeout" in low:
+        return ("el servidor dejó de responder" if es
+                else "the server stopped answering")
+    if "not running" in low:
+        return ("el servidor no está en marcha" if es
+                else "the server is not running")
+    if "approval not granted" in low:
+        # The user chose Skip: the card already said so, and this is not a
+        # suspension of the server.
+        return ""
+    if "not approved" in low or "approval" in low:
+        return ("la herramienta no está aprobada en Ajustes para este proyecto" if es
+                else "the tool is not approved in Settings for this project")
+    if low.startswith("denied:") or "denied:" in low:
+        detail = content.split("denied:", 1)[-1].strip()
+        detail = re.sub(r"\s+", " ", detail)[:240]
+        return (f"la política de la app rechazó la llamada: {detail}" if es
+                else f"the app's policy refused the call: {detail}")
+    if "unknown tool" in low:
+        return ("la herramienta ya no está registrada (el servidor se suspendió o cambió)" if es
+                else "the tool is no longer registered (the server was suspended or changed)")
+    if "tool error:" in low or low.startswith("error:"):
+        detail = re.sub(r"^tool error:\s*", "", content, flags=re.I)[:240]
+        return (f"la herramienta falló: {detail}" if es
+                else f"the tool failed: {detail}")
+    return ""
+
+
 def _fold_word(w: str) -> str:
     import unicodedata
     return "".join(c for c in unicodedata.normalize("NFKD", w.lower())
