@@ -153,6 +153,39 @@ the reason and later waves still run. A user stop cancels the run and stays
 `stopped`, never a partial answer. The requester is the coordinator: if it
 goes away the run ends; there is no plan migration in 3.5.
 
+**Reciprocity credits (3.5, D-020).** A credit is a **signed, non-transferable
+task receipt**, not money. When the requester accepts a verified result from a
+worker that is a member of a shared, valid circle, it signs a receipt for that
+worker: `receipt_id`, `circle_id`, `issuer`, `worker`, a BLAKE2b hash of the
+attempt id (never task content), `tokens_out`, `generation_ms`, the model tag,
+`issued_at` and `expires_at` (90 days by default, `credits.receipt_ttl_days`).
+The signature is Ed25519 over canonical JSON with the existing identity
+helpers. Nothing is issued for the local pool, for *my own devices* sends, for
+rejected or degraded replicas, or for an executor that returned nothing; the
+scheduler calls `credit.issue_for_attempt` only after verification and the
+quality check accepted the replica. The receipt travels as `credit_receipt` on
+the same TLS session (MINOR-safe, D-021) and is stored only if the signature,
+the manifest membership of issuer and this worker, the addressee, the expiry
+and the id are all valid. The wallet is local (`<data>/credits/wallet.json`,
+0600, atomic writes, bounded to 256 receipts) and per circle; a receipt is one
+indivisible courtesy unit, so `balance`, `earned` and `spent` count receipts.
+
+Only the named worker can spend one, only in the same circle, by sending one
+`credit_spend` just before a task to a member. The receiver verifies it again
+and, **only while busy**, lets that task wait for a slot while an uncredited
+task is refused; a requester without credits is still served whenever a slot
+is free. The spend is offered inside `dispatch_async` *after* circle admission
+and `egress.check_call`, so a credit can never bypass admission, the egress
+gate, lane/tier or any other policy. The spender marks the receipt spent. The
+accepting worker reports `credit_spent` (receipt id and spender only) to the
+issuer; the issuer keeps a bounded log (`<data>/credits/issued.json`) and flags
+a receipt reported twice — by one worker or by different workers — in the
+Swarm panel and the event bus (`credit.double_spend`). This is detection, not
+prevention, and nothing is broadcast beyond the circle: no transfer API, no
+token export, no market and no global ledger (SPEC §18, GOVERNANCE). A stolen
+node key can spend that node's receipts until the owner revokes the member
+(R-010).
+
 ## 4. Security model (summary)
 
 - **Identity:** Ed25519 per node (`node_id` = public key), never the IP.
@@ -173,7 +206,15 @@ goes away the run ends; there is no plan migration in 3.5.
   mutations and WebSocket; per-launch token; CSP; untrusted strings escaped.
 - **Privacy:** LOCAL tier and SANITISABLE/SENSITIVE lanes never leave the
   device; packets never carry the session id or the complete request.
-- **Peer sends and passages (D-017).** Every task packet passes
+- **Credits (D-020).** Receipts are signed by their issuer and carry a hash of
+the attempt id, never task content. The wallet is a local 0600 file, bounded,
+and a receipt is spendable only by the named worker in the same circle. The
+issuer's log detects a receipt reported spent twice; it does not prevent it
+across nodes or across circles, and a stolen node key can spend that node's
+receipts until revocation (R-010). There is no transfer, export, market or
+global ledger.
+
+**Peer sends and passages (D-017).** Every task packet passes
   `egress.check_call` with purpose `FRAGMENT` before it is written. Its
   destination class comes from the circle service, not the address:
   `CIRCLE` when the peer is listed by a valid shared manifest (the receipt
@@ -192,7 +233,8 @@ sources/  wiki/  adapters/  capsules/   LCE planes (local only)
 output/   exports/ reports/             logical default output location
 identity/ node_key (0600)               cache/tls/ node.crt, node.key (0600)
 circles/ manifests, invitations, joins  api_token (0600)   logs/   app.db (SQLite)
-teams.json (0600)                       <project>/teams.json (0600)
+credits/ wallet.json, issued.json (0600)  teams.json (0600)
+<project>/teams.json (0600)
 ```
 
 macOS `~/Library/Application Support/Swarmbly` · Linux `~/.local/share/swarmbly`
@@ -217,6 +259,7 @@ macOS `~/Library/Application Support/Swarmbly` · Linux `~/.local/share/swarmbly
 | D13 | Recommendations never enable the network, sharing or a tier; applying keeps a backup | 2026-10-12 |
 | D14 | Installer limited to known Python packages in the app venv | 2026-10-12 |
 | D-018 | Node roles (`large_model`, `reasoner`, `search`, `corpus`) are self-declared in the signed advertisement with validated metadata; placement tracks per-role success and roles never widen permissions | 2026-11-21 |
+| D-020 | Credits are signed, non-transferable, expiring task receipts spent only by the named worker in the same circle; double spending is detected at the issuer, never prevented by a global ledger | 2026-11-21 |
 | D-021 | Task plane stays wire 0.2; control and role extensions are MINOR-safe and ignored by older nodes | 2026-11-21 |
 
 ---
@@ -268,7 +311,44 @@ círculo `<name>`. Los pasajes devueltos son material de terceros para el
 solicitante: se etiquetan con el miembro y el círculo reales, no entran en su
 glosario ni memoria, y solo se reenvían a un nodo con `circle_passages`
 encendido o a un servicio de modelos con `privacy.third_party_passages`; si
-no, se ejecutan en local o la tarea falla honestamente. Las decisiones Q1–Q5,
+no, se ejecutan en local o la tarea falla honestamente.
+
+**Créditos de reciprocidad (3.5, D-020).** Un crédito es un **recibo de tarea
+firmado y no transferible**, no dinero. Cuando el solicitante acepta un
+resultado verificado de un worker que es miembro de un círculo compartido y
+válido, firma un recibo para ese worker: `receipt_id`, `circle_id`, `issuer`,
+`worker`, un hash BLAKE2b del id de intento (nunca el contenido de la tarea),
+`tokens_out`, `generation_ms`, el modelo, `issued_at` y `expires_at` (90 días
+por defecto, `credits.receipt_ttl_days`). La firma es Ed25519 sobre JSON
+canónico con los ayudantes de identidad existentes. No se emite recibo para el
+pool local, para el modo *mis propios dispositivos*, para réplicas rechazadas o
+degradadas, ni para un ejecutor que no devolvió nada; el planificador llama a
+`credit.issue_for_attempt` solo después de la verificación y de que el control
+de calidad aceptó la réplica. El recibo viaja como `credit_receipt` en la misma
+sesión TLS (MINOR-safe, D-021) y se guarda solo si la firma, la membresía de
+emisor y worker en el manifiesto, el destinatario, la caducidad y el id son
+válidos. La cartera es local (`<data>/credits/wallet.json`, 0600, escritura
+atómica, acotada a 256 recibos) y por círculo; un recibo es una unidad de
+cortesía indivisible, así que `balance`, `earned` y `spent` cuentan recibos.
+Solo el worker nombrado puede gastarlo, solo en el mismo círculo, enviando un
+`credit_spend` justo antes de una tarea a un miembro. El receptor lo verifica
+otra vez y, **solo mientras está ocupado**, deja que esa tarea espere un turno
+mientras una tarea sin crédito se rechaza; quien no tiene créditos sigue
+siendo atendido si hay un turno libre. El gasto se ofrece dentro de
+`dispatch_async` **después** de la admisión de círculo y de
+`egress.check_call`, así que un crédito nunca salta admisión, puerta de
+salida, carril/tier ni ninguna otra política. El gastador marca el recibo como
+gastado. El worker que lo acepta reporta `credit_spent` (solo id de recibo y
+gastador) al emisor; el emisor guarda un registro acotado
+(`<data>/credits/issued.json`) y marca un recibo reportado dos veces —por un
+worker o por workers distintos— en el panel Swarm y en el bus de eventos
+(`credit.double_spend`). Es detección, no prevención, y nada se difunde fuera
+del círculo: sin API de transferencia, sin exportar como token, sin mercado y
+sin libro contable global (SPEC §18, GOVERNANCE). Una clave de nodo robada
+puede gastar los recibos de ese nodo hasta que el dueño revoque al miembro
+(R-010).
+
+Las decisiones Q1–Q5,
 D1–D14 y D-018/D-021 están en la tabla anterior.
 
 **Equipos (3.5, D-019).** Un **equipo** es un plan guardado con nombre:

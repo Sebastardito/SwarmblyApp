@@ -257,6 +257,25 @@ its own switch in the same panel, also off by default. Keep the node key
 private: 3.5 has no mutual TLS, so a stolen key can impersonate a member until
 the owner revokes it.
 
+### Reciprocity credits · Créditos de reciprocidad
+
+When you accept a verified answer from a member of one of your circles, the
+requester signs a **credit receipt** for that worker. It names the circle, the
+issuer, the worker, a hash of the attempt (never the task text), the tokens
+generated, the model and an expiry date (90 days by default). The receipt is
+kept in the worker's local wallet, under **Swarm → Reciprocity credits**, with
+the balance, what was earned and spent per circle and what expires soon. It is
+not money: it belongs only to the worker it names, can only be offered back
+inside the same circle when that worker sends a task to a member, and the
+worker may then wait for a busy slot instead of being refused. It never lets a
+task skip admission, the egress gate, lane/tier or any other rule, and a node
+without credits is still served whenever there is a free slot. There is no
+transfer, no sale, no market and no shared ledger; a receipt expires and is
+lost. If a receipt is reported spent twice, the issuer flags it in the same
+panel — this is detection, not prevention, and nothing leaves the circle.
+Protect the node key: a stolen key can spend that node's receipts until the
+owner revokes the member (R-010).
+
 ## 4. Teams
 
 A **team** is a plan you store and run again: named steps, each with an
@@ -428,6 +447,24 @@ tenía esa opción activa no enciende los pasajes del círculo. El modo *Mis
 propios dispositivos* tiene su propio interruptor en el mismo panel, también
 apagado por defecto. Sin TLS mutuo en 3.5, protege la clave del nodo: una clave
 robada puede suplantar a un miembro hasta que el dueño lo revoque.
+
+**Créditos de reciprocidad.** Cuando aceptas una respuesta verificada de un
+miembro de uno de tus círculos, el solicitante firma un **recibo de crédito**
+para ese worker. Nombra el círculo, el emisor, el worker, un hash del intento
+(nunca el texto de la tarea), los tokens generados, el modelo y una fecha de
+caducidad (90 días por defecto). El recibo queda en la cartera local del
+worker, en **Swarm → Créditos de reciprocidad**, con el saldo, lo ganado y
+gastado por círculo y lo que caduca pronto. No es dinero: pertenece solo al
+worker que nombra, solo se puede ofrecer de vuelta dentro del mismo círculo
+cuando ese worker envía una tarea a un miembro, y puede entonces esperar un
+turno ocupado en vez de ser rechazado. Nunca permite saltar admisión, puerta de
+salida, carril/tier ni ninguna otra regla, y un nodo sin créditos sigue siendo
+atendido cuando hay un turno libre. No hay transferencia, venta, mercado ni
+libro contable compartido; un recibo caduca y se pierde. Si un recibo se
+reporta gastado dos veces, el emisor lo marca en el mismo panel: es detección,
+no prevención, y nada sale del círculo. Protege la clave del nodo: una clave
+robada puede gastar los recibos de ese nodo hasta que el dueño revoque al
+miembro (R-010).
 
 **Roles del nodo.** Un **rol de nodo** describe lo que esta computadora
 ofrece al enjambre como worker; no es el rol de modelo por respuesta que

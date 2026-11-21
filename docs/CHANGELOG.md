@@ -2,6 +2,58 @@
 
 ## Unreleased — 3.5 (work in progress)
 
+**Reciprocity credits, WP6 (D-020/D-021).**
+
+- **Signed, non-transferable receipts** (`swarmbly_app/p2p/credits.py`,
+  `engine/scheduler.py`). When the requester accepts a verified result from a
+  worker that is a member of a shared, valid circle, it signs an Ed25519
+  receipt over canonical JSON: random `receipt_id`, circle, issuer, worker, a
+  BLAKE2b hash of the attempt id (never task content), `tokens_out`,
+  `generation_ms`, model, `issued_at` and `expires_at` (90 days by default,
+  `credits.receipt_ttl_days`). Nothing is issued for the local pool, *my own
+  devices*, rejected or degraded replicas, or an executor that returned
+  nothing; the scheduler calls the service only after verification and the
+  quality check accepted the replica.
+- **Control plane** (`p2p/circles.py`, `p2p/node.py`). Three new MINOR-safe
+  types on the same TLS session: `credit_receipt` (issuer → worker),
+  `credit_spend` (worker → member, just before a task) and `credit_spent`
+  (accepting worker → issuer, receipt id and spender only). An older node
+  ignores them. Delivery checks signature, manifest membership of issuer and
+  worker, addressee, expiry and duplicate id; spend checks the same plus
+  `worker == sender` and replay. Messages and receipts are size-bounded.
+- **Local wallet and spending** (`p2p/credits.py`, `p2p/worker.py`). The
+  wallet is per circle under `<data>/credits/wallet.json` (0600, atomic,
+  bounded to 256 receipts); only the named worker can spend, only in the same
+  circle, and the spender marks the receipt spent. The spend is offered inside
+  `NodeManager.dispatch_async` **after** admission and `egress.check_call`, so
+  it never bypasses a gate. The worker waits for a slot only while busy and
+  only for the exact attempt a valid `credit_spend` named; an uncredited
+  requester is still served when a slot is free, and a large receipt buys one
+  priority, not many.
+- **Double-spend detection** (`p2p/credits.py`). The issuer keeps a bounded
+  log under `<data>/credits/issued.json` (0600). A receipt reported spent
+  twice (same or different workers) or spent by a node that is not the named
+  worker is flagged in `GET /api/credits`, in the event bus
+  (`credit.double_spend`) and in Swarm. It is detection, not prevention, and
+  nothing is broadcast beyond the circle.
+- **UI and API** (`api/__init__.py`, `web/js/monitor.js`,
+  `web/i18n/*.json`). The Swarm panel gets a Reciprocity credits section: per
+  circle balance/earned/spent/expiring, the issuer's flagged double spends,
+  and a one-paragraph explanation in English and Spanish that credits are a
+  courtesy inside a circle, not money. Daily counters are unchanged.
+- **Protocol appendix and docs** (`docs/LIMITATIONS.md` item 16 and the new
+  appendix there, `docs/ARCHITECTURE.md`, `docs/USER_GUIDE.md`). The appendix
+  documents fields, signature, validation and MINOR safety for all three
+  messages; it lives in the existing MINOR-safe extension list rather than a
+  new file. Limitations state detection, not prevention, and R-010.
+- **Tests** (`tests/test_credits.py`). Issuance only for an accepted circle
+  result (none for local/own-devices/executor-empty and none for a rejected
+  replica), forged/wrong-worker/non-member/expired/duplicate refusal, spend
+  only by the named worker and circle, priority only while busy, no bypass of
+  admission/egress, a requester without credits still served, double-spend
+  flags, wallet bounds and 0600 modes, unknown control types ignored, the API
+  read-only, and two real loopback nodes that earn, deliver, spend and report.
+
 **Baseline hygiene (T10.3a).**
 
 - **One canonical model family** (`swarmbly_app/models.py`, `state.py`,

@@ -62,10 +62,11 @@ Limitations are documented, never hidden. *[Español](#español) below.*
     packet fields `constraints.model_family` (SWIP draft in
     `docs/SWIP-DRAFT-model-family-hint.md`), `constraints.role`,
     `constraints.think` and `constraints.carries_passages`, result fields
-    `executor` and `sources`, error codes `E_POLICY`, `E_EXECUTION`,
-    `E_DUPLICATE`, `E_DISCONNECTED`, `E_ROLE_UNAVAILABLE`. All four node roles
-    are in the wire schema; WP4b executes `search` and `corpus` only when the
-    owner opts in.
+    `executor` and `sources`, control types `credit_receipt`, `credit_spend`
+    and `credit_spent` (D-020; appendix below), error codes `E_POLICY`,
+    `E_EXECUTION`, `E_DUPLICATE`, `E_DISCONNECTED`, `E_ROLE_UNAVAILABLE` and
+    the credit codes `E_CREDIT_*`. All four node roles are in the wire schema;
+    WP4b executes `search` and `corpus` only when the owner opts in.
 17. **Several local models share one machine.** In multi-model mode replicas
     run on different model families but the same hardware; unless the
     recommendation allows parallel generation they take turns. Their agreement
@@ -139,6 +140,69 @@ Limitations are documented, never hidden. *[Español](#español) below.*
     carries the wave reason, but a failure of the *local* list path still
     fails that request (the per-wave continuation applies to distributed
     waves).
+
+32. **Credits are a courtesy inside a circle, not money.** A receipt is
+    signed, non-transferable and expiring; only the named worker can spend it,
+    only in the same circle, and only to ask for queue priority while a worker
+    is busy. It never bypasses admission, the egress gate, lane/tier or any
+    other policy, and a requester without credits is still served when a slot
+    is free. There is no transfer, export as a token, market or global ledger
+    (SPEC §18, GOVERNANCE). The issuer detects a receipt reported spent twice
+    in its own bounded log and flags it in Swarm; that is **detection, not
+    prevention**, it does not stop a determined double spend, and nothing is
+    broadcast beyond the circle. Because 3.5 has no mutual TLS, a stolen node
+    key can spend that node's receipts until the owner revokes the member
+    (R-010); protect the key. A receipt is one indivisible unit, so a large
+    task does not buy several favours, and an expired receipt is lost. Wallet
+    and issuer log are bounded (256 and 512 records); when the wallet is full
+    a new valid receipt is refused rather than silently dropping an old one,
+    and a receipt that has fallen out of the issuer's log cannot be matched by
+    a later report.
+
+### Protocol appendix: credit control messages (D-020/D-021)
+
+The App already keeps its MINOR-safe extension list in item 16 above, so this
+appendix lives here rather than in a new `docs/PROTOCOL_APPENDIX.md`. All three
+messages are new `type` values on the same TLS session; the task plane stays
+wire 0.2 and an older node ignores an unknown type (SPEC §3). All signed
+payloads use Ed25519 over RFC 8785-style canonical JSON (`messages.
+canonical_bytes`), with `sig` excluded from the signed bytes and encoded
+base64url without padding; `node_id` is the Ed25519 public key in the same
+encoding. A message over 8192 canonical bytes and a receipt over 4096 are
+refused before parsing. The three messages are not a ledger: nothing is
+forwarded, and only the named recipient/issuer acts on them.
+
+`credit_receipt` — issuer (requester) → worker, sent after a verified result is
+accepted. Fields: `v` (wire MINOR, currently `"0.2"`), `type`,
+`receipt{receipt_id (random 128-bit, base64url), circle_id, issuer, worker,
+attempt (BLAKE2b-128 hex of the attempt id, never task content), tokens_out,
+generation_ms, model, issued_at, expires_at, sig}`. Validation at the worker:
+the receipt is structurally valid and its signature verifies against
+`receipt.issuer`; the envelope was sent by that issuer; `receipt.worker` is
+this node; a valid, unexpired manifest of `circle_id` lists both issuer and
+this node; `now < expires_at`; `receipt_id` is not already in the wallet.
+Nothing is issued for the local pool, *my own devices*, rejected/degraded
+replicas or an executor that returned nothing.
+
+`credit_spend` — spender (the named worker) → a member of the same circle,
+sent just before the task it is offered for. Fields: `v`, `type`, `spender`,
+`attempt_id` (the task this applies to), and the same signed `receipt` object.
+Validation at the receiver: `spender` is the sending node and equals
+`receipt.worker`; the signature verifies; a valid manifest lists the sender
+and the issuer; `now < expires_at`; the receipt id was not already presented
+to this worker. A valid spend only sets a short-lived priority marker for that
+exact `attempt_id`. The sender marks the receipt spent in its wallet after the
+message is written.
+
+`credit_spent` — accepting worker → issuer. Fields: `v`, `type`, `receipt_id`,
+`spender`, `by` (reporting worker), `reported_at`, `sig` (by `by`). It carries
+no receipt copy and no task content. Validation at the issuer: `by` is the
+sending node and its signature verifies; the receipt id is one this issuer
+issued; `by` is listed by that receipt's circle. The issuer appends the report
+to its bounded log and flags the receipt if it is reported twice (same or
+different workers) or if the spender is not the named worker. An unknown
+receipt id is refused (`E_CREDIT_UNKNOWN`); the issuer has no global ledger to
+consult.
 
 ## Upstream (audited repositories)
 
@@ -225,3 +289,21 @@ Limitations are documented, never hidden. *[Español](#español) below.*
     reintentan. El estado `failed` por elemento de la receta 4 lleva la razón
     de la ola, pero un fallo del camino local de listas todavía hace fallar
     esa solicitud (la continuación por olas aplica a olas distribuidas).
+    32. Los créditos son una cortesía dentro de un círculo, no dinero. Un
+    recibo es firmado, no transferible y caduca; solo lo puede gastar el
+    worker nombrado, solo en el mismo círculo, y solo para pedir prioridad de
+    cola cuando un worker está ocupado. Nunca salta admisión, puerta de
+    salida, carril/tier ni ninguna otra política, y quien no tiene créditos
+    sigue siendo atendido si hay un turno libre. No hay transferencia, export
+    como token, mercado ni libro contable global (SPEC §18, GOVERNANCE). El
+    emisor detecta en su registro acotado un recibo reportado dos veces y lo
+    marca en Swarm: es **detección, no prevención**, no impide un doble gasto
+    decidido y nada se difunde fuera del círculo. Sin TLS mutuo en 3.5, una
+    clave de nodo robada puede gastar los recibos de ese nodo hasta que el
+    dueño revoque al miembro (R-010); protege la clave. Un recibo es una
+    unidad indivisible y uno caducado se pierde. Cartera y registro están
+    acotados (256 y 512); si la cartera está llena, se rechaza un recibo nuevo
+    válido en vez de descartar uno viejo en silencio. Los tres mensajes de
+    control (`credit_receipt`, `credit_spend`, `credit_spent`) se documentan
+    con sus campos, firma y validación en el apéndice en inglés de arriba; son
+    MINOR-safe y un nodo antiguo ignora un tipo desconocido (SPEC §3).
