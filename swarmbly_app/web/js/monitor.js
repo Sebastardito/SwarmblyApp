@@ -21,6 +21,7 @@ const Monitor = (() => {
     clear(root);
     els.controls = h("div.view-actions");
     els.health = h("div.readouts.wide");
+    els.roles = h("div.readouts");
     els.graph = h("div.graph-box");
     els.peers = h("div.table-wrap");
     els.cache = h("div.table-wrap");
@@ -30,6 +31,8 @@ const Monitor = (() => {
       h("header.view-head", h("h1.view-title", t("monitor.title")), els.controls),
       h("p.view-lede", t("monitor.lede")),
       h("section.panel", h("h2", t("monitor.health")), els.health),
+      h("section.panel", h("h2", t("monitor.nodeRoles")),
+        h("p.muted", t("monitor.nodeRolesNote")), els.roles),
       h("section.panel.graph-panel", h("h2", t("monitor.graph")), els.graph),
       h("section.panel", h("h2", t("monitor.peers")), els.peers),
       h("section.panel", h("h2", t("circle.title")), h("p.muted", t("circle.lede")),
@@ -71,6 +74,7 @@ const Monitor = (() => {
     const cfg = App.state.config || {};
     renderControls(sw, cfg);
     renderHealth(sw);
+    renderRoles(sw, cfg);
     const selfModels = cfg.model?.multi_model ? (cfg.model.local_models || [])
       : [cfg.model?.model_name].filter(Boolean);
     SwarmGraph.draw({ self: { models: selfModels }, peers: sw.peers || [], discovered: sw.discovered || [] });
@@ -157,6 +161,36 @@ const Monitor = (() => {
     if (families.size) els.health.appendChild(h("p.caveat", t("monitor.diversityCaveat")));
   }
 
+  function roleLabel(role) {
+    if (!role || typeof role !== "object") return "";
+    if (role.role === "large_model") {
+      return `large_model · ${role.model || "?"}${role.params_b ? ` (${role.params_b}B)` : ""}`;
+    }
+    if (role.role === "reasoner") return `reasoner · ${role.model || "?"} (think)`;
+    if (role.role === "search") return `search · ${(role.engines || []).join(", ") || "?"}`;
+    if (role.role === "corpus") return `corpus · ${role.name || "?"} (${role.size || "?"})`;
+    return String(role.role || "");
+  }
+
+  function roleChips(roles) {
+    const list = (roles || []).map(roleLabel).filter(Boolean);
+    return list.length ? list.map((label) => chip(label)) : h("span.muted", t("monitor.noRoles"));
+  }
+
+  function renderRoles(sw, cfg) {
+    clear(els.roles);
+    const own = sw.roles || [];
+    const settings = sw.node_roles || {};
+    const marked = settings.reasoner_models || [];
+    UI.append(els.roles,
+      readout(t("monitor.ownRoles"),
+        own.length ? own.map(roleLabel).join(" · ") : t("monitor.noRoles"), "measured"),
+      readout(t("monitor.largeModelMin"),
+        `${settings.large_model_min_b ?? "—"} B`, "measured"),
+      readout(t("monitor.reasonerModels"),
+        marked.length ? marked.join(", ") : t("monitor.noneMarked"), "measured"));
+  }
+
   // Node id plus what the node says about itself (older nodes say nothing).
   function peerTitle(p) {
     const r = p.resources || {};
@@ -175,7 +209,7 @@ const Monitor = (() => {
       return;
     }
     els.peers.appendChild(h("table.data",
-      h("thead", h("tr", ["node", "address", "state", "role", "models", "rtt", "inflight", "seen"]
+      h("thead", h("tr", ["node", "address", "state", "role", "roles", "models", "rtt", "inflight", "seen"]
         .map((k) => h("th", { scope: "col" }, t(`monitor.col.${k}`))))),
       h("tbody", peers.map((p) => h("tr",
         h("td", h("code", { title: peerTitle(p) }, p.short_id || UI.shortId(p.node_id))),
@@ -185,6 +219,7 @@ const Monitor = (() => {
             : p.authenticated ? "monitor.authenticatedShort" : "monitor.connectedShort")
             : "monitor.lost"))),
         h("td", t(p.worker ? "monitor.roleWorker" : "monitor.roleClient")),
+        h("td", h("div.chips", roleChips(p.roles))),
         h("td", (p.models || []).map((m) => chip(m.version || m.family))),
         h("td", p.rtt_ms !== null && p.rtt_ms !== undefined ? `${Math.round(p.rtt_ms)} ms` : "—"),
         h("td", String(p.tasks_inflight || 0)),

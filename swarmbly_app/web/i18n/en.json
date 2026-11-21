@@ -88,7 +88,8 @@
   "group": {
    "worker": "Sharing this computer (worker)",
    "evidence": "Public evidence",
-   "roles": "Models by role"
+   "roles": "Models by role",
+   "nodeRoles": "Node roles"
   }
  },
  "node": {
@@ -523,6 +524,14 @@
   "title": "Swarm",
   "lede": "Computers running Swarmbly on your network. A node counts as authenticated once its identity is proven; announcements are not trusted until then.",
   "health": "Health",
+  "nodeRoles": "Node roles",
+  "nodeRolesNote": "What this computer offers the swarm as a worker. A node role is placement information only: it never widens circle admission, egress or any other permission.",
+  "ownRoles": "Own roles",
+  "noRoles": "none",
+  "noneMarked": "none marked",
+  "largeModelMin": "Large model from",
+  "reasonerModels": "Reasoning models",
+
   "graph": "Map",
   "graphLabel": "Map of this node and its peers",
   "graphEmpty": "No peers yet. Turn on the local network or connect by address.",
@@ -573,6 +582,7 @@
    "address": "Address",
    "state": "State",
    "role": "Role",
+   "roles": "Roles",
    "models": "Models",
    "rtt": "Latency",
    "inflight": "In flight",
@@ -959,6 +969,14 @@
   "roles__writer__api_key": {
    "label": "Key of the writer's server",
    "help": "Kept in the system keychain, not in the configuration file."
+  },
+  "node_roles__large_model_min_b": {
+   "label": "Large-model threshold (B)",
+   "help": "Shared models at or above this parameter count are announced as large_model; 7 B is the default because it is the smallest widely available class clearly above the 1–3 B models this swarm mostly runs."
+  },
+  "node_roles__reasoner_models": {
+   "label": "Reasoning models",
+   "help": "Shared models you mark here are announced as reasoner and used with think: true. Empty by default."
   },
   "circle__admission_mode": {
    "label": "Peer admission",

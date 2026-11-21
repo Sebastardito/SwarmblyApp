@@ -88,7 +88,8 @@
   "group": {
    "worker": "Compartir esta computadora (worker)",
    "evidence": "Evidencia pública",
-   "roles": "Modelos por papel"
+   "roles": "Modelos por papel",
+   "nodeRoles": "Roles del nodo"
   }
  },
  "node": {
@@ -523,6 +524,14 @@
   "title": "Enjambre",
   "lede": "Computadoras con Swarmbly en tu red. Un nodo cuenta como autenticado cuando prueba su identidad; antes, sus anuncios no son de confianza.",
   "health": "Estado",
+  "nodeRoles": "Roles del nodo",
+  "nodeRolesNote": "Lo que esta computadora ofrece al enjambre como worker. Un rol de nodo es solo información de colocación: nunca amplía la admisión al círculo, la salida ni ningún otro permiso.",
+  "ownRoles": "Roles propios",
+  "noRoles": "ninguno",
+  "noneMarked": "ninguno marcado",
+  "largeModelMin": "Modelo grande desde",
+  "reasonerModels": "Modelos de razonamiento",
+
   "graph": "Mapa",
   "graphLabel": "Mapa de este nodo y sus pares",
   "graphEmpty": "Aún no hay pares. Activa la red local o conecta por dirección.",
@@ -573,6 +582,7 @@
    "address": "Dirección",
    "state": "Estado",
    "role": "Rol",
+   "roles": "Roles",
    "models": "Modelos",
    "rtt": "Latencia",
    "inflight": "En curso",
@@ -959,6 +969,14 @@
   "roles__writer__api_key": {
    "label": "Clave del servidor del redactor",
    "help": "Se guarda en el llavero del sistema, no en el archivo de configuración."
+  },
+  "node_roles__large_model_min_b": {
+   "label": "Umbral de modelo grande (B)",
+   "help": "Los modelos compartidos con al menos estos parámetros se anuncian como large_model; 7 B es el valor por defecto porque es la clase ampliamente disponible más pequeña claramente por encima de los modelos de 1–3 B que este enjambre suele usar."
+  },
+  "node_roles__reasoner_models": {
+   "label": "Modelos de razonamiento",
+   "help": "Los modelos compartidos que marques aquí se anuncian como reasoner y se usan con think: true. Vacío por defecto."
   },
   "circle__admission_mode": {
    "label": "Admisión de pares",

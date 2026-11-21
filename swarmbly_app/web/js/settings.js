@@ -82,6 +82,11 @@ const Settings = (() => {
       { key: "swarm.worker_only_idle", type: "bool", group: "worker" },
       { key: "swarm.worker_only_plugged", type: "bool", group: "worker" },
       { key: "swarm.worker_max_task_seconds", type: "number", min: 5, max: 3600, group: "worker", advanced: true },
+      // 3.5, D-018: NODE roles (what this machine offers), not the model
+      // roles of the Models tab. A role is placement information only.
+      { key: "node_roles.large_model_min_b", type: "number", min: 0.1, max: 10000,
+        step: 0.5, group: "nodeRoles" },
+      { key: "node_roles.reasoner_models", type: "models", group: "nodeRoles" },
       { key: "swarm.hedge_fallback_ms", type: "number", min: 200, max: 600000, step: 500, advanced: true },
       { key: "swarm.tau_sem", type: "number", min: 0, max: 1, step: 0.05, advanced: true },
       { key: "swarm.discovery_ttl_s", type: "number", min: 30, max: 86400, advanced: true },
