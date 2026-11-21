@@ -325,6 +325,10 @@ class CircleStore:
     def _dir(self, name: str) -> Path:
         path = self.root / name
         path.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(path, 0o700)       # membership metadata is local-only
+        except OSError:
+            pass
         return path
 
     @staticmethod
@@ -432,7 +436,10 @@ class CircleService:
     def display_name(self) -> str:
         configured = str(self.config.get("circle.node_name") or "").strip()
         if configured:
-            return _normalise_name(configured)
+            try:
+                return _normalise_name(configured)
+            except CircleError:
+                pass
         try:
             host = socket.gethostname().strip() or "Swarmbly node"
         except Exception:
@@ -977,9 +984,14 @@ class CircleService:
         if not node_id:
             return
         with self._lock:
-            pending = [dict(record) for record in self.outgoing.values()
-                       if record.get("owner") == node_id
-                       and record.get("status") != "sent"]
+            pending = []
+            for record in self.outgoing.values():
+                if record.get("owner") != node_id:
+                    continue
+                circle_id = str(record.get("circle_id") or "")
+                manifest = self.manifests.get(circle_id)
+                if manifest is None or not self._is_member(manifest, self.node_id):
+                    pending.append(dict(record))
         for record in pending:
             await self._send_join_async(record)
         advertisement = getattr(peer, "advertisement", {}) or {}
@@ -1145,13 +1157,17 @@ class CircleService:
 
     def _on_join_ack(self, node_id: str, message: dict[str, Any]) -> None:
         circle_id = str(message.get("circle_id") or "")
+        status = str(message.get("status") or "pending")
         with self._lock:
             record = self.outgoing.get(circle_id)
             if record is not None and record.get("owner") == node_id:
-                record["status"] = str(message.get("status") or "pending")
+                if status == "rejected":
+                    self.outgoing.pop(circle_id, None)
+                else:
+                    record["status"] = status
                 self.store.save_outgoing(self.outgoing)
         self.bus.publish("circle.join_ack", circle_id=circle_id,
-                         status=str(message.get("status") or ""))
+                         status=status)
 
     async def _on_leave(self, node_id: str, message: dict[str, Any]) -> None:
         if message.get("node_id") != node_id:
