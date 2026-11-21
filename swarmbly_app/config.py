@@ -136,6 +136,20 @@ DEFAULTS: dict[str, Any] = {
         # privacy.third_party_passages (that one is about model services), and
         # per-circle circle_passages defaults off as well.
         "own_devices_passages": False,
+        # 3.5, WP3 / D-016, D-023: the owner's relay manifest spool. The
+        # prototype relay reloads a signed file before every registration and
+        # pair; the App writes each new signed version here (atomically). If
+        # the relay runs on another host, the operator syncs this directory.
+        "relay_publish_dir": "",
+        # A relayed pairing is the fallback: direct addresses get this short
+        # timeout each before the relay is asked.
+        "reach_timeout_s": 2.0,
+        # A relayed pairing is the fallback; this bounds the outer TLS +
+        # registration + pair + inner TLS attempt.
+        "relay_timeout_s": 8.0,
+        # Bounded per-node relay connections (one acceptor per circle/relay
+        # plus short-lived initiators).
+        "relay_max_connections": 4,
     },
     # 3.5, D-020: reciprocity credits are signed, non-transferable receipts.
     # One receipt is one indivisible courtesy unit; it expires and can only be

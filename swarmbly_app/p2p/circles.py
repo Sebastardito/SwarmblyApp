@@ -53,6 +53,11 @@ E_CIRCLE_NO_REQUEST = "E_CIRCLE_NO_REQUEST"
 E_INVITATION_INVALID = "E_INVITATION_INVALID"
 E_INVITATION_EXPIRED = "E_INVITATION_EXPIRED"
 E_INVITATION_USED = "E_INVITATION_USED"
+# 3.5, WP3 / D-016: the circle relay. A relay address is usable only with the
+# SHA-256 pin of the certificate the relay presents; an address without a pin
+# is refused rather than trusted on first use.
+E_CIRCLE_RELAY = "E_CIRCLE_RELAY"
+E_CIRCLE_RELAY_PIN = "E_CIRCLE_RELAY_PIN"
 
 CONTROL_TYPES = frozenset({
     "circle_manifest_get", "circle_manifest", "circle_manifest_ack",
@@ -69,6 +74,7 @@ MAX_MEMBERS = 256
 MAX_JOINS = 64
 MAX_ENDPOINTS = 4
 MAX_NAME = 64
+_KEEP_RELAY = object()
 
 
 class CircleError(RuntimeError):
@@ -86,6 +92,9 @@ class CircleError(RuntimeError):
 
 _CIRCLE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 _ENDPOINT_RE = re.compile(r"^\[?[A-Za-z0-9._:%-]+\]?:\d{1,5}$")
+_RELAY_PIN_RE = re.compile(r"^[0-9a-f]{64}$")
+_RELAY_HOST_RE = re.compile(r"^(?:[A-Za-z0-9](?:[A-Za-z0-9._-]{0,251}[A-Za-z0-9])?|"
+                            r"[0-9A-Fa-f:.]{2,45})$")
 
 
 def _normalise_name(value: Any, field: str = "name") -> str:
@@ -157,6 +166,48 @@ def _endpoints_arg(value: Any) -> list[str]:
     return list(value)
 
 
+def normalise_relay(value: Any, *, field: str = "relay") -> dict[str, Any] | None:
+    """The circle relay endpoint: ``host:port`` plus its certificate pin.
+
+    The pin is **mandatory** with an address (D-016/D-023): a relay whose
+    certificate is not pinned would let a network attacker terminate the
+    outer TLS. ``None``/empty removes the relay. A malformed or unpinned relay
+    is refused, never stored.
+    """
+    if value is None or value == "" or value == {}:
+        return None
+    if not isinstance(value, dict):
+        raise CircleError(E_CIRCLE_RELAY, f"{field} must be an object")
+    host = str(value.get("host") or value.get("address") or "").strip().lower()
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    port_value = value.get("port")
+    pin = str(value.get("tls_cert_sha256") or value.get("tls_sha256")
+              or value.get("pin") or "").strip().lower()
+    if not host or len(host) > 255 or not _RELAY_HOST_RE.fullmatch(host):
+        raise CircleError(E_CIRCLE_RELAY, f"invalid {field} host {host!r}")
+    try:
+        port = int(port_value)
+    except (TypeError, ValueError) as exc:
+        raise CircleError(E_CIRCLE_RELAY,
+                          f"{field} port must be an integer") from exc
+    if not 1 <= port <= 65535:
+        raise CircleError(E_CIRCLE_RELAY, f"invalid {field} port {port}")
+    if not pin:
+        raise CircleError(E_CIRCLE_RELAY_PIN,
+                          f"{field} needs the relay certificate's SHA-256 pin")
+    if not _RELAY_PIN_RE.fullmatch(pin):
+        raise CircleError(E_CIRCLE_RELAY_PIN,
+                          f"{field} pin must be 64 lowercase hex characters "
+                          "(SHA-256 of the certificate DER)")
+    return {"host": host, "port": port, "tls_cert_sha256": pin}
+
+
+def validate_relay(value: Any, *, field: str = "relay") -> dict[str, Any] | None:
+    """Validate an optional relay block, raising ``CircleError``."""
+    return normalise_relay(value, field=field)
+
+
 def endpoint_host_port(endpoint: str) -> tuple[str, int]:
     text = _normalise_endpoint(endpoint)
     if text.startswith("["):
@@ -206,6 +257,7 @@ def validate_manifest(manifest: dict[str, Any], *, verify: bool = True,
         seen.add(node_id)
         _normalise_name(member.get("name"), "member name")
         _normalise_endpoints(member.get("endpoints"))
+    validate_relay(manifest.get("relay"))
     if owner not in seen:
         raise CircleError(E_CIRCLE_SCHEMA, "the owner must be a member")
     version = manifest.get("version")
@@ -246,6 +298,10 @@ def validate_invitation(invitation: dict[str, Any], *, verify: bool = True,
     if isinstance(expires, bool) or not isinstance(expires, int):
         raise CircleError(E_INVITATION_INVALID, "invalid expiry")
     _normalise_endpoints(invitation.get("endpoints"))
+    try:
+        validate_relay(invitation.get("relay"))
+    except CircleError as exc:
+        raise CircleError(E_INVITATION_INVALID, exc.detail) from exc
     if verify and not verify_signed(owner, invitation):
         raise CircleError(E_INVITATION_INVALID, "invitation signature is invalid")
     if now is not None and expires <= now:
@@ -255,8 +311,8 @@ def validate_invitation(invitation: dict[str, Any], *, verify: bool = True,
 
 def build_manifest(*, identity_manager: IdentityManager, circle_id: str,
                    name: str, owner: str, members: list[dict[str, Any]],
-                   version: int, issued_at: int,
-                   expires_at: int) -> dict[str, Any]:
+                   version: int, issued_at: int, expires_at: int,
+                   relay: dict[str, Any] | None = None) -> dict[str, Any]:
     unsigned = {
         "v": WIRE_VERSION,
         "type": "circle_manifest",
@@ -268,6 +324,11 @@ def build_manifest(*, identity_manager: IdentityManager, circle_id: str,
         "issued_at": int(issued_at),
         "expires_at": int(expires_at),
     }
+    # MINOR-safe optional field: older nodes ignore it, current nodes validate
+    # it together with the rest of the signed document.
+    clean_relay = normalise_relay(relay)
+    if clean_relay is not None:
+        unsigned["relay"] = clean_relay
     manifest = _sign(identity_manager, unsigned)
     return validate_manifest(manifest, now=None)
 
@@ -685,7 +746,8 @@ class CircleService:
         chosen = _normalise_endpoints(
             _endpoints_arg(endpoints) if endpoints is not None
             else self.endpoints(), required=True)
-        invitation = _sign(self.identity_manager, {
+        relay = normalise_relay(manifest.get("relay"))
+        unsigned = {
             "v": WIRE_VERSION,
             "type": "circle_invitation",
             "circle_id": circle_id,
@@ -693,7 +755,12 @@ class CircleService:
             "nonce": b64url(os.urandom(16)),
             "expires_at": now + ttl_s,
             "endpoints": chosen,
-        })
+        }
+        # MINOR-safe optional field, inside the signature so it cannot be
+        # swapped on the way to the invitee.
+        if relay is not None:
+            unsigned["relay"] = relay
+        invitation = _sign(self.identity_manager, unsigned)
         validate_invitation(invitation)
         code = encode_invitation(invitation)
         with self._lock:
@@ -703,6 +770,7 @@ class CircleService:
                 "owner": self.node_id,
                 "expires_at": invitation["expires_at"],
                 "endpoints": chosen,
+                "relay": relay,
                 "created_at": now,
                 "used_by": None,
             }
@@ -831,6 +899,7 @@ class CircleService:
             "issued_at": now,
         })
         record = {"circle_id": circle_id, "owner": owner, "token": code,
+                  "relay": normalise_relay(invitation.get("relay")),
                   "request": request, "status": "pending", "created_at": now}
         with self._lock:
             self.outgoing[circle_id] = record
@@ -1014,11 +1083,86 @@ class CircleService:
                 if circle_id in self.joins:
                     self.joins.pop(circle_id, None)
                     self.store.save_joins(circle_id, [])
+        # Publish outside the lock: the writer performs filesystem I/O and
+        # emits events that UI listeners may handle.
+        self._publish_relay(manifest)
         self.bus.publish("circle.updated", circle_id=circle_id,
                          version=int(manifest["version"]),
                          owner=manifest["owner"])
         self._mark_admitted(manifest)
+        self._notify_relays()
         return True
+
+    # -- relay (3.5, WP3 / D-016, D-023) ------------------------------------
+    def _relay_publish_dir(self) -> Path:
+        """Where the owner writes manifests for the relay to read.
+
+        The prototype relay has no admin API: it reloads a signed manifest
+        file before every registration and pair. The owner therefore publishes
+        with a filesystem write (atomic). If the relay runs elsewhere, the
+        operator syncs this directory (rsync/scp); see the P2P testing guide.
+        """
+        configured = str(self.config.get("circle.relay_publish_dir") or "").strip()
+        path = Path(configured) if configured else self.store.root / "relay-publish"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _publish_relay(self, manifest: dict[str, Any]) -> None:
+        """Push one signed manifest version to the relay's manifest spool.
+
+        Only the owner signs manifests, so only the owner publishes. The file
+        is the signed document exactly as stored locally; the prototype
+        verifies its Ed25519 signature and reloads it before the next
+        registration or pair, which is how a revocation reaches it.
+        """
+        if manifest.get("owner") != self.node_id:
+            return
+        try:
+            from .relay_client import RelayManifestPublisher
+            path = RelayManifestPublisher(self._relay_publish_dir()).publish(
+                manifest)
+        except Exception as exc:
+            self.bus.publish("relay.publish_failed",
+                             circle_id=str(manifest.get("circle_id") or ""),
+                             reason=str(exc)[:160])
+            return
+        self.bus.publish("relay.manifest_published",
+                         circle_id=str(manifest.get("circle_id") or ""),
+                         version=int(manifest.get("version") or 0),
+                         path=str(path))
+
+    def _notify_relays(self) -> None:
+        node = self.node
+        if node is not None:
+            try:
+                node.refresh_relays()
+            except Exception:
+                pass
+
+    def set_relay(self, circle_id: str,
+                  relay: dict[str, Any] | None) -> dict[str, Any]:
+        """Owner: set or remove the circle relay (address + certificate pin).
+
+        A new manifest version is signed and published to the relay spool;
+        members receive it on the control plane and start (or stop) their
+        registration. Removing the relay is the same operation with ``None``.
+        """
+        manifest = self._manifest(circle_id)
+        self._require_owner(manifest)
+        validate_manifest(manifest, now=int(time.time()))
+        clean = normalise_relay(relay)
+        if clean == normalise_relay(manifest.get("relay")):
+            return manifest
+        members = [dict(m) for m in manifest["members"]]
+        updated = self._next_manifest(manifest, members, relay=clean)
+        self._store_manifest(updated)
+        # Members learn the new endpoint/pin on the existing control plane;
+        # older nodes ignore the optional field.
+        self._broadcast_manifest_sync(updated)
+        self.bus.publish("circle.relay_changed", circle_id=circle_id,
+                         version=int(updated["version"]),
+                         relay=dict(clean) if clean else None)
+        return updated
 
     def _mark_admitted(self, manifest: dict[str, Any]) -> None:
         """Both nodes are listed now: a bootstrap session becomes admitted."""
@@ -1338,14 +1482,18 @@ class CircleService:
 
     # -- owner actions -------------------------------------------------------
     def _next_manifest(self, manifest: dict[str, Any],
-                       members: list[dict[str, Any]]) -> dict[str, Any]:
+                       members: list[dict[str, Any]],
+                       *, relay: Any = _KEEP_RELAY) -> dict[str, Any]:
         now = int(time.time())
+        relay_value = (normalise_relay(manifest.get("relay"))
+                       if relay is _KEEP_RELAY else relay)
         return build_manifest(
             identity_manager=self.identity_manager,
             circle_id=manifest["circle_id"], name=manifest["name"],
             owner=manifest["owner"], members=members,
             version=int(manifest["version"]) + 1,
-            issued_at=now, expires_at=now + self._ttl_seconds())
+            issued_at=now, expires_at=now + self._ttl_seconds(),
+            relay=relay_value)
 
     def approve(self, circle_id: str, node_id: str,
                 name: str | None = None) -> dict[str, Any]:
@@ -1437,6 +1585,15 @@ class CircleService:
         manifest = self._manifest(circle_id)
         if manifest["owner"] == self.node_id:
             # Dissolving: tell the members while the manifest still exists.
+            # Also publish a last signed version with only the owner, so a
+            # relay does not keep admitting the old members from its spool.
+            try:
+                owner_only = self._next_manifest(manifest, [
+                    m for m in manifest["members"]
+                    if m.get("node_id") == self.node_id])
+                self._publish_relay(owner_only)
+            except Exception:
+                pass
             dissolved = _sign(self.identity_manager, {
                 "v": WIRE_VERSION, "type": "circle_leave",
                 "circle_id": circle_id, "node_id": self.node_id,
@@ -1517,6 +1674,11 @@ class CircleService:
                 "expires_at": int(manifest["expires_at"]),
                 "members": [dict(m) for m in manifest["members"]],
                 "circle_passages": self.circle_passages(manifest["circle_id"]),
+                "relay": normalise_relay(manifest.get("relay")),
+                "relay_status": (
+                    self.node.relay_status(manifest["circle_id"])
+                    if self.node is not None
+                    and hasattr(self.node, "relay_status") else None),
                 "pending_joins": joins.get(manifest["circle_id"], [])
                 if is_owner else [],
             })
