@@ -56,11 +56,38 @@ def wait_for(predicate, timeout=10.0, step=0.1):
     return False
 
 
+def _p2p_diagnosis(client, worker, peer) -> str:
+    """What both nodes saw, for a failure on a platform we cannot run here."""
+    def peers(state):
+        out = []
+        for p in state.nodes.peers.values():
+            policy = (p.advertisement or {}).get("policy") or {}
+            out.append({"node": p.node_id[:12], "connected": p.connected,
+                        "authenticated": p.authenticated,
+                        "admitted": getattr(p, "admitted", None),
+                        "session": p.session is not None,
+                        "kinds": policy.get("kinds"),
+                        "source": getattr(p, "source", "")})
+        return out
+
+    def events(state):
+        return [{k: v for k, v in e.items() if k != "ts"}
+                for e in state.bus.recent(200)
+                if str(e.get("type", "")).startswith(("node.", "p2p.", "circle."))][-12:]
+
+    return (f"connect_manual returned {peer!r}; "
+            f"listen_port={worker.nodes.listen_port}; "
+            f"worker policy={worker.worker.policy()}; "
+            f"client peers={peers(client)}; worker peers={peers(worker)}; "
+            f"client events={events(client)}; worker events={events(worker)}")
+
+
 def connect(client, worker):
-    client.nodes.connect_manual("127.0.0.1", worker.nodes.listen_port, wait=True)
+    peer = client.nodes.connect_manual("127.0.0.1", worker.nodes.listen_port,
+                                       wait=True)
     assert wait_for(lambda: worker.identity.node_id in
                     {w.node_id for w in client.nodes.available_workers()}), \
-        "worker not available after handshake"
+        "worker not available after handshake: " + _p2p_diagnosis(client, worker, peer)
 
 
 def send(state, mode="lan"):
