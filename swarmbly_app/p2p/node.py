@@ -34,7 +34,7 @@ from .circles import CONTROL_TYPES, CircleError
 from .handshake import (Handshake, HandshakeResult, sign_advertisement_update,
                         validate_advertisement, verify_advertisement_update)
 from ..node_roles import normalise_advertisement
-from .messages import WIRE_VERSION, error
+from .messages import HELLO_TIMEOUT_S, WIRE_VERSION, error
 from .relay_client import (RelayAddress, RelayClient, RelayError,
                            RelayRefused)
 from .transport import (PeerSession, TLSServer, accept_over_stream,
@@ -381,9 +381,14 @@ class NodeManager:
                     self.handshake.join_token = ""
             hello_msg, nonce = self.handshake.build_hello()
             try:
+                # The short direct-probe timeout applies only when a caller
+                # asks for it (``ensure_peer`` before a relay fallback). A
+                # manual or discovered connection keeps the handshake
+                # timeout: a first TLS connection on a slow or cold machine
+                # (the Windows CI runner) takes longer than two seconds.
                 session, ack_message, observed = await dial(
                     host, port, hello_msg,
-                    timeout=float(timeout or self._direct_timeout_s()))
+                    timeout=float(timeout or HELLO_TIMEOUT_S))
             except Exception as exc:
                 self.bus.publish("node.handshake_failed", address=host, port=port,
                                  reason=f"unreachable: {str(exc)[:80]}")

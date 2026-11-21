@@ -371,3 +371,26 @@ class TestLocalMultiModel:
         roles = {n["role"] for n in final["meta"]["swarm"]["nodes"]}
         assert roles == {"local model", "worker"}, final["meta"]["swarm"]["nodes"]
         assert fake_w.calls
+
+
+def test_manual_connection_keeps_the_handshake_timeout(tmp_path, monkeypatch):
+    """The short direct-probe timeout (relay fallback) must not apply to a
+    manual or discovered connection: on the Windows CI runner a first TLS
+    connection took longer than two seconds and every two-node test failed."""
+    import asyncio
+    from swarmbly_app.p2p import node as node_mod
+    from swarmbly_app.p2p.messages import HELLO_TIMEOUT_S
+
+    seen = []
+
+    async def fake_dial(host, port, hello, timeout):
+        seen.append(timeout)
+        raise asyncio.TimeoutError()
+
+    monkeypatch.setattr(node_mod, "dial", fake_dial)
+    state, _ = make_node(tmp_path, "T")
+    try:
+        state.nodes.connect_manual("127.0.0.1", 1, wait=True)
+        assert seen == [HELLO_TIMEOUT_S]
+    finally:
+        state.stop()
