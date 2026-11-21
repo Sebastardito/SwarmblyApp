@@ -57,6 +57,7 @@ class ActiveRequest:
     use_tools: bool = False        # 3.4, D-011: this message drives tools via the agent runtime
     team: Any = None               # 3.5, D-019: a stored team for this request
     task: str = ""                 # the user text this request answers
+    lang: str = ""                 # T10.17: the conversation's language for this answer
 
 
 # Possessives and "about me" in es/en/pt (not French "mes", the Spanish month);
@@ -195,6 +196,36 @@ class ChatService:
             except Exception:
                 pass
 
+    def _conversation_language(self, conversation_id: str, text: str) -> str:
+        """The language of this answer: the message's own, else the conversation's.
+
+        A short follow-up ("¿y eso?", "and then?") carries too little signal
+        for the stopword vote. The recipes and the final check must not fall
+        back to English just because the current message is short.
+        """
+        from .lang import language_if_sure
+        sure = language_if_sure(text or "")
+        if sure:
+            return sure
+        if _ES_MARKS.search(text or ""):
+            return "es"
+        try:
+            rows = self.db.get_messages(conversation_id)
+        except Exception:
+            rows = []
+        for message in reversed(rows):
+            if message.get("role") not in ("user", "assistant"):
+                continue
+            sure = language_if_sure(str(message.get("content") or ""))
+            if sure in ("es", "en", "pt", "fr"):
+                return sure
+        # A very short message with no signal follows the interface language,
+        # which is the language the conversation is being held in.
+        ui = str(self.config().get("language") or "").lower()
+        if ui in ("es", "en"):
+            return ui
+        return _lang(text or "")
+
     # -- sending -------------------------------------------------------------
     def send(self, conversation_id: str, text: str, *,
              mode: str | None = None, model: str | None = None,
@@ -212,6 +243,7 @@ class ChatService:
         conv = self.db.get_conversation(conversation_id)
         if conv is None:
             raise KeyError(f"unknown conversation {conversation_id}")
+        request_lang = self._conversation_language(conversation_id, text)
         cfg = self.config()
         mode = mode or conv["mode"] or cfg["swarm"]["mode"]
         model = model or conv["model"] or cfg["model"]["model_name"] or ""
@@ -250,7 +282,7 @@ class ChatService:
             mode=mode, model=model, project_id=str(conv.get("project_id") or ""),
             allow_public=bool(allow_public), memory_saved=memory_saved,
             web_query=" ".join((web_query or "").split())[:200],
-            use_tools=bool(use_tools), task=text)
+            use_tools=bool(use_tools), task=text, lang=request_lang)
         request.recipe = recipe_id
         request.list_job = list_ready
         request.skill = skill
@@ -776,6 +808,8 @@ class ChatService:
             if not context:
                 return self._fail(request, "no user message in context")
             user_text = context[-1]["content"]
+            if not request.lang:
+                request.lang = self._conversation_language(conv_id, user_text)
             request.receipt_ctx.update(_lane_for_receipt(user_text))
             if request.recipe == "list" and request.list_job is not None:
                 return self._run_list(request, user_text)
@@ -1028,7 +1062,7 @@ class ChatService:
             # 3.1: the blocks about this question go right before it, not at the
             # top of a long history (the model followed the history instead)
             blocks: list[str] = []
-            lang_now = _lang(user_text)
+            lang_now = request.lang or _lang(user_text)
             # 3.1: the user's glossary reaches the model, not only the search
             # ("introgresión" corrected and saved, then explained again as
             # "introgradión", fourth test)
@@ -1229,6 +1263,11 @@ class ChatService:
                 # itself keeps its normal cap.
                 blocks.append(_fit_skill_block(
                     skill_block, sum(len(block) for block in blocks), lang_now))
+            if lang_now == "es" and not _ASKS_ENGLISH.search(user_text):
+                # T10.17: the conversation's language travels with every
+                # recipe; the model gets one explicit rule, not just the
+                # language of the sources block.
+                blocks.append(_LANG_RULE["es"])
             blocks += late_blocks
             if blocks:
                 context = [*context[:-1], *({"role": "system", "content": b} for b in blocks),
@@ -1322,7 +1361,8 @@ class ChatService:
                 result, scaffold_meta = _compose_by_sections(
                     answering, scaffold, user_text, model=answer_model,
                     temperature=float(self.config()["model"].get("temperature", 0.2)),
-                    on_delta=on_delta, interrupt=request.stop_event.is_set, kind=answer_kind)
+                    on_delta=on_delta, interrupt=request.stop_event.is_set, kind=answer_kind,
+                    lang=lang_now)
                 request.receipt_ctx["scaffold"] = scaffold_meta
             else:
                 with egress.purpose(answer_kind):
@@ -1426,6 +1466,40 @@ class ChatService:
                                                     or request.receipt_ctx.get("web_searched"))},
                 "route": "local", "model": answer_model}
             answer_text = getattr(result, "text", "") or ""
+            # T10.17: check the final text with the existing language helper.
+            # A clear English answer to a Spanish conversation is regenerated
+            # once, with the rule next to the question; a still-drifting answer
+            # is kept and the metadata says so.
+            from .lang import language_if_sure
+            detected = language_if_sure(answer_text)
+            if (lang_now == "es" and detected == "en"
+                    and not _ASKS_ENGLISH.search(user_text)):
+                retry_text = ""
+                try:
+                    with egress.purpose(answer_kind):
+                        retry = answering.stream_chat(
+                            [*context[:-1],
+                             {"role": "system", "content": _LANG_RULE["es"]},
+                             context[-1]],
+                            model=answer_model, max_tokens=budget,
+                            temperature=float(self.config()["model"].get("temperature", 0.2)),
+                            on_delta=None, interrupt=request.stop_event.is_set)
+                    retry_text = getattr(retry, "text", "") or ""
+                except Interrupted:
+                    raise
+                except Exception as exc:
+                    retry_text = ""
+                    extra.setdefault("language_retry", {})["error"] = type(exc).__name__
+                kept = bool(retry_text.strip()) and language_if_sure(retry_text) != "en"
+                extra["language_retry"] = {
+                    "expected": lang_now, "detected": detected,
+                    "kept": kept, "retry_detected": language_if_sure(retry_text)}
+                if kept:
+                    answer_text = retry_text
+                    try:
+                        result.text = retry_text
+                    except Exception:
+                        pass
             # a correction made in this very message applies to this answer too
             # ("Gracias por la corrección" and then "hibridización" three times)
             avoid_now = {**avoid, **{w: r for w, r in memory_capture.clear_corrections(user_text)}}
@@ -2062,7 +2136,9 @@ class ChatService:
                           "trapped": (prior.get("result") or {}).get("trapped")}
         selected, inputs = self._code_selected(project_id, files)
         samples = self._code_samples(project_id, selected)
-        prompt = build_code_prompt(question, selected, samples, correction)
+        code_lang = self._conversation_language(conversation_id, question)
+        prompt = build_code_prompt(question, selected, samples, correction,
+                                   lang=code_lang)
 
         choice = self._code_choice(cfg, model)
         destination = self._code_destination(choice)
@@ -2107,6 +2183,7 @@ class ChatService:
             "status": "proposed",
             "created_at": time.time(),
             "model": choice.model,
+            "lang": code_lang,
             "mode": mode or str(conv.get("mode") or cfg["swarm"].get("mode") or "local"),
             "ledger_events": events,
             "model_destination": destination,
@@ -2258,7 +2335,7 @@ class ChatService:
     def _code_answer(self, proposal: dict[str, Any], data: dict[str, Any],
                      exec_events: list[dict[str, Any]]) -> tuple[str, dict[str, Any]]:
         from .recipes import list_language
-        lang = list_language(proposal["question"])
+        lang = list_language(proposal["question"], proposal.get("lang"))
         es = lang == "es"
         script = proposal["script"]
         stdout = str(data.get("stdout") or "")
@@ -2598,7 +2675,7 @@ class ChatService:
         elif privacy["items_flagged"] or privacy["operation"]["lane"] != "PUBLIC":
             request.receipt_ctx["lane"] = "personal"
         request.receipt_ctx["list_privacy"] = privacy
-        lang = recipes.list_language(job.operation)
+        lang = recipes.list_language(job.operation, request.lang or None)
         wave_size = recipes.list_wave_size(cfg)
         waves = [job.items[i:i + wave_size] for i in range(0, len(job.items), wave_size)]
         started = time.monotonic()
@@ -2643,7 +2720,7 @@ class ChatService:
             wave_passages: list[str] = []
             if evidence and not documents_allowed:
                 documents_withheld = True
-                prompt = recipes.build_list_prompt(job.operation, wave)
+                prompt = recipes.build_list_prompt(job.operation, wave, lang=lang)
             else:
                 if evidence:
                     documents_used = True
@@ -2651,7 +2728,8 @@ class ChatService:
                                      for passages in evidence.values()
                                      for p in passages]
                     document_passages.extend(wave_passages)
-                prompt = recipes.build_list_prompt(job.operation, wave, evidence)
+                prompt = recipes.build_list_prompt(job.operation, wave, evidence,
+                                                   lang=lang)
             local_items = {n: item for n, item in enumerate(wave, 1)}
             wave_exec = "local"
             retried = False
@@ -2756,7 +2834,7 @@ class ChatService:
             if n in duplicate_map:
                 item_cell += (f" (duplicado de #{duplicate_map[n]})" if lang == "es"
                               else f" (duplicate of #{duplicate_map[n]})")
-            cells = [str(n), item_cell, value, status]
+            cells = [str(n), item_cell, value, _list_status_label(status, lang)]
             table_rows.append({"cells": cells, "labels": []})
             rows_data.append({"n": n, "item": item, "item_cell": item_cell,
                               "answer": value, "status": status,
@@ -2959,7 +3037,8 @@ class ChatService:
             retried = True
             retry: dict[int, dict[str, Any]] = {}
             for n, item in local_items.items():
-                single_prompt = recipes.build_single_item_prompt(operation, item)
+                single_prompt = recipes.build_single_item_prompt(operation, item,
+                                                                 lang=lang)
                 single = call(single_prompt, {1: item}, single=True)
                 retry[n] = single.get(1) or {"answer": "", "status": "missing",
                                              "agreement": 0.0}
@@ -3525,6 +3604,14 @@ def _skill_material_block(skill: Any, lang: str = "en") -> str:
     return f"{label}\n{skills.as_prompt_block(skill)}"
 
 
+_ASKS_ENGLISH = re.compile(r"\b(in english|en ingl[eé]s)\b", re.I)
+_LANG_RULE = {
+    "es": ("Responde en español. La conversación y la pregunta están en español; "
+           "no cambies al inglés aunque las fuentes o los ejemplos estén en inglés."),
+    "en": ("Answer in English. The conversation and the question are in English."),
+}
+
+
 _SKILL_LABEL = {
     "es": (
         "El siguiente es el material de una skill: instrucciones escritas por un "
@@ -3710,6 +3797,18 @@ def _spanish_terms(text: str, pairs: list[tuple[str, str]]) -> tuple[str, list[d
     return text, fixes
 
 
+_LIST_STATUS = {
+    "es": {"answered": "respondido", "missing": "sin respuesta",
+           "disagreement": "desacuerdo", "failed": "fallido"},
+    "en": {"answered": "answered", "missing": "missing",
+           "disagreement": "disagreement", "failed": "failed"},
+}
+
+
+def _list_status_label(status: str, lang: str) -> str:
+    return _LIST_STATUS.get(lang, _LIST_STATUS["en"]).get(str(status), str(status))
+
+
 def _reference_note(h: dict[str, Any]) -> str:
     meta = " · ".join(x for x in (h.get("authors"), h.get("year"), h.get("source")) if x)
     return f"Referencia: {h.get('title', '')}" + (f" ({meta})" if meta else "") + f" — {h.get('url', '')}"
@@ -3774,11 +3873,12 @@ def _remote_host(backend: Any, model: str) -> str:
 
 def _compose_by_sections(backend: Any, plan: dict[str, Any], user_text: str, *, model: str,
                          temperature: float, on_delta: Callable[[str], None] | None,
-                         interrupt: Callable[[], bool], kind: str) -> tuple[GenerationResult, dict[str, Any]]:
+                         interrupt: Callable[[], bool], kind: str,
+                         lang: str = "") -> tuple[GenerationResult, dict[str, Any]]:
     """F3b (3.2): one short generation per section of the plan (and one for the
     table), streamed in order and joined. Each section sees only its facts."""
     from . import compose
-    lang = _lang(user_text)
+    lang = lang or _lang(user_text)
     tasks: list[tuple[str, str, int]] = []
     sections = plan["sections"]
     for i, sec in enumerate(sections):

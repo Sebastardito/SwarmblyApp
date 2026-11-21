@@ -580,7 +580,7 @@ def test_an_item_without_a_relevant_passage_gets_the_old_prompt(app_state, tmp_p
                         list_job=job.to_dict(), run_async=False)
     msg = app_state.chat.get_messages(conv["id"])[-1]
     prompt = fake.calls[-1]["messages"][-1]["content"]
-    assert prompt == build_list_prompt(job.operation, [item])
+    assert prompt == build_list_prompt(job.operation, [item], lang="es")
     assert "lotes.csv" not in prompt and "| lote |" not in prompt
     assert msg["meta"]["list"]["documents_used"] is False
     assert msg["meta"]["list"]["documents_available"] is False
