@@ -1037,12 +1037,13 @@ class ChatService:
                                      lang_now, gmeta)
             if gblock:
                 blocks.append(gblock)
+            skill_block = ""
             if request.skill is not None:
                 # 3.4: an activated skill is quoted material, never policy. It
-                # sits with the other blocks, but its label says what it is and
-                # what it cannot change.
+                # is appended after the document passages so a short model
+                # budget never trades a passage for a skill example (T10.17).
                 try:
-                    blocks.append(_skill_material_block(request.skill, lang_now))
+                    skill_block = _skill_material_block(request.skill, lang_now)
                     request.receipt_ctx["skill"] = {
                         "name": str(getattr(request.skill, "name", "") or ""),
                         "sha256": str(getattr(request.skill, "sha256", "") or "")}
@@ -1212,6 +1213,12 @@ class ChatService:
             if request.memory_saved and not request.memory_saved.get("error"):
                 blocks.append(_MEMORY_DONE.get(_lang(user_text), _MEMORY_DONE["en"]).format(
                     path=request.memory_saved.get("path", "")))
+            if skill_block:
+                # The passages come first and take the room they need; the
+                # skill material is shortened to fit what is left. A skill by
+                # itself keeps its normal cap.
+                blocks.append(_fit_skill_block(
+                    skill_block, sum(len(block) for block in blocks), lang_now))
             blocks += late_blocks
             if blocks:
                 context = [*context[:-1], *({"role": "system", "content": b} for b in blocks),
@@ -3460,6 +3467,39 @@ def _fold_word(w: str) -> str:
     import unicodedata
     return "".join(c for c in unicodedata.normalize("NFKD", w.lower())
                    if not unicodedata.combining(c))
+
+
+PROMPT_MATERIAL_BUDGET = 24_000     # characters of sources + skill per answer
+SKILL_MIN_CHARS = 300
+
+
+def _fit_skill_block(block: str, other_chars: int, lang: str = "en") -> str:
+    """Keep the skill material inside the answer's material budget.
+
+    The grounded passages are appended before the skill and are never cut
+    here: when the two do not fit together, the skill's body is shortened
+    (with a visible marker) and, if there is no useful room, only its labelled
+    header remains. T10.17: a large skill body had replaced the passages in
+    the model's prompt.
+    """
+    block = str(block or "")
+    remaining = PROMPT_MATERIAL_BUDGET - max(0, int(other_chars))
+    if len(block) <= remaining:
+        return block
+    marker = ("\n> [skill examples shortened: the document passages take priority]"
+              if lang == "es" else
+              "\n> [skill examples shortened: the document passages take priority]")
+    end = block.find(">>>")
+    head = block[:end + 3] if end >= 0 else block[:SKILL_MIN_CHARS]
+    footer = "\n<<<END_SKILL_MATERIAL>>>"
+    fixed = head + marker + footer
+    if remaining <= len(fixed):
+        # No room for the body: a labelled header still says the skill was
+        # active, and the passages still reach the model.
+        return fixed[:max(0, remaining)] or ""
+    body = block[end + 3:block.find("<<<END_SKILL_MATERIAL>>>")]
+    room = max(0, remaining - len(fixed) - 1)
+    return head + "\n" + body[:room].rstrip() + marker + footer
 
 
 def _skill_material_block(skill: Any, lang: str = "en") -> str:
