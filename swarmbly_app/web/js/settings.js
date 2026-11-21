@@ -775,11 +775,34 @@ const Settings = (() => {
     }
     clear(els.body);
     els.body.appendChild(Doctor.view(d, () => renderTab()));
+    els.body.appendChild(await sandboxSection());
+    els.body.appendChild(h("section.subpanel",
+      h("h3", t("doctorExport.title")),
+      h("p.muted", t("doctorExport.body")),
+      h("p.note", t("doctorExport.never")),
+      DoctorExport.button()));
     els.body.appendChild(h("section.subpanel",
       h("h3", t("support.title")),
       h("p.muted", t("support.body")),
       h("p", h("a", { href: "https://buymeacoffee.com/swarmbly", target: "_blank",
         rel: "noopener noreferrer" }, t("support.link")))));
+  }
+
+  /* The compiled-cache state is shown here too, not only in the first-run
+     notice: a volunteer can prepare or retry it at any time. */
+  async function sandboxSection() {
+    const section = h("section.subpanel");
+    const paint = async () => {
+      let s;
+      try { s = await Api.get("/api/sandbox"); }
+      catch (e) { clear(section).appendChild(h("p.error", e.message)); return; }
+      clear(section);
+      section.appendChild(h("h3", t("sandbox.settingsTitle")));
+      section.appendChild(h("p.muted", t("sandbox.settingsBody")));
+      section.appendChild(SandboxNotice.view(s, paint));
+    };
+    await paint();
+    return section;
   }
 
   function relabel() { build(); renderTab(); }
@@ -923,6 +946,42 @@ const Doctor = (() => {
   }
 
   return { view };
+})();
+
+/* Doctor export (R-014): show the exact bytes first, then save that snapshot. */
+const DoctorExport = (() => {
+  const { h, t, button } = UI;
+
+  function buttonEl() {
+    return button(t("doctorExport.review"), review, "primary small");
+  }
+
+  async function review() {
+    let preview;
+    try { preview = await Api.get("/api/doctor/export/preview"); }
+    catch (err) { UI.toast(err.message, "error"); return; }
+    const body = h("div.form-stack",
+      h("p", t("doctorExport.body")),
+      h("p.note", t("doctorExport.never")),
+      h("h3", t("doctorExport.text")),
+      h("pre.code-preview", preview.text),
+      h("details", h("summary", t("doctorExport.json")),
+        h("pre.code-preview", preview.json_text)));
+    const ok = await UI.modal(t("doctorExport.previewTitle"), body, [
+      { label: t("common.cancel"), value: false, kind: "ghost" },
+      { label: t("doctorExport.save"), value: true, kind: "primary" }]);
+    if (!ok) return;
+    try {
+      const saved = await Api.post("/api/doctor/export",
+        { snapshot_id: preview.snapshot_id });
+      const base = (p) => String(p || "").split(/[\\/]/).pop();
+      UI.toast(t("doctorExport.saved")
+        .replace("{json}", base(saved.json_file))
+        .replace("{text}", base(saved.text_file)), "ok");
+    } catch (err) { UI.toast(err.message, "error"); }
+  }
+
+  return { button: buttonEl, review };
 })();
 
 App.register("settings", Settings);

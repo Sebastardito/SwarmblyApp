@@ -778,9 +778,19 @@ const Chat = (() => {
     showRecipeTag();
     const status = await codeStatus();
     if (!status.available) {
+      const prep = status.preparation?.status;
+      const notPrepared = prep === "missing" || prep === "stale";
+      const titleKey = prep === "preparing" ? "chat.codePreparing"
+        : prep === "refused" ? "chat.codeLowMemory"
+        : prep === "failed" ? "chat.codePrepareFailed"
+        : notPrepared ? "chat.codeNotPrepared" : "chat.codeUnavailable";
+      const hintKey = prep === "preparing" ? "chat.codePreparingHint"
+        : prep === "refused" ? "chat.codeLowMemoryHint"
+        : prep === "failed" ? "chat.codePrepareFailedHint"
+        : notPrepared ? "chat.codeNotPreparedHint" : "chat.codeUnavailableHint";
       return UI.modal(t("chat.recipeCode"), h("div.form-stack",
-        h("p", t("chat.codeUnavailable")),
-        h("p.muted", t("chat.codeUnavailableHint"))), [
+        h("p", t(titleKey)),
+        h("p.muted", t(hintKey))), [
         { label: t("common.close"), value: null, kind: "ghost" }]);
     }
     if (opts.correctionOf) {
