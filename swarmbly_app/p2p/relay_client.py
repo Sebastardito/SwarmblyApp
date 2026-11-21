@@ -12,12 +12,14 @@ runtime. The wire is unchanged:
 * ``register`` → signed 32-byte challenge → ``register_proof``;
 * ``pair`` / ``pair_incoming`` / ``pair_accept`` / ``paired``;
 * after ``paired`` the connection is raw bytes and the nodes run their normal
-  TLS 1.3 + channel-bound handshake through the splice.
+  TLS 1.3 + channel-bound handshake through the splice;
+* owner only: ``manifest_update`` → ``manifest_ack`` / ``manifest_refused``
+  on a registered connection, copied from the umbrella's owner push.
 
-No server code is copied: the App never serves a relay. The prototype has no
-operator/admin API, so the owner publishes manifests by writing the signed
-document to the relay's manifest spool (see :class:`RelayManifestPublisher`);
-the relay reloads changed files before every registration and pair.
+No server code is copied: the App never serves a relay. The owner's network
+push is the primary update path; :class:`RelayManifestPublisher` writes the
+same signed document to the relay's file spool as the operator's bootstrap
+copy and the fallback.
 
 Adapted from ``relay/protocol.py``, ``relay/client.py`` and ``relay/tls.py``
 in SwarmblyAI (AGPL-3.0-only, the same licence as this App).
@@ -279,6 +281,29 @@ class RelayClient:
         self.log.info("registered circle=%s node=%s",
                       self.circle_id[:12], self.node_id[:12])
         return self
+
+    async def push_manifest(self, manifest: dict[str, Any]) -> dict[str, Any]:
+        """Push a complete signed manifest version to the relay (owner only).
+
+        Copied from the umbrella ``relay/client.py``. ``manifest`` is the
+        App's signed document (``sig`` inside the payload); the relay verifies
+        it and answers ``manifest_ack``. A refusal raises
+        :class:`RelayRefused` with the relay's stable code, and the connection
+        stays registered for a corrected push.
+        """
+        if not self.registered or self._in_splice:
+            raise RelayError("not_registered",
+                             "connect() first, once per stream")
+        await self._send({"type": "manifest_update", "v": PROTOCOL_VERSION,
+                          "manifest": manifest})
+        reply = await self._receive(self.timeout)
+        if reply.get("type") == "manifest_refused":
+            raise RelayRefused(str(reply.get("code") or "refused"),
+                               str(reply.get("message") or ""))
+        self._raise_on_error(reply)
+        if reply.get("type") != "manifest_ack":
+            raise RelayError("protocol_error", "expected manifest_ack")
+        return reply
 
     async def pair(self, peer_node_id: str) -> RelayStream:
         if not self.registered or self._in_splice:
@@ -565,14 +590,14 @@ class TLSWriter:
 # ---------------------------------------------------------------------------
 
 class RelayManifestPublisher:
-    """Write a signed manifest where the prototype relay reads it.
+    """Write the operator's bootstrap copy and fallback of a signed manifest.
 
-    The prototype's only manifest-update path is a file (or directory) it
-    reloads before every registration and pair. There is no authenticated
-    admin frame and no pull endpoint, so this class implements exactly that
-    path: an atomic write of ``<circle_id>.json`` containing the already
-    signed App manifest. The signature is the App's Ed25519 manifest
-    signature, which the relay verifies with the owner key.
+    The network push (:meth:`RelayClient.push_manifest`) is the primary path
+    after the operator has installed the first manifest once. This class keeps
+    the historical file path: an atomic write of ``<circle_id>.json`` with the
+    already signed App manifest, in ``circle.relay_publish_dir``. If the relay
+    cannot be reached, the operator can still copy that file into the relay's
+    ``circles/`` directory.
     """
 
     def __init__(self, directory: str | os.PathLike[str]) -> None:

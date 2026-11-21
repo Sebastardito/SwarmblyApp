@@ -150,6 +150,14 @@ class NodeManager:
         self._relay_clients: set[RelayClient] = set()
         self._relay_event: asyncio.Event | None = None
         self._relay_stopping = False
+        # 3.5, WP3 / D-023 owner push: the newest unacknowledged version per
+        # (circle, relay) target. The file spool remains the operator's
+        # bootstrap copy and the fallback.
+        self._relay_push_lock = threading.RLock()
+        self._relay_push_queue: dict[str, dict[str, Any]] = {}
+        self._relay_push_tasks: dict[str, asyncio.Task] = {}
+        self._relay_push_state: dict[str, dict[str, Any]] = {}
+        self._relay_push_event: asyncio.Event | None = None
 
     # -- lifecycle ---------------------------------------------------------------
     def start(self, task_handler=None, cancel_handler=None) -> None:
@@ -198,7 +206,9 @@ class NodeManager:
         # a relay. Off by default: no manifest, no connection.
         self._relay_stopping = False
         self._relay_event = asyncio.Event()
+        self._relay_push_event = asyncio.Event()
         self._spawn(self._relay_supervisor())
+        self._spawn(self._relay_push_supervisor())
         self.bus.publish("node.listening", port=port)
 
     def _data_dirs(self):
@@ -231,6 +241,10 @@ class NodeManager:
                 if peer.session is not None:
                     peer.session.close()
             self._relay_stopping = True
+            if self._relay_push_event is not None:
+                self._relay_push_event.set()
+            for task in list(self._relay_push_tasks.values()):
+                task.cancel()
             for client in list(self._relay_clients):
                 try:
                     await client.close()
@@ -1173,6 +1187,290 @@ class NodeManager:
                              reason=last_error[:160])
         return None
 
+    # -- owner manifest push (3.5, D-023) -------------------------------------
+    @staticmethod
+    def _relay_push_key(circle_id: str, relay: dict[str, Any]) -> str:
+        return (f"{circle_id}|{relay.get('host')}|{relay.get('port')}|"
+                f"{relay.get('tls_cert_sha256')}")
+
+    def _relay_push_backoff(self) -> float:
+        try:
+            value = float(self.config.get("circle.relay_push_backoff_s") or 1.0)
+        except (TypeError, ValueError):
+            value = 1.0
+        return max(0.1, min(value, 30.0))
+
+    def _relay_push_backoff_max(self) -> float:
+        try:
+            value = float(self.config.get(
+                "circle.relay_push_backoff_max_s") or 30.0)
+        except (TypeError, ValueError):
+            value = 30.0
+        return max(self._relay_push_backoff(), min(value, 300.0))
+
+    def _relay_push_refusal_retry(self) -> float:
+        try:
+            value = float(self.config.get(
+                "circle.relay_push_refusal_retry_s") or 300.0)
+        except (TypeError, ValueError):
+            value = 300.0
+        return max(5.0, min(value, 3600.0))
+
+    def _relay_push_state_for(self, key: str, circle_id: str,
+                              relay: dict[str, Any]) -> dict[str, Any]:
+        with self._relay_push_lock:
+            state = self._relay_push_state.setdefault(key, {
+                "circle_id": circle_id,
+                "host": str(relay.get("host") or ""),
+                "port": int(relay.get("port") or 0),
+                "tls_cert_sha256": str(relay.get("tls_cert_sha256") or ""),
+                "status": "queued",
+                "acknowledged_version": 0,
+                "pending_version": 0,
+                "last_refusal": "",
+                "last_error": "",
+                "updated_at": time.time(),
+            })
+            state.update(host=str(relay.get("host") or ""),
+                         port=int(relay.get("port") or 0),
+                         tls_cert_sha256=str(
+                             relay.get("tls_cert_sha256") or ""))
+            return state
+
+    def queue_relay_push(self, circle_id: str, manifest: dict[str, Any],
+                         relays: list[dict[str, Any]] | None = None) -> int:
+        """Queue the newest signed manifest for one or more relay targets.
+
+        Owner-only by construction: a node that is not the manifest's owner
+        never queues or sends a push, and the relay would refuse it anyway.
+        ``relays`` lets a relay change push the same new version to the old
+        relay first, then the new one. Only the newest version per target is
+        kept; a newer version replaces an older pending one.
+        """
+        if self.circles is None:
+            return 0
+        if str(manifest.get("owner") or "") != self.node_id:
+            return 0
+        try:
+            version = int(manifest.get("version") or 0)
+        except (TypeError, ValueError):
+            return 0
+        if version <= 0:
+            return 0
+        from .circles import normalise_relay
+        targets: list[dict[str, Any]] = []
+        for relay in relays if relays is not None else [manifest.get("relay")]:
+            try:
+                clean = normalise_relay(relay)
+            except Exception:
+                clean = None
+            if clean and clean not in targets:
+                targets.append(clean)
+        queued = 0
+        with self._relay_push_lock:
+            for relay in targets:
+                key = self._relay_push_key(circle_id, relay)
+                state = self._relay_push_state_for(key, circle_id, relay)
+                current = self._relay_push_queue.get(key)
+                if current is not None and int(current.get("version") or 0) >= version:
+                    continue
+                if int(state.get("acknowledged_version") or 0) >= version:
+                    continue
+                self._relay_push_queue[key] = {
+                    "circle_id": circle_id,
+                    "relay": dict(relay),
+                    "manifest": manifest,
+                    "version": version,
+                    "queued_at": time.time(),
+                }
+                state.update(status="queued", pending_version=version,
+                             last_refusal="", last_error="",
+                             updated_at=time.time())
+                queued += 1
+        if queued:
+            self.bus.publish("relay.push_queued", circle_id=circle_id,
+                             version=version, targets=len(targets))
+            self.refresh_relay_pushes()
+        return queued
+
+    def refresh_relay_pushes(self) -> None:
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            loop.call_soon_threadsafe(self._wake_relay_push)
+
+    def _wake_relay_push(self) -> None:
+        if self._relay_push_event is not None:
+            self._relay_push_event.set()
+
+    async def _relay_push_wait(self, timeout: float = 5.0) -> None:
+        if self._relay_push_event is None:
+            await asyncio.sleep(timeout)
+            return
+        try:
+            await asyncio.wait_for(self._relay_push_event.wait(), timeout)
+        except asyncio.TimeoutError:
+            pass
+        self._relay_push_event.clear()
+
+    async def _relay_push_supervisor(self) -> None:
+        while not self._relay_stopping:
+            try:
+                with self._relay_push_lock:
+                    keys = list(self._relay_push_queue)
+                for key in keys:
+                    task = self._relay_push_tasks.get(key)
+                    if task is not None and not task.done():
+                        continue
+                    task = self._spawn(self._relay_push_loop(key))
+                    self._relay_push_tasks[key] = task
+                    task.add_done_callback(
+                        lambda _t, k=key: self._relay_push_tasks.pop(k, None))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.bus.publish("relay.push_supervisor_error",
+                                 reason=str(exc)[:160])
+            await self._relay_push_wait()
+        for task in list(self._relay_push_tasks.values()):
+            task.cancel()
+        self._relay_push_tasks.clear()
+
+    async def _relay_push_pause(self, seconds: float, key: str,
+                                version: int) -> None:
+        """Sleep, but wake early when a newer version replaces this one."""
+        deadline = asyncio.get_running_loop().time() + max(0.0, seconds)
+        while True:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return
+            await asyncio.sleep(min(1.0, remaining))
+            with self._relay_push_lock:
+                current = self._relay_push_queue.get(key)
+            if current is None or int(current.get("version") or 0) != version:
+                return
+
+    def _drop_relay_push(self, key: str, version: int) -> None:
+        with self._relay_push_lock:
+            current = self._relay_push_queue.get(key)
+            if current is not None and int(current.get("version") or 0) <= version:
+                self._relay_push_queue.pop(key, None)
+
+    async def _relay_push_loop(self, key: str) -> None:
+        """Push the newest queued version, with backoff while unreachable."""
+        base = self._relay_push_backoff()
+        maximum = self._relay_push_backoff_max()
+        backoff = base
+        last_version = 0
+        while not self._relay_stopping:
+            with self._relay_push_lock:
+                item = dict(self._relay_push_queue.get(key) or {})
+            if not item:
+                return
+            circle_id = str(item["circle_id"])
+            relay = dict(item["relay"])
+            manifest = item["manifest"]
+            version = int(item["version"])
+            if version != last_version:
+                last_version = version
+                backoff = base
+            state = self._relay_push_state_for(key, circle_id, relay)
+            with self._relay_push_lock:
+                state.update(status="pushing", pending_version=version,
+                             updated_at=time.time())
+            address = RelayAddress(str(relay["host"]), int(relay["port"]),
+                                   str(relay["tls_cert_sha256"]))
+            client = RelayClient(
+                address, circle_id, self.node_id, self.identity_manager.sign,
+                timeout=max(3.0, self._relay_timeout_s()))
+            self._relay_clients.add(client)
+            try:
+                await client.connect()
+                ack = await client.push_manifest(manifest)
+            except RelayRefused as exc:
+                code = exc.code
+                with self._relay_push_lock:
+                    state.update(status="refused", last_refusal=code,
+                                 last_error=exc.message,
+                                 pending_version=version,
+                                 updated_at=time.time())
+                self.bus.publish("relay.push_refused", circle_id=circle_id,
+                                 host=address.host, port=address.port,
+                                 code=code, reason=exc.message,
+                                 version=version)
+                if code in ("unknown_circle", "rate_limited", "persist_failed",
+                            "not_a_member"):
+                    await self._relay_push_pause(
+                        self._relay_push_refusal_retry(), key, version)
+                    continue
+                self._drop_relay_push(key, version)
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                with self._relay_push_lock:
+                    state.update(status="unreachable",
+                                 last_error=f"{getattr(exc, 'code', 'E_RELAY')}: "
+                                            f"{getattr(exc, 'message', str(exc))}"[:160],
+                                 pending_version=version,
+                                 updated_at=time.time())
+                self.bus.publish("relay.push_unreachable", circle_id=circle_id,
+                                 host=address.host, port=address.port,
+                                 code=str(getattr(exc, "code", "E_RELAY")),
+                                 reason=str(exc)[:160], version=version)
+                await self._relay_push_pause(backoff, key, version)
+                backoff = min(maximum, max(base, backoff * 2))
+                continue
+            finally:
+                self._relay_clients.discard(client)
+                try:
+                    await client.close()
+                except Exception:
+                    pass
+            ack_version = int(ack.get("version") or version)
+            with self._relay_push_lock:
+                state.update(status="acknowledged",
+                             acknowledged_version=max(
+                                 int(state.get("acknowledged_version") or 0),
+                                 ack_version),
+                             pending_version=0, last_refusal="",
+                             last_error="", updated_at=time.time())
+                current = self._relay_push_queue.get(key)
+                if current is not None and int(
+                        current.get("version") or 0) <= ack_version:
+                    self._relay_push_queue.pop(key, None)
+            self.bus.publish("relay.push_ack", circle_id=circle_id,
+                             host=address.host, port=address.port,
+                             version=ack_version,
+                             member_count=int(ack.get("member_count") or 0))
+            backoff = base
+
+    def relay_push_status(self, circle_id: str) -> dict[str, Any]:
+        with self._relay_push_lock:
+            states = [dict(s) for s in self._relay_push_state.values()
+                      if str(s.get("circle_id") or "") == circle_id]
+            pending = [dict(q) for q in self._relay_push_queue.values()
+                       if str(q.get("circle_id") or "") == circle_id]
+        states.sort(key=lambda item: (str(item.get("host") or ""),
+                                      int(item.get("port") or 0)))
+        current: dict[str, Any] | None = None
+        if self.circles is not None:
+            manifest = self.circles.manifests.get(circle_id) or {}
+            relay = manifest.get("relay") or {}
+            for state in states:
+                if (str(state.get("host") or "") == str(relay.get("host") or "")
+                        and int(state.get("port") or 0)
+                        == int(relay.get("port") or 0)
+                        and str(state.get("tls_cert_sha256") or "")
+                        == str(relay.get("tls_cert_sha256") or "")):
+                    current = state
+                    break
+        if current is None and states:
+            current = states[-1]
+        pending_versions = sorted({int(q.get("version") or 0) for q in pending
+                                   if int(q.get("version") or 0) > 0})
+        return {"current": current, "targets": states,
+                "pending_versions": pending_versions}
+
     def transport_hop(self, node_id: str) -> dict[str, Any]:
         """The receipt's transport hop for a peer send."""
         peer = self.peers.get(node_id)
@@ -1188,12 +1486,18 @@ class NodeManager:
 
     def relay_status(self, circle_id: str | None = None) -> Any:
         if circle_id is not None:
-            return dict(self._relay_state.get(circle_id) or {
+            state = dict(self._relay_state.get(circle_id) or {
                 "circle_id": circle_id, "status": "off",
                 "last_error": "", "security_warning": False})
-        return [dict(state) for state in
-                sorted(self._relay_state.values(),
-                       key=lambda item: str(item.get("circle_id") or ""))]
+            state["push"] = self.relay_push_status(circle_id)
+            return state
+        out = []
+        for state in sorted(self._relay_state.values(),
+                            key=lambda item: str(item.get("circle_id") or "")):
+            item = dict(state)
+            item["push"] = self.relay_push_status(str(state.get("circle_id") or ""))
+            out.append(item)
+        return out
 
     # -- dispatch API (called from engine threads) ---------------------------------------
     def classify_peer(self, node_id: str) -> dict[str, Any]:

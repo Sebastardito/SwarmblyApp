@@ -1061,8 +1061,10 @@ class CircleService:
         now = int(time.time()) if now is None else now
         validate_manifest(manifest, now=now)
         circle_id = manifest["circle_id"]
+        previous: dict[str, Any] | None = None
         with self._lock:
             existing = self.manifests.get(circle_id)
+            previous = existing
             if existing is not None:
                 if manifest["owner"] != existing["owner"]:
                     raise CircleError(E_CIRCLE_SCHEMA,
@@ -1080,12 +1082,18 @@ class CircleService:
             if self._is_member(manifest, self.node_id):
                 self.outgoing.pop(circle_id, None)
                 self.store.save_outgoing(self.outgoing)
-                if circle_id in self.joins:
+                # Pending joins are the owner's inbox, not a newcomer's
+                # pending request: signing a version (relay change, renewal)
+                # must not discard them. A non-owner clears its own stale
+                # records once the owner lists it.
+                if manifest.get("owner") != self.node_id \
+                        and circle_id in self.joins:
                     self.joins.pop(circle_id, None)
                     self.store.save_joins(circle_id, [])
         # Publish outside the lock: the writer performs filesystem I/O and
         # emits events that UI listeners may handle.
         self._publish_relay(manifest)
+        self._queue_relay_pushes(previous, manifest)
         self.bus.publish("circle.updated", circle_id=circle_id,
                          version=int(manifest["version"]),
                          owner=manifest["owner"])
@@ -1095,12 +1103,12 @@ class CircleService:
 
     # -- relay (3.5, WP3 / D-016, D-023) ------------------------------------
     def _relay_publish_dir(self) -> Path:
-        """Where the owner writes manifests for the relay to read.
+        """Where the owner keeps the bootstrap copy and fallback.
 
-        The prototype relay has no admin API: it reloads a signed manifest
-        file before every registration and pair. The owner therefore publishes
-        with a filesystem write (atomic). If the relay runs elsewhere, the
-        operator syncs this directory (rsync/scp); see the P2P testing guide.
+        The network push is the primary path after the operator installs the
+        first manifest. This directory still receives every signed version
+        atomically, so the operator can copy the first file once and has a
+        fallback if the push cannot run; see the P2P testing guide.
         """
         configured = str(self.config.get("circle.relay_publish_dir") or "").strip()
         path = Path(configured) if configured else self.store.root / "relay-publish"
@@ -1108,12 +1116,11 @@ class CircleService:
         return path
 
     def _publish_relay(self, manifest: dict[str, Any]) -> None:
-        """Push one signed manifest version to the relay's manifest spool.
+        """Write the signed version to the bootstrap/fallback spool.
 
-        Only the owner signs manifests, so only the owner publishes. The file
-        is the signed document exactly as stored locally; the prototype
-        verifies its Ed25519 signature and reloads it before the next
-        registration or pair, which is how a revocation reaches it.
+        Only the owner signs manifests, so only the owner writes it. The
+        network push is primary; this file lets the operator bootstrap a new
+        relay once and remains the fallback if the push cannot run.
         """
         if manifest.get("owner") != self.node_id:
             return
@@ -1130,6 +1137,36 @@ class CircleService:
                          circle_id=str(manifest.get("circle_id") or ""),
                          version=int(manifest.get("version") or 0),
                          path=str(path))
+
+    def _queue_relay_pushes(self, previous: dict[str, Any] | None,
+                            manifest: dict[str, Any]) -> int:
+        """Queue the new signed version for the relay(s), owner only.
+
+        The file spool above remains the operator's bootstrap copy and the
+        fallback. On a relay change the same version goes to the *previous*
+        relay first, so that relay stops admitting members the new version
+        removed, and then to the new endpoint.
+        """
+        node = self.node
+        if node is None or manifest.get("owner") != self.node_id:
+            return 0
+        targets: list[dict[str, Any]] = []
+        old = normalise_relay((previous or {}).get("relay"))
+        new = normalise_relay(manifest.get("relay"))
+        if old is not None:
+            targets.append(old)
+        if new is not None and new not in targets:
+            targets.append(new)
+        if not targets:
+            return 0
+        try:
+            return int(node.queue_relay_push(
+                str(manifest["circle_id"]), manifest, targets))
+        except Exception as exc:
+            self.bus.publish("relay.push_queue_failed",
+                             circle_id=str(manifest.get("circle_id") or ""),
+                             reason=str(exc)[:160])
+            return 0
 
     def _notify_relays(self) -> None:
         node = self.node
@@ -1162,6 +1199,23 @@ class CircleService:
         self.bus.publish("circle.relay_changed", circle_id=circle_id,
                          version=int(updated["version"]),
                          relay=dict(clean) if clean else None)
+        return updated
+
+    def renew(self, circle_id: str) -> dict[str, Any]:
+        """Owner: sign a fresh version with the same members and relay.
+
+        Renewal extends the expiry and, like every other owner-signed version,
+        is queued for the relay push (and written to the operator spool).
+        """
+        manifest = self._manifest(circle_id)
+        self._require_owner(manifest)
+        validate_manifest(manifest, now=int(time.time()))
+        members = [dict(m) for m in manifest["members"]]
+        updated = self._next_manifest(manifest, members)
+        self._store_manifest(updated)
+        self._broadcast_manifest_sync(updated)
+        self.bus.publish("circle.renewed", circle_id=circle_id,
+                         version=int(updated["version"]))
         return updated
 
     def _mark_admitted(self, manifest: dict[str, Any]) -> None:
@@ -1592,6 +1646,7 @@ class CircleService:
                     m for m in manifest["members"]
                     if m.get("node_id") == self.node_id])
                 self._publish_relay(owner_only)
+                self._queue_relay_pushes(manifest, owner_only)
             except Exception:
                 pass
             dissolved = _sign(self.identity_manager, {

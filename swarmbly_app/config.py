@@ -147,6 +147,13 @@ DEFAULTS: dict[str, Any] = {
         # A relayed pairing is the fallback; this bounds the outer TLS +
         # registration + pair + inner TLS attempt.
         "relay_timeout_s": 8.0,
+        # 3.5, D-023: the owner pushes each new signed manifest over a
+        # registered connection. Backoff while the relay is unreachable; a
+        # refusal such as unknown_circle keeps the newest version queued and
+        # retries slowly so the operator's bootstrap can catch up.
+        "relay_push_backoff_s": 1.0,
+        "relay_push_backoff_max_s": 30.0,
+        "relay_push_refusal_retry_s": 300.0,
         # Bounded per-node relay connections (one acceptor per circle/relay
         # plus short-lived initiators).
         "relay_max_connections": 4,

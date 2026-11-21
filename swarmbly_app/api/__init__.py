@@ -1537,6 +1537,11 @@ def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
             relay = None
         return _circle_call(state.circles.set_relay, circle_id, relay)
 
+    @app.post("/api/circles/{circle_id}/renew")
+    def circles_renew(circle_id: str) -> dict:
+        """Owner: sign and publish a fresh manifest version (same members)."""
+        return _circle_call(state.circles.renew, circle_id)
+
     @app.post("/api/circles/{circle_id}/invite")
     def circles_invite(circle_id: str, body: dict | None = None) -> dict:
         body = body or {}
