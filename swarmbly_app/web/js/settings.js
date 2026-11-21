@@ -64,6 +64,11 @@ const Settings = (() => {
     swarm: [
       { key: "swarm.mode", type: "select", options: [["local", "mode.local"], ["lan", "mode.lan"], ["auto", "mode.auto"]] },
       { key: "swarm.lan_enabled", type: "bool" },
+      // 3.5, D-015: circles are the default for new installs; an upgraded
+      // installation keeps "own_devices" until the user changes it.
+      { key: "circle.admission_mode", type: "select",
+        options: [["circle", "circle.modeCircle"], ["own_devices", "circle.modeOwn"]] },
+      { key: "circle.node_name", type: "text", advanced: true },
       { key: "swarm.k_min", type: "number", min: 1, max: 8 },
       { key: "swarm.k_max", type: "number", min: 1, max: 8 },
       { key: "swarm.n_fragments_max", type: "number", min: 2, max: 16 },

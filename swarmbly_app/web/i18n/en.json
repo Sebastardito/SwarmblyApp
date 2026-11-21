@@ -593,7 +593,8 @@
   "bytesIn": "Data received",
   "bytesOut": "Data sent",
   "sharedModels": "Shared models",
-  "availability": "Time available"
+  "availability": "Time available",
+  "bootstrap": "bootstrap: not admitted"
  },
  "memory": {
   "title": "Memory",
@@ -956,6 +957,14 @@
   "roles__writer__api_key": {
    "label": "Key of the writer's server",
    "help": "Kept in the system keychain, not in the configuration file."
+  },
+  "circle__admission_mode": {
+   "label": "Peer admission",
+   "help": "Only my circles requires a valid signed manifest that lists both nodes. My own devices keeps the 3.4 LAN behaviour (any authenticated peer on the LAN)."
+  },
+  "circle__node_name": {
+   "label": "Circle display name",
+   "help": "The name this node shows in manifests and invitations. Empty uses the computer name."
   }
  },
  "models": {
@@ -1305,5 +1314,58 @@
   "copied": "{n} files copied.",
   "usedChip": "Skill: {name}",
   "usedTitle": "The model saw this skill's body as quoted material (SHA-256 {sha}…)."
+ },
+ "circle": {
+  "title": "Trusted circles",
+  "lede": "A circle is a signed member list kept by its owner. Only nodes listed in a current, unexpired manifest can connect and be given tasks.",
+  "none": "No circles yet. Create one, or accept an invitation from another node.",
+  "create": "Create circle",
+  "createTitle": "Create a trusted circle",
+  "name": "Circle name",
+  "accept": "Accept invitation",
+  "acceptTitle": "Accept a circle invitation",
+  "code": "Invitation code",
+  "codePlaceholder": "Paste the SWC1… code here",
+  "codeHelp": "The code is signed by the owner. Accepting sends a signed join request; the owner still has to approve it.",
+  "invite": "Invite",
+  "inviteTitle": "Invite a node",
+  "qr": "Scan this QR with the other device, or send the code.",
+  "copy": "Copy code",
+  "copied": "Invitation code copied",
+  "leave": "Leave",
+  "delete": "Delete circle",
+  "leaveConfirm": "Leave this circle? This device will no longer be admitted by its members.",
+  "deleteConfirm": "Delete this circle? Members will be told it was dissolved.",
+  "members": "Members",
+  "requests": "Join requests",
+  "approve": "Approve",
+  "reject": "Reject",
+  "revoke": "Revoke",
+  "version": "version {v}",
+  "owner": "owner",
+  "member": "member",
+  "you": "this device",
+  "noRequests": "No pending requests.",
+  "noticeTitle": "Your installation kept the 3.4 LAN admission",
+  "noticeBody": "This release adds trusted circles; new installations admit peers only through a circle manifest. Because this installation already existed, it keeps the old «my own devices» LAN admission until you choose. Review the choice in Settings → Swarm, or switch to circle-only now.",
+  "noticeKeep": "Keep my own devices",
+  "noticeSwitch": "Switch to circles",
+  "stale": "This node does not hold the current manifest; it will fetch it before being admitted.",
+  "ownerOnly": "Only the circle owner can do that.",
+  "expires": "expires {when}",
+  "unknown": "Unknown circle",
+  "modeCircle": "Only my circles",
+  "modeOwn": "My own devices (3.4 LAN)",
+  "accepted": "Join request sent. Waiting for the owner's approval.",
+  "pending": "Saved. It will be sent when the owner is reachable.",
+  "outgoing": "Outgoing join requests",
+  "col": {
+   "circle": "circle",
+   "status": "status",
+   "name": "name",
+   "node": "node",
+   "endpoints": "endpoints",
+   "role": "role"
+  }
  }
 }

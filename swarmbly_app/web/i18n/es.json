@@ -593,7 +593,8 @@
   "bytesIn": "Datos recibidos",
   "bytesOut": "Datos enviados",
   "sharedModels": "Modelos compartidos",
-  "availability": "Tiempo disponible"
+  "availability": "Tiempo disponible",
+  "bootstrap": "bootstrap: no admitido"
  },
  "memory": {
   "title": "Memoria",
@@ -956,6 +957,14 @@
   "roles__writer__api_key": {
    "label": "Clave del servidor del redactor",
    "help": "Se guarda en el llavero del sistema, no en el archivo de configuración."
+  },
+  "circle__admission_mode": {
+   "label": "Admisión de pares",
+   "help": "Solo mis círculos exige un manifiesto firmado y vigente que liste a ambos nodos. Mis propios dispositivos mantiene el comportamiento LAN de 3.4 (cualquier par autenticado en la LAN)."
+  },
+  "circle__node_name": {
+   "label": "Nombre visible del círculo",
+   "help": "El nombre que este nodo muestra en manifiestos e invitaciones. Vacío usa el nombre del equipo."
   }
  },
  "models": {
@@ -1316,5 +1325,58 @@
   "copied": "{n} archivos copiados.",
   "usedChip": "Skill: {name}",
   "usedTitle": "El modelo vio el cuerpo de esta skill como material citado (SHA-256 {sha}…)."
+ },
+ "circle": {
+  "title": "Círculos de confianza",
+  "lede": "Un círculo es una lista de miembros firmada y custodiada por su dueño. Solo los nodos de un manifiesto vigente y sin caducar pueden conectarse y recibir tareas.",
+  "none": "Aún no hay círculos. Crea uno o acepta una invitación de otro nodo.",
+  "create": "Crear círculo",
+  "createTitle": "Crear un círculo de confianza",
+  "name": "Nombre del círculo",
+  "accept": "Aceptar invitación",
+  "acceptTitle": "Aceptar una invitación a un círculo",
+  "code": "Código de invitación",
+  "codePlaceholder": "Pega aquí el código SWC1…",
+  "codeHelp": "El código lo firma el dueño. Al aceptarlo se envía una solicitud de unión firmada; el dueño todavía tiene que aprobarla.",
+  "invite": "Invitar",
+  "inviteTitle": "Invitar a un nodo",
+  "qr": "Escanea este QR con el otro dispositivo o envía el código.",
+  "copy": "Copiar código",
+  "copied": "Código de invitación copiado",
+  "leave": "Salir",
+  "delete": "Eliminar círculo",
+  "leaveConfirm": "¿Salir de este círculo? Sus miembros ya no admitirán a este dispositivo.",
+  "deleteConfirm": "¿Eliminar este círculo? Se avisará a los miembros de que se disolvió.",
+  "members": "Miembros",
+  "requests": "Solicitudes de unión",
+  "approve": "Aprobar",
+  "reject": "Rechazar",
+  "revoke": "Revocar",
+  "version": "versión {v}",
+  "owner": "dueño",
+  "member": "miembro",
+  "you": "este dispositivo",
+  "noRequests": "No hay solicitudes pendientes.",
+  "noticeTitle": "Tu instalación conservó la admisión LAN de 3.4",
+  "noticeBody": "Esta versión añade círculos de confianza; las instalaciones nuevas solo admiten pares mediante un manifiesto de círculo. Como esta instalación ya existía, mantiene la antigua admisión LAN de «mis propios dispositivos» hasta que elijas. Revisa la opción en Ajustes → Swarm, o cambia ahora a solo círculos.",
+  "noticeKeep": "Mantener mis propios dispositivos",
+  "noticeSwitch": "Cambiar a círculos",
+  "stale": "Este nodo no tiene el manifiesto vigente; lo obtendrá antes de ser admitido.",
+  "ownerOnly": "Solo el dueño del círculo puede hacerlo.",
+  "expires": "caduca {when}",
+  "unknown": "Círculo desconocido",
+  "modeCircle": "Solo mis círculos",
+  "modeOwn": "Mis propios dispositivos (LAN de 3.4)",
+  "accepted": "Solicitud enviada. Esperando la aprobación del dueño.",
+  "pending": "Guardada. Se enviará cuando el dueño esté disponible.",
+  "outgoing": "Solicitudes de unión enviadas",
+  "col": {
+   "circle": "círculo",
+   "status": "estado",
+   "name": "nombre",
+   "node": "nodo",
+   "endpoints": "endpoints",
+   "role": "rol"
+  }
  }
 }

@@ -8,6 +8,7 @@ const Monitor = (() => {
   let root;
   const els = {};
   let monitor = null;
+  let circles = null;
   let refreshTimer = null;
 
   function init(el) {
@@ -24,12 +25,15 @@ const Monitor = (() => {
     els.peers = h("div.table-wrap");
     els.cache = h("div.table-wrap");
     els.contribution = h("div.readouts");
+    els.circles = h("div");
     UI.append(root,
       h("header.view-head", h("h1.view-title", t("monitor.title")), els.controls),
       h("p.view-lede", t("monitor.lede")),
       h("section.panel", h("h2", t("monitor.health")), els.health),
       h("section.panel.graph-panel", h("h2", t("monitor.graph")), els.graph),
       h("section.panel", h("h2", t("monitor.peers")), els.peers),
+      h("section.panel", h("h2", t("circle.title")), h("p.muted", t("circle.lede")),
+        els.circles),
       h("section.panel", h("h2", t("monitor.discovery")), h("p.muted", t("monitor.discoveryNote")), els.cache),
       h("section.panel", h("h2", t("monitor.contribution")), h("p.muted", t("monitor.contributionNote")),
         els.contribution));
@@ -40,11 +44,15 @@ const Monitor = (() => {
 
   async function refresh() {
     try { monitor = await Api.get("/api/monitor"); } catch (_) { monitor = null; }
+    try { circles = await Api.get("/api/circles"); } catch (_) { circles = null; }
     render();
   }
 
   function onEvent(event) {
-    if (event.type === "app.swarm") { scheduleRefresh(); return; }
+    if (event.type === "app.swarm" || event.type.startsWith("circle.")) {
+      scheduleRefresh();
+      return;
+    }
     if (event.type === "swarm.attempt") {
       const p = event.payload || {};
       if (p.event === "dispatched") SwarmGraph.pulse(p.node, "out");
@@ -69,6 +77,7 @@ const Monitor = (() => {
     renderPeers(sw.peers || []);
     renderCache(sw.discovered || []);
     renderContribution();
+    renderCircles();
   }
 
   function renderControls(sw, cfg) {
@@ -172,7 +181,8 @@ const Monitor = (() => {
         h("td", h("code", { title: peerTitle(p) }, p.short_id || UI.shortId(p.node_id))),
         h("td", `${p.address}:${p.port}`),
         h("td", h(`span.status-word.${p.connected ? "completed" : "failed"}`,
-          t(p.connected ? (p.authenticated ? "monitor.authenticatedShort" : "monitor.connectedShort")
+          t(p.connected ? (p.admitted === false ? "monitor.bootstrap"
+            : p.authenticated ? "monitor.authenticatedShort" : "monitor.connectedShort")
             : "monitor.lost"))),
         h("td", t(p.worker ? "monitor.roleWorker" : "monitor.roleClient")),
         h("td", (p.models || []).map((m) => chip(m.version || m.family))),
@@ -213,6 +223,209 @@ const Monitor = (() => {
       readout(t("monitor.bytesOut"), UI.fmtBytes(c.bytes_transferred?.out), "measured"),
       readout(t("monitor.sharedModels"), (App.state.swarm?.worker?.shared_models || []).join(", "), "measured"),
       readout(t("monitor.availability"), null, "unknown"));
+  }
+
+  // ---- trusted circles (3.5, D-015) -----------------------------------------
+  function renderCircles() {
+    clear(els.circles);
+    const data = circles || {};
+    els.circles.appendChild(h("div.form-actions",
+      button(t("circle.create"), createCircleDialog, "small"),
+      button(t("circle.accept"), acceptInvitationDialog, "ghost small")));
+    if (data.own_devices_notice) {
+      els.circles.appendChild(h("div.warnings", { role: "status" },
+        h("strong", t("circle.noticeTitle")),
+        h("p", t("circle.noticeBody")),
+        h("div.form-actions",
+          button(t("circle.noticeSwitch"), switchToCircles, "primary small"),
+          button(t("circle.noticeKeep"), acknowledgeNotice, "ghost small"))));
+    }
+    const items = data.circles || [];
+    if (!items.length) {
+      els.circles.appendChild(h("p.empty", t("circle.none")));
+    }
+    for (const circle of items) els.circles.appendChild(circleCard(circle, data));
+    const outgoing = data.outgoing_joins || [];
+    if (outgoing.length) {
+      els.circles.appendChild(h("h4", t("circle.outgoing")));
+      els.circles.appendChild(h("table.data",
+        h("thead", h("tr", ["circle", "status"].map((k) =>
+          h("th", { scope: "col" }, t(`circle.col.${k}`))))),
+        h("tbody", outgoing.map((item) => h("tr",
+          h("td", h("code", { title: item.circle_id }, UI.shortId(item.circle_id))),
+          h("td", item.status))))));
+    }
+  }
+
+  function circleCard(circle, data) {
+    const members = circle.members || [];
+    const rows = members.map((member) => h("tr",
+      h("td", member.name,
+        member.node_id === data.node_id ? h("span.chip", t("circle.you")) : null),
+      h("td", h("code", { title: member.node_id }, UI.shortId(member.node_id))),
+      h("td", (member.endpoints || []).join(", ") || "—"),
+      h("td", member.node_id === circle.owner ? t("circle.owner") : t("circle.member")),
+      h("td", circle.is_owner && member.node_id !== circle.owner
+          && member.node_id !== data.node_id
+        ? button(t("circle.revoke"), () => revokeMember(circle, member), "danger small")
+        : null)));
+    const card = h("div.circle-item",
+      h("div.circle-head",
+        h("h3", circle.name),
+        chip(t("circle.version").replace("{v}", circle.version)),
+        circle.is_owner ? chip(t("circle.owner")) : null),
+      h("p.muted", t("circle.expires").replace("{when}",
+        new Date(circle.expires_at * 1000).toLocaleDateString())),
+      h("h4", t("circle.members")),
+      h("table.data",
+        h("thead", h("tr", ["name", "node", "endpoints", "role", ""]
+          .map((k) => h("th", { scope: "col" }, k ? t(`circle.col.${k}`) : "")))),
+        h("tbody", rows)));
+    if (circle.is_owner) {
+      const requests = circle.pending_joins || [];
+      card.appendChild(h("h4", t("circle.requests")));
+      card.appendChild(requests.length
+        ? h("table.data",
+          h("thead", h("tr", ["name", "node", "endpoints", ""]
+            .map((k) => h("th", { scope: "col" }, k ? t(`circle.col.${k}`) : "")))),
+          h("tbody", requests.map((request) => h("tr",
+            h("td", request.name),
+            h("td", h("code", { title: request.node_id },
+              UI.shortId(request.node_id))),
+            h("td", (request.endpoints || []).join(", ") || "—"),
+            h("td", h("div.form-actions",
+              button(t("circle.approve"), () => approveJoin(circle, request),
+                "primary small"),
+              button(t("circle.reject"), () => rejectJoin(circle, request),
+                "ghost small")))))))
+        : h("p.empty", t("circle.noRequests")));
+    }
+    card.appendChild(h("div.form-actions",
+      circle.is_owner
+        ? button(t("circle.invite"), () => inviteDialog(circle), "small")
+        : null,
+      button(circle.is_owner ? t("circle.delete") : t("circle.leave"),
+        () => leaveCircle(circle), "danger small")));
+    return card;
+  }
+
+  async function createCircleDialog() {
+    const name = h("input", { type: "text", maxlength: 64 });
+    const ok = await UI.modal(t("circle.createTitle"),
+      h("div.form",
+        h("label.field", h("span", t("circle.name")), name)),
+      [{ label: t("common.cancel"), value: false, kind: "ghost" },
+       { label: t("circle.create"), value: true, kind: "primary" }]);
+    if (!ok) return;
+    if (!name.value.trim()) { UI.toast(t("circle.name"), "error"); return; }
+    try {
+      await Api.post("/api/circles", { name: name.value.trim() });
+      UI.toast(t("settings.saved"), "ok");
+      await refresh();
+    } catch (e) { UI.toast(e.message, "error"); }
+  }
+
+  async function acceptInvitationDialog() {
+    const code = h("textarea", { rows: 6, placeholder: t("circle.codePlaceholder") });
+    const name = h("input", { type: "text", maxlength: 64 });
+    const ok = await UI.modal(t("circle.acceptTitle"),
+      h("div.form",
+        h("p.muted", t("circle.codeHelp")),
+        h("label.field", h("span", t("circle.code")), code),
+        h("label.field", h("span", t("circle.name")), name)),
+      [{ label: t("common.cancel"), value: false, kind: "ghost" },
+       { label: t("circle.accept"), value: true, kind: "primary" }]);
+    if (!ok || !code.value.trim()) return;
+    try {
+      const result = await Api.post("/api/circles/accept", {
+        code: code.value.trim(), name: name.value.trim() || undefined,
+      });
+      UI.toast(result.status === "already_member" ? t("circle.member")
+        : result.status === "sent" ? t("circle.accepted") : t("circle.pending"), "ok");
+      await refresh();
+    } catch (e) { UI.toast(e.message, "error"); }
+  }
+
+  async function inviteDialog(circle) {
+    try {
+      const result = await Api.post(
+        `/api/circles/${encodeURIComponent(circle.circle_id)}/invite`, {});
+      const code = h("textarea", { rows: 6, readonly: true });
+      code.value = result.code;
+      const copy = button(t("circle.copy"), async () => {
+        try {
+          await navigator.clipboard.writeText(result.code);
+          UI.toast(t("circle.copied"), "ok");
+        } catch (_) { code.select(); }
+      }, "ghost small");
+      const qr = h("img.circle-qr", {
+        alt: t("circle.qr"),
+        src: "data:image/svg+xml;charset=utf-8," + encodeURIComponent(result.qr_svg),
+      });
+      await UI.modal(t("circle.inviteTitle"),
+        h("div.form",
+          h("p.muted", t("circle.qr")),
+          qr,
+          h("label.field", h("span", t("circle.code")), code),
+          copy,
+          h("p.muted", t("circle.expires").replace("{when}",
+            new Date(result.expires_at * 1000).toLocaleString()))),
+        [{ label: t("common.close"), value: true, kind: "primary" }]);
+    } catch (e) { UI.toast(e.message, "error"); }
+  }
+
+  async function approveJoin(circle, request) {
+    try {
+      await Api.post(`/api/circles/${encodeURIComponent(circle.circle_id)}`
+        + `/requests/${encodeURIComponent(request.node_id)}/approve`, {});
+      await refresh();
+    } catch (e) { UI.toast(e.message, "error"); }
+  }
+
+  async function rejectJoin(circle, request) {
+    try {
+      await Api.post(`/api/circles/${encodeURIComponent(circle.circle_id)}`
+        + `/requests/${encodeURIComponent(request.node_id)}/reject`, {});
+      await refresh();
+    } catch (e) { UI.toast(e.message, "error"); }
+  }
+
+  async function revokeMember(circle, member) {
+    try {
+      await Api.post(`/api/circles/${encodeURIComponent(circle.circle_id)}`
+        + `/members/${encodeURIComponent(member.node_id)}/revoke`, {});
+      await refresh();
+    } catch (e) { UI.toast(e.message, "error"); }
+  }
+
+  async function leaveCircle(circle) {
+    const owner = !!circle.is_owner;
+    const ok = await UI.modal(
+      owner ? t("circle.delete") : t("circle.leave"),
+      h("p", owner ? t("circle.deleteConfirm") : t("circle.leaveConfirm")),
+      [{ label: t("common.cancel"), value: false, kind: "ghost" },
+       { label: owner ? t("circle.delete") : t("circle.leave"),
+         value: true, kind: "danger" }]);
+    if (!ok) return;
+    try {
+      await Api.post(`/api/circles/${encodeURIComponent(circle.circle_id)}/leave`, {});
+      await refresh();
+    } catch (e) { UI.toast(e.message, "error"); }
+  }
+
+  async function acknowledgeNotice() {
+    try {
+      await Api.post("/api/circles/notice/ack", {});
+      await refresh();
+    } catch (e) { UI.toast(e.message, "error"); }
+  }
+
+  async function switchToCircles() {
+    try {
+      await App.saveConfig({ circle: { admission_mode: "circle" } }, { quiet: true });
+      await Api.post("/api/circles/notice/ack", {});
+      await refresh();
+    } catch (e) { UI.toast(e.message, "error"); }
   }
 
   function relabel() { build(); render(); }

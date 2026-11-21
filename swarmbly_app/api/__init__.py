@@ -1380,6 +1380,82 @@ def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
         state.on_config_changed()
         return state.worker.status() if state.worker else {"policy": {}}
 
+    # ---- trusted circles (3.5, D-015) ------------------------------------------------
+    def _circle_call(action, *args, **kwargs):
+        from ..p2p.circles import (E_CIRCLE_NO_REQUEST, E_CIRCLE_NOT_MEMBER,
+                                   E_CIRCLE_OWNER_ONLY, E_CIRCLE_UNKNOWN,
+                                   E_CIRCLE_VERSION_ROLLBACK, E_INVITATION_USED,
+                                   CircleError)
+        try:
+            return action(*args, **kwargs)
+        except CircleError as exc:
+            if exc.code in (E_CIRCLE_UNKNOWN, E_CIRCLE_NO_REQUEST):
+                status = 404
+            elif exc.code in (E_CIRCLE_OWNER_ONLY, E_CIRCLE_NOT_MEMBER,
+                              E_INVITATION_USED):
+                status = 403
+            elif exc.code == E_CIRCLE_VERSION_ROLLBACK:
+                status = 409
+            else:
+                status = 400
+            raise HTTPException(status_code=status,
+                                detail=f"{exc.code}: {exc.detail}") from exc
+
+    @app.get("/api/circles")
+    def circles_list() -> dict:
+        return state.circles.list_payload()
+
+    @app.post("/api/circles")
+    def circles_create(body: dict) -> dict:
+        return _circle_call(state.circles.create_circle,
+                            str(body.get("name") or ""))
+
+    @app.post("/api/circles/accept")
+    def circles_accept(body: dict) -> dict:
+        code = str(body.get("code") or body.get("token") or "").strip()
+        if not code:
+            raise HTTPException(status_code=400, detail="invitation code is required")
+        name = body.get("name")
+        endpoints = body.get("endpoints")
+        return _circle_call(state.circles.accept_invitation, code,
+                            name=str(name) if name else None,
+                            endpoints=endpoints)
+
+    @app.post("/api/circles/notice/ack")
+    def circles_notice_ack() -> dict:
+        state.config.update({"circle.notice_pending": False})
+        return state.circles.list_payload()
+
+    @app.post("/api/circles/{circle_id}/invite")
+    def circles_invite(circle_id: str, body: dict | None = None) -> dict:
+        body = body or {}
+        ttl = body.get("ttl_s")
+        try:
+            ttl_s = int(ttl) if ttl is not None else None
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="ttl_s must be an integer")
+        return _circle_call(state.circles.invite, circle_id,
+                            endpoints=body.get("endpoints"), ttl_s=ttl_s)
+
+    @app.post("/api/circles/{circle_id}/requests/{node_id}/approve")
+    def circles_approve(circle_id: str, node_id: str,
+                        body: dict | None = None) -> dict:
+        name = (body or {}).get("name")
+        return _circle_call(state.circles.approve, circle_id, node_id,
+                            name=str(name) if name else None)
+
+    @app.post("/api/circles/{circle_id}/requests/{node_id}/reject")
+    def circles_reject(circle_id: str, node_id: str) -> dict:
+        return _circle_call(state.circles.reject, circle_id, node_id)
+
+    @app.post("/api/circles/{circle_id}/members/{node_id}/revoke")
+    def circles_revoke(circle_id: str, node_id: str) -> dict:
+        return _circle_call(state.circles.revoke, circle_id, node_id)
+
+    @app.post("/api/circles/{circle_id}/leave")
+    def circles_leave(circle_id: str) -> dict:
+        return _circle_call(state.circles.leave, circle_id)
+
     @app.get("/api/requests/{request_id}")
     def request_detail(request_id: str) -> dict:
         req = state.db.get_request(request_id)
