@@ -1367,6 +1367,9 @@ const Chat = (() => {
       "", t("chat.evidenceTitle").replace("{n}", sw.evidence.used)));
     if (meta.lce?.sources?.length) chips.push(chip(t("chat.lceChip").replace("{n}", meta.lce.sources.length),
       "", t("chat.lceTitle")));
+    if (sw.role_sources?.length) chips.push(chip(
+      t("chat.roleSourcesChip").replace("{n}", sw.role_sources.length),
+      "", t("chat.roleSourcesTitle")));
     // 3.3/3.4: a table built by code, and cells of any table that are in no passage
     if (meta.table && meta.table.by_code !== false) {
       if (meta.list) chips.push(chip(t("chat.listBuilt").replace("{n}", meta.list.count), "ok",
@@ -1741,6 +1744,24 @@ const Explore = (() => {
       readout(t("explore.skill"), meta.skill?.name || null, "measured"),
       readout(t("explore.skillSha"), meta.skill?.sha256 ? meta.skill.sha256.slice(0, 16) : null, "measured"))];
     if (meta.local_reason) sections.push(h("p.note", I18n.reason(meta.local_reason)));
+    if (sw.role_sources?.length) {
+      // WP4b: search/corpus material is third-party material, labelled with
+      // the member and circle the requester actually sent the task to.
+      sections.push(h("h3", t("explore.roleSources.title")),
+        h("ul.sources", sw.role_sources.map((s) => {
+          const origin = s.member_name
+            ? `${s.member_name} · ${s.circle_name || t("explore.roleSources.local")}`
+            : t("explore.roleSources.localPool");
+          const label = s.label || s.span || "•";
+          const safeUrl = /^https?:\/\//i.test(String(s.url || ""));
+          const target = safeUrl
+            ? h("a", { href: s.url, target: "_blank", rel: "noopener noreferrer" }, s.title || s.url)
+            : (s.title || s.url || "");
+          return h("li", `[${label}] `, target,
+            h("span.muted", ` — ${origin} · ${t(`explore.roleSources.${s.executor}`, s.executor)}`),
+            s.snippet ? h("span.muted", `: ${s.snippet}`) : null);
+        })));
+    }
     if (meta.passages_withheld) sections.push(h("p.note", meta.passages_withheld));
     if (meta.agent) {
       sections.push(h("h3", t("explore.agent.title")),

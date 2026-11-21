@@ -89,7 +89,8 @@
    "worker": "Compartir esta computadora (worker)",
    "evidence": "Evidencia pública",
    "roles": "Modelos por papel",
-   "nodeRoles": "Roles del nodo"
+   "nodeRoles": "Roles del nodo",
+   "nodeExecutors": "Ejecutores de búsqueda y corpus"
   }
  },
  "node": {
@@ -155,6 +156,8 @@
   "replicas": "{n} réplicas",
   "evidenceChip": "Fuentes públicas · {n}",
   "evidenceTitle": "Se añadió contexto público de Wikipedia a {n} elementos; solo se enviaron los textos de esos elementos.",
+  "roleSourcesChip": "Fuentes de ejecutores · {n}",
+  "roleSourcesTitle": "Resultados de la búsqueda pública o del corpus compartido de un miembro del círculo. El solicitante no puede verificar qué motor respondió.",
   "lceChip": "Fuentes locales · {n}",
   "lceTitle": "La respuesta usó pasajes de tus fuentes (LCE C1); no salieron del equipo.",
   "publicOffer": "Buscar también en fuentes públicas",
@@ -377,6 +380,13 @@
   "exec": {
    "local": "modelo local",
    "distributed": "distribuida"
+  },
+  "roleSources": {
+   "title": "Material de búsqueda y corpus",
+   "local": "local",
+   "localPool": "pool local",
+   "search": "búsqueda pública",
+   "corpus": "corpus compartido"
   },
   "pipeline": "Pipeline",
   "attempts": "Intentos de despacho",
@@ -663,6 +673,7 @@
    "system": "Sistema",
    "tools": "Herramientas"
   },
+  "noProject": "No compartir ningún proyecto",
   "sameModel": "Igual que la conversación",
   "sameEmbedder": "El embedder actual de la app",
   "secretStored": {
@@ -977,6 +988,18 @@
   "node_roles__reasoner_models": {
    "label": "Modelos de razonamiento",
    "help": "Los modelos compartidos que marques aquí se anuncian como reasoner y se usan con think: true. Vacío por defecto."
+  },
+  "node_roles__search__enabled": {
+   "label": "Compartir búsqueda pública",
+   "help": "Si está activo, este worker ejecuta una consulta pública en nombre de un miembro de un círculo de confianza; solo sale la consulta, nunca tus archivos ni tu conversación."
+  },
+  "node_roles__corpus__project_id": {
+   "label": "Corpus a compartir",
+   "help": "Un proyecto local. Solo los pares admitidos en los círculos que elijas ven su nombre visible y su tamaño; nunca títulos, rutas ni contenidos."
+  },
+  "node_roles__corpus__display_name": {
+   "label": "Nombre visible del corpus",
+   "help": "El nombre que ven los pares admitidos. Sin datos personales; máximo 40 caracteres."
   },
   "circle__admission_mode": {
    "label": "Admisión de pares",
@@ -1400,6 +1423,9 @@
   },
   "passages": "Pasajes de documentos",
   "passagesHelp": "Si está activo, la receta 4 puede adjuntar pasajes de tus documentos a los elementos enviados a miembros de este círculo. Está apagado por defecto y es independiente de privacy.third_party_passages.",
+  "corpusShare": "Compartir corpus con este círculo",
+  "corpusShareHelp": "Este círculo puede recuperar pasajes del corpus compartido. Todos los pares admitidos ven su nombre visible y su tamaño.",
+  "corpusPickFirst": "Elige primero un proyecto en Ajustes → Swarm.",
   "ownPassages": "Pasajes de documentos a mis propios dispositivos",
   "ownPassagesHelp": "Si está activo, la receta 4 puede adjuntar pasajes de tus documentos a los elementos enviados a pares en modo mis propios dispositivos. Está apagado por defecto y es independiente de privacy.third_party_passages."
  }

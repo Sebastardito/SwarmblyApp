@@ -11,6 +11,7 @@ const Settings = (() => {
   let tab = "recommended";
   const els = {};
   let installed = [];          // installed models (from /api/models)
+  let projects = { items: [] }; // local projects for the corpus picker
   const pulls = {};            // name -> progress element
   const toolProposals = new Map();   // server id -> live manifest shown for approval
 
@@ -87,6 +88,14 @@ const Settings = (() => {
       { key: "node_roles.large_model_min_b", type: "number", min: 0.1, max: 10000,
         step: 0.5, group: "nodeRoles" },
       { key: "node_roles.reasoner_models", type: "models", group: "nodeRoles" },
+      // 3.5, D-018 WP4b: executors, off by default. Search runs a public
+      // query on a circle member's behalf; corpus shares one project's
+      // documents with the circles selected in the circle cards below.
+      { key: "node_roles.search.enabled", type: "bool", group: "nodeExecutors" },
+      { key: "node_roles.corpus.project_id", type: "project", group: "nodeExecutors" },
+      { key: "node_roles.corpus.display_name", type: "text", group: "nodeExecutors",
+        placeholder: "Shared corpus",
+        showIf: (c) => !!c.node_roles?.corpus?.project_id },
       { key: "swarm.hedge_fallback_ms", type: "number", min: 200, max: 600000, step: 500, advanced: true },
       { key: "swarm.tau_sem", type: "number", min: 0, max: 1, step: 0.05, advanced: true },
       { key: "swarm.discovery_ttl_s", type: "number", min: 30, max: 86400, advanced: true },
@@ -145,6 +154,7 @@ const Settings = (() => {
       const data = await Api.get("/api/models");
       installed = (data.backends || []).flatMap((b) => (b.models || []).map((m) => ({ ...m, backend: b.name })));
     } catch (_) { installed = []; }
+    try { projects = await Api.get("/api/projects"); } catch (_) { projects = { items: [] }; }
     renderTab();
   }
 
@@ -188,7 +198,7 @@ const Settings = (() => {
       if (f.key === "language") return App.setLanguage(v);
       return App.saveConfig(nested(f.key, v)).then(() => {
         if (["model.multi_model", "profile", "roles.writer.backend",
-             "roles.embeddings.backend"].includes(f.key)) renderTab();
+             "roles.embeddings.backend", "node_roles.corpus.project_id"].includes(f.key)) renderTab();
       }).catch(() => renderTab());
     };
     let control;
@@ -212,6 +222,12 @@ const Settings = (() => {
       control = h("input", { type: "number", min: f.min, max: f.max, step: f.step || 1,
         value: value ?? "", "aria-label": label });
       control.addEventListener("change", () => save(Number(control.value)));
+    } else if (f.type === "project") {
+      // One local project/collection for the corpus executor. Empty shares
+      // nothing; the circles that may read it are selected in the Swarm view.
+      const options = [{ value: "", label: t("settings.noProject") }]
+        .concat((projects.items || []).map((p) => ({ value: p.id, label: p.name })));
+      control = select(options, value || "", save, { "aria-label": label });
     } else if (f.type === "model") {
       const chat = installed.filter((m) => m.kind !== "embedding").map((m) => ({ value: m.name,
         label: m.remote ? `${m.name} (${t("settings.cloudModel").replace("{host}", m.remote)})` : m.name }));

@@ -89,7 +89,8 @@
    "worker": "Sharing this computer (worker)",
    "evidence": "Public evidence",
    "roles": "Models by role",
-   "nodeRoles": "Node roles"
+   "nodeRoles": "Node roles",
+   "nodeExecutors": "Search and corpus executors"
   }
  },
  "node": {
@@ -155,6 +156,8 @@
   "replicas": "{n} replicas",
   "evidenceChip": "Public sources · {n}",
   "evidenceTitle": "Public context from Wikipedia was added to {n} items; only those items' texts were sent.",
+  "roleSourcesChip": "Executor sources · {n}",
+  "roleSourcesTitle": "Results a circle member's public search or shared corpus returned. The requester cannot verify which engine answered.",
   "lceChip": "Local sources · {n}",
   "lceTitle": "The answer used passages from your sources (LCE C1); they did not leave this device.",
   "publicOffer": "Also search public sources",
@@ -377,6 +380,13 @@
   "exec": {
    "local": "local model",
    "distributed": "distributed"
+  },
+  "roleSources": {
+   "title": "Search and corpus material",
+   "local": "local",
+   "localPool": "local pool",
+   "search": "public search",
+   "corpus": "shared corpus"
   },
   "pipeline": "Pipeline",
   "attempts": "Dispatch attempts",
@@ -663,6 +673,7 @@
    "system": "System",
    "tools": "Tools"
   },
+  "noProject": "Share no project",
   "sameModel": "Same as the conversation",
   "sameEmbedder": "The app's current embedder",
   "secretStored": {
@@ -977,6 +988,18 @@
   "node_roles__reasoner_models": {
    "label": "Reasoning models",
    "help": "Shared models you mark here are announced as reasoner and used with think: true. Empty by default."
+  },
+  "node_roles__search__enabled": {
+   "label": "Share public search",
+   "help": "When on, this worker runs a public query for a member of a trusted circle on that member's behalf; only the query leaves this computer, never your files or conversation."
+  },
+  "node_roles__corpus__project_id": {
+   "label": "Corpus to share",
+   "help": "One local project. Only admitted peers in the circles you select see its display name and size bucket, never titles, paths or contents."
+  },
+  "node_roles__corpus__display_name": {
+   "label": "Corpus display name",
+   "help": "The name admitted peers see. Keep it free of personal details; at most 40 characters."
   },
   "circle__admission_mode": {
    "label": "Peer admission",
@@ -1389,6 +1412,9 @@
   },
   "passages": "Document passages",
   "passagesHelp": "When on, recipe 4 may attach passages of your documents to items sent to members of this circle. Off by default; separate from privacy.third_party_passages.",
+  "corpusShare": "Share corpus with this circle",
+  "corpusShareHelp": "This circle may retrieve passages from the shared corpus. Every admitted peer sees its display name and size bucket.",
+  "corpusPickFirst": "Choose a project in Settings → Swarm first.",
   "ownPassages": "Document passages to my own devices",
   "ownPassagesHelp": "When on, recipe 4 may attach passages of your documents to items sent to peers in my-own-devices mode. Off by default; separate from privacy.third_party_passages."
  }

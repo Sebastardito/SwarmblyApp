@@ -331,6 +331,26 @@ const Monitor = (() => {
     card.appendChild(h("div.passages-setting",
       h("label.check", passagesBox, h("span", t("circle.passages"))),
       h("p.muted", t("circle.passagesHelp"))));
+    // 3.5, D-018 WP4b: the corpus executor shares ONE local project, and each
+    // circle decides whether it may retrieve from it. Only the display name
+    // and a size bucket are advertised; every admitted peer sees them.
+    const corpus = App.state.swarm?.node_roles?.corpus || {};
+    const corpusIds = corpus.circle_ids || [];
+    const corpusBox = h("input", { type: "checkbox",
+      disabled: !corpus.project_id });
+    corpusBox.checked = corpus.project_id && corpusIds.includes(circle.circle_id);
+    corpusBox.addEventListener("change", async () => {
+      const next = corpusBox.checked
+        ? [...new Set([...corpusIds, circle.circle_id])]
+        : corpusIds.filter((id) => id !== circle.circle_id);
+      await App.saveConfig({ node_roles: { corpus: { circle_ids: next } } },
+        { quiet: true });
+      await App.refreshSwarm();
+    });
+    card.appendChild(h("div.passages-setting",
+      h("label.check", corpusBox, h("span", t("circle.corpusShare"))),
+      h("p.muted", t(corpus.project_id
+        ? "circle.corpusShareHelp" : "circle.corpusPickFirst"))));
     if (circle.is_owner) {
       const requests = circle.pending_joins || [];
       card.appendChild(h("h4", t("circle.requests")));
