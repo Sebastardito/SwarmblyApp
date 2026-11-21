@@ -932,6 +932,16 @@ class ChatService:
                 prev_user = _previous_user_turn(context)
                 if prev_user and _is_follow_up(user_text):
                     extra_terms = f"{extra_terms} {prev_user}"
+                # T10.17: the App widens the query where it can without
+                # touching LCE: glossary equivalents and regular inflections.
+                retrieval_gloss = []
+                if self.glossary_entries is not None:
+                    try:
+                        retrieval_gloss = self.glossary_entries(request.project_id)
+                    except Exception:
+                        retrieval_gloss = []
+                from .local_context import retrieval_terms
+                extra_terms = retrieval_terms(user_text, extra_terms, retrieval_gloss)
                 try:
                     sources = self.retriever(user_text, extra_terms, request.project_id) or []
                 except Exception:
