@@ -31,6 +31,10 @@ from swarmbly_app.p2p.circles import (
     validate_manifest,
 )
 from swarmbly_app.p2p.messages import WIRE_VERSION, verify_signed
+from swarmbly_app.p2p.relay_client import (
+    RelayAddress as AppRelayAddress,
+    RelayClient as AppRelayClient,
+)
 from swarmbly_app.state import AppState
 
 from conftest import FakeBackend
@@ -148,18 +152,26 @@ def send_task(state):
 class RelayHarness:
     """Run the umbrella's real relay in a thread with its own event loop."""
 
-    def __init__(self, tmp_path: Path, spool: Path, **config: Any):
+    def __init__(self, tmp_path: Path, spool: Path, *, port: int = 0,
+                 certfile: Path | None = None, keyfile: Path | None = None,
+                 cert_name: str = "relay", **config: Any):
         self.tmp_path = tmp_path
         self.spool = spool
         self.config = config
+        self.port_requested = int(port)
+        self.certfile = Path(certfile) if certfile else None
+        self.keyfile = Path(keyfile) if keyfile else None
+        self.cert_name = cert_name
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.ready = threading.Event()
-        self.server: RelayServer | None = None
+        self.server: Any = None
         self.port = 0
-        self.pin = ""
+        self.pin = (transport.cert_fingerprint(self.certfile)
+                    if self.certfile else "")
         self.error = ""
         self.stopped = False
+        self.started = False
 
     def _run(self) -> None:
         asyncio.set_event_loop(self.loop)
@@ -173,16 +185,22 @@ class RelayHarness:
         self.loop.run_forever()
 
     async def _start(self) -> None:
-        cert, key, pin = make_cert(self.tmp_path, "relay")
-        self.pin = pin
+        if self.certfile is not None and self.keyfile is not None:
+            cert, key, pin = self.certfile, self.keyfile, self.pin
+        else:
+            cert, key, pin = make_cert(self.tmp_path, self.cert_name)
+            self.pin = pin
         self.spool.mkdir(parents=True, exist_ok=True)
         self.server = _CapturingRelay(RelayConfig(
             manifests=(self.spool,), certfile=cert, keyfile=key,
-            host="127.0.0.1", port=0, **self.config))
+            host="127.0.0.1", port=self.port_requested, **self.config))
         await self.server.start()
         self.port = self.server.port
 
     def start(self) -> "RelayHarness":
+        if self.started:
+            return self
+        self.started = True
         self.thread.start()
         assert self.ready.wait(10), "relay did not start"
         if self.error:
@@ -198,7 +216,7 @@ class RelayHarness:
         return bytes(self.server.forwarded) if self.server is not None else b""
 
     def stop(self) -> None:
-        if self.stopped:
+        if self.stopped or not self.started:
             return
         self.stopped = True
         if self.server is not None:
@@ -211,13 +229,17 @@ class RelayHarness:
         self.thread.join(5)
 
 
-class _CapturingRelay(RelayServer):
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        self.forwarded = bytearray()
+if RELAY_AVAILABLE:
+    class _CapturingRelay(RelayServer):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            self.forwarded = bytearray()
 
-    def _record_forwarded(self, data: bytes) -> None:
-        self.forwarded.extend(data)
+        def _record_forwarded(self, data: bytes) -> None:
+            self.forwarded.extend(data)
+else:  # pragma: no cover - collection remains importable without the umbrella
+    class _CapturingRelay:  # type: ignore[no-redef]
+        pass
 
 
 @pytest.fixture()
@@ -388,8 +410,8 @@ class TestWrongPin:
             port = server.sockets[0].getsockname()[1]
             identity = AppState(str(tmp_path / "pin_state")).identity_manager
             node_id = identity.load_or_create().node_id
-            client = RelayClient(
-                RelayAddress("127.0.0.1", port, "00" * 32),
+            client = AppRelayClient(
+                AppRelayAddress("127.0.0.1", port, "00" * 32),
                 "circle-12345678", node_id, identity.sign, timeout=5.0)
             try:
                 with pytest.raises(Exception) as exc:
