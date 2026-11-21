@@ -2,6 +2,50 @@
 
 ## Unreleased — 3.5 (work in progress)
 
+**Off-LAN through the circle relay, WP3 (D-016/D-023).**
+
+- **Relay in the circle.** The owner sets `relay: {host, port,
+  tls_cert_sha256}` in the circle card, API `POST /api/circles/{id}/relay`.
+  The pin is mandatory with an address; a relay without a valid SHA-256 pin is
+  refused (`E_CIRCLE_RELAY_PIN`). The optional field is signed inside the
+  manifest and inside new invitations, so older nodes ignore it and a
+  tampered endpoint fails the signature.
+- **Owner pushes each version.** `circles.py` writes every new signed manifest
+  version (approval, revocation, relay change) atomically to
+  `circle.relay_publish_dir` (default `<data>/circles/relay-publish`). That is
+  exactly the prototype's operator path: it has no admin API and reloads a
+  signed file before every registration and pair. A relay on another host
+  needs the directory synced; no server change was made.
+- **App-side client** (`swarmbly_app/p2p/relay_client.py`, AGPL header). A
+  deliberate copy of the prototype's protocol client and `MemoryBIO` inner
+  TLS adapter: pinned outer TLS 1.3, signed single-use challenge, `pair` /
+  `pair_incoming` / `pair_accept`, then raw splice. It also exposes the
+  atomic manifest publisher.
+- **Registration and pairing** (`p2p/node.py`, `p2p/transport.py`). One idle
+  registered acceptor per (circle, relay) with exponential backoff, off when
+  the manifest has no relay and bounded by `circle.relay_max_connections`.
+  A pin mismatch stops that relay with a security warning; a refusal
+  (`not_a_member`, `limit_splices`, `peer_not_connected`, …) is shown. An
+  outbound pair opens a short separate connection because the prototype
+  accepts one splice per connection. Direct addresses are tried first; only
+  then the relay. The inner TLS 1.3 + channel-bound handshake, admission, the
+  worker gate and the egress gate are unchanged for relayed peers.
+  `ensure_circle_peers` makes relay-reachable members visible to placement
+  before planning; a relay that is down does not stop direct peers.
+- **Honest transport hop** (`engine/scheduler.py`, `egress.py`, `chat.py`,
+  `web/js/monitor.js`). `Attempt`/`Peer` carry `transport` (`direct` or
+  `relayed`) and the relay host; the receipt lists `saltos_relay` and marks the
+  hop as metadata only (who, when, bytes; never content). The Swarm peers table
+  gains a **Link** column (direct / relayed) and the circle card shows the
+  relay state and pin.
+- **Docs and tests.** Architecture, P2P testing guide (two machines on
+  different networks), user guide EN/ES, limitations and this entry.
+  `tests/test_relay.py` covers manifest/invitation fields and pins, refusal of
+  an unpinned relay, owner publish on approval/revocation, wrong pin before
+  any frame, a real umbrella relay end to end (no direct path, task done,
+  ciphertext only), direct-first, revocation, non-members, pin-mismatch
+  warning and relay-down with working LAN peers.
+
 **Reciprocity credits, WP6 (D-020/D-021).**
 
 - **Signed, non-transferable receipts** (`swarmbly_app/p2p/credits.py`,

@@ -12,8 +12,11 @@ Limitations are documented, never hidden. *[Español](#español) below.*
    which SPEC §14b.7 forbids (see `AUDIT_FASE0_ES.md`, H3).
 2. **Distributed requests are single-turn.** The last user message is
    fragmented; earlier turns are not packed into the plan.
-3. **No internet swarms yet.** Rendezvous, relay and NAT traversal are Phase 3
-   (experimental). Mode `internet` is refused honestly.
+3. **Off-LAN is a circle relay, not an internet swarm.** A circle with a relay
+   can reach its members across networks (3.5, D-016), but there is no public
+   rendezvous, NAT traversal or hole punching (3.6), and mode `internet` is
+   still refused honestly. The relay is operated by the circle owner and sees
+   metadata only (items 33–36 below).
 4. **TRUSTED tier needs mutual TLS** (SPEC §15c) and is not implemented; such
    requests are answered locally and nothing is sent. Automatic triage that
    raises a request to TRUSTED with no trusted swarm configured also stays local
@@ -61,7 +64,9 @@ Limitations are documented, never hidden. *[Español](#español) below.*
     `policy.max_concurrent`, advertisement field `roles` (node roles, D-018),
     packet fields `constraints.model_family` (SWIP draft in
     `docs/SWIP-DRAFT-model-family-hint.md`), `constraints.role`,
-    `constraints.think` and `constraints.carries_passages`, result fields
+    `constraints.think` and `constraints.carries_passages`, the signed
+    `relay` field in manifests and invitations (D-016: host, port and the
+    certificate SHA-256 pin; optional, ignored by older nodes), result fields
     `executor` and `sources`, control types `credit_receipt`, `credit_spend`
     and `credit_spent` (D-020; appendix below), error codes `E_POLICY`,
     `E_EXECUTION`, `E_DUPLICATE`, `E_DISCONNECTED`, `E_ROLE_UNAVAILABLE` and
@@ -158,6 +163,32 @@ Limitations are documented, never hidden. *[Español](#español) below.*
     a new valid receipt is refused rather than silently dropping an old one,
     and a receipt that has fallen out of the issuer's log cannot be matched by
     a later report.
+
+33. **The relay operator sees metadata.** A circle relay forwards ciphertext it
+    cannot read, but it necessarily sees who pairs with whom, when, from which
+    IP, and how many bytes; it also holds the signed member list. It stores no
+    payloads and the App's receipt names the hop, but traffic analysis remains
+    possible. Run your own relay or trust its operator accordingly. This is the
+    privacy notice requirement of R-014/D-023.
+34. **No hole punching yet.** Off-LAN reachability in 3.5 is TCP through the
+    circle's relay (or a direct address/overlay the circle runs). UDP/QUIC hole
+    punching is a stretch goal moved to 3.6 if not ready; the relay remains the
+    fallback and the correctness baseline.
+35. **The relay's operator path is a file, not a push API.** The prototype has
+    no authenticated admin frame. The owner writes each signed manifest version
+    to `circle.relay_publish_dir`; the relay reloads changed files before every
+    registration and pair, so revocation reaches it at the next attempt. If the
+    relay runs on another host, the operator must sync that directory
+    (rsync/scp); there is no built-in remote push and the server was not
+    changed. One connection is kept per (circle, relay), not literally per
+    relay, because the prototype binds a registration to one `circle_id`; the
+    number is bounded by `circle.relay_max_connections`.
+36. **Relay limits are the service's.** 4 concurrent splices per member,
+    2 GiB per member per UTC day, 300 s idle and 30 s pair timeout are enforced
+    by the prototype relay, not duplicated in the App; the App surfaces the
+    refusal (`limit_splices`, `limit_bytes`, …) and backs off. A relay restart
+    resets its byte counters (a budget, not accounting), and a member can spend
+    the relay's bandwidth up to those limits.
 
 ### Protocol appendix: credit control messages (D-020/D-021)
 

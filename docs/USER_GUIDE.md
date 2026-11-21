@@ -257,6 +257,25 @@ its own switch in the same panel, also off by default. Keep the node key
 private: 3.5 has no mutual TLS, so a stolen key can impersonate a member until
 the owner revokes it.
 
+**Relay (members on different networks).** If the circle's owner runs a relay,
+set it in the circle card (**Set relay…**): `host:port` and the relay
+certificate's **SHA-256 pin**. The pin is mandatory; a relay without it is
+refused. The relay and pin travel in the signed manifest and in invitations,
+and the owner publishes every new signed manifest version to it, so a
+revocation reaches the relay before the next pairing. Members keep one
+outbound connection to the relay; direct addresses (LAN discovery, manual
+address, manifest hints) are always tried first, and only then the relay. A
+relayed peer gets the **same** circle admission, worker policy and egress gate
+as a direct one; the two nodes still run their own TLS 1.3 and handshake
+through the relay, which forwards ciphertext. The Swarm panel shows **direct**
+or **relayed** per peer, and the receipt names the relay hop and says it saw
+only who, when and how many bytes — never content. The relay operator can see
+that metadata and the member list, so run your own relay or trust its
+operator. A pin mismatch stops that relay and shows a security warning; a
+relay that is down does not stop direct LAN peers. The relay enforces its own
+limits (4 concurrent splices per member, 2 GiB/day, 300 s idle) and a refusal
+is shown in the circle card. No hole punching yet.
+
 ### Reciprocity credits · Créditos de reciprocidad
 
 When you accept a verified answer from a member of one of your circles, the
@@ -447,6 +466,27 @@ tenía esa opción activa no enciende los pasajes del círculo. El modo *Mis
 propios dispositivos* tiene su propio interruptor en el mismo panel, también
 apagado por defecto. Sin TLS mutuo en 3.5, protege la clave del nodo: una clave
 robada puede suplantar a un miembro hasta que el dueño lo revoque.
+
+**Relay (miembros en redes distintas).** Si el dueño del círculo ejecuta un
+relay, configúralo en la tarjeta del círculo (**Configurar relay…**):
+`host:puerto` y el **pin SHA-256** del certificado del relay. El pin es
+obligatorio; un relay sin él se rechaza. El relay y el pin viajan en el
+manifiesto firmado y en las invitaciones, y el dueño publica en él cada nueva
+versión firmada, así la revocación llega antes del siguiente emparejamiento.
+Cada miembro mantiene una conexión saliente al relay; las direcciones directas
+(descubrimiento LAN, dirección manual, pistas del manifiesto) se prueban
+primero y solo después el relay. Un par por relay pasa por la **misma**
+admisión de círculo, política de worker y puerta de salida que uno directo; los
+dos nodos siguen ejecutando su TLS 1.3 y su handshake a través del relay, que
+solo reenvía cifrado. El panel Swarm muestra **directa** o **por relay** por
+par, y el recibo nombra el salto y dice que solo vio quién, cuándo y cuántos
+bytes, nunca el contenido. El operador del relay puede ver esos metadatos y la
+lista de miembros: ejecuta tu propio relay o confía en su operador. Un pin que
+no coincide detiene ese relay y muestra un aviso de seguridad; un relay caído
+no impide que sigan funcionando los pares directos de la LAN. El relay aplica
+sus propios límites (4 empalmes simultáneos por miembro, 2 GiB/día, 300 s
+inactivo) y el rechazo se muestra en la tarjeta del círculo. Aún no hay hole
+punching.
 
 **Créditos de reciprocidad.** Cuando aceptas una respuesta verificada de un
 miembro de uno de tus círculos, el solicitante firma un **recibo de crédito**
