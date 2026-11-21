@@ -737,6 +737,11 @@ class Orchestrator:
                 future.cancel()
                 raise RuntimeError("distributed execution exceeded its global deadline")
 
+        # Only a step whose state says completed may enter assembly. This
+        # also covers a global deadline that cancelled a task after it had
+        # already written its side-effect result.
+        resolved = {task_id: value for task_id, value in resolved.items()
+                    if outcome.state(task_id).status == "completed"}
         # D-019: what completed, what did not and why. A step that was never
         # run because a predecessor failed says which step blocked it.
         steps_meta: list[dict[str, Any]] = []
