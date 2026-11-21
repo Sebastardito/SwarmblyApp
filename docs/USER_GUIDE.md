@@ -3,8 +3,8 @@
 How to use Swarmbly App once it is running. Installation is in
 [INSTALL.md](INSTALL.md). *[Español](#español) below.*
 
-The app has four views, in the sidebar (bottom bar on a phone): **Chat**,
-**Swarm**, **Memory** and **Settings**. The node card under the navigation
+The app has five views, in the sidebar (bottom bar on a phone): **Chat**,
+**Swarm**, **Teams**, **Memory** and **Settings**. The node card under the navigation
 shows your node identity, default mode, privacy tier, local network, peers and
 whether you are sharing this computer. The **Current request** panel on the
 right follows the request in progress stage by stage (on narrow screens, open
@@ -257,7 +257,56 @@ its own switch in the same panel, also off by default. Keep the node key
 private: 3.5 has no mutual TLS, so a stolen key can impersonate a member until
 the owner revokes it.
 
-## 4. Memory
+## 4. Teams
+
+A **team** is a plan you store and run again: named steps, each with an
+instruction and, optionally, a node role (`search`, `corpus`, `large_model`,
+`reasoner`), plus dependencies on earlier steps. It is a template, not an
+agent: it never chooses a destination and never adds a permission. The same
+team runs on this computer (its local model pool, when it has every role) or
+across the members of a circle, by role.
+
+**Make a team** in **Teams → New team**:
+
+1. Give it a name and, if you like, a description.
+2. Write each step's name and instruction. Put `{request}` where your message
+   belongs; at least one step needs it.
+3. Pick a node role when the step needs one. `search` runs a public query on a
+   member that shares search; `corpus` reads a collection a member shares;
+   `large_model` and `reasoner` ask for a model of that kind. A step with no
+   role can run on any worker.
+4. Tick the earlier steps this step needs. A step can depend only on steps
+   above it, so a plan cannot loop.
+5. **Save**. Teams are stored only on this computer: in the app's data
+   directory, or inside the project folder when you are in a project. The
+   limits are 12 steps, a 60-character name and 2,000 characters per
+   instruction. Anything outside them is refused with a message, as are
+   unknown roles and forward dependencies.
+
+Three examples are built in (for instance *Public search → shared collection →
+draft → review*). They are read-only: **Duplicate** makes an editable copy.
+**Use in chat** selects the team in the composer.
+
+**Run it:** pick the team in the chat composer's **Team** selector and send
+your message. The answer, *Explore processing* and the receipt show the steps
+and where each one ran. You can run the same team with the mode *Local* (its
+local pool), *Swarm LAN* or *Automatic*; the privacy tier, circle admission,
+egress, role and passage rules apply exactly as without a team. If a role is
+missing, a `large_model` or `reasoner` step falls back to the best generic
+worker and says so; a `search` or `corpus` step fails honestly.
+
+**Partial answers.** A step that cannot finish (a node goes away, a deadline
+expires, a policy refuses, a role is missing) no longer loses the whole
+answer. The app assembles the steps that did finish and adds a short note
+naming each missing step and why; a step that depended on it is marked
+*blocked by* it and is not run. The metadata says `complete`, `partial` or
+`failed` (nothing usable completed), and the per-step statuses are in
+*Explore processing*. In a list (recipe 4) each item keeps its own status; a
+whole failed wave marks only its items failed and later waves still run. If
+you press **Stop**, the answer is *stopped*, not partial. The requester is the
+coordinator: if it goes away the run ends; there is no plan migration.
+
+## 5. Memory
 
 The Local Cognitive Extension keeps a personal memory on this computer. It is
 optional and never changes what other nodes receive.
@@ -274,7 +323,7 @@ Each level lists its requirements and whether this computer meets them.
 **Your sources** opens the folder where documents go; they are read, never
 modified.
 
-## 5. Settings
+## 6. Settings
 
 The **Profile** at the top chooses how much you see: *Automatic* (the
 recommended configuration), *Custom* (everyday settings) or *Advanced* (every
@@ -301,7 +350,7 @@ With the download permission on, *Download* asks for confirmation and Ollama
 does the rest; progress shows in the app and can be cancelled. Some licences
 restrict commercial use; the dialog says so.
 
-## 6. Without a window (headless)
+## 7. Without a window (headless)
 
 ```bash
 ./launch.sh --headless                        # or: swarmbly-app headless
@@ -313,7 +362,7 @@ swarmbly-app config set model.model_name llama3.2:3b
 Useful for a second computer or a Raspberry Pi that only lends compute.
 `swarmbly-app status` prints version, node id and data directory.
 
-## 7. Keyboard and accessibility
+## 8. Keyboard and accessibility
 
 Every control is reachable with the keyboard and shows a visible focus ring;
 *Skip to content* is the first tab stop. *Reduce motion* (Settings → General,
@@ -324,7 +373,8 @@ by default; a light theme is in Settings → General.
 
 ## Español
 
-La app tiene cuatro vistas: **Chat**, **Swarm**, **Memory** y **Settings**.
+La app tiene cinco vistas: **Chat**, **Swarm**, **Equipos**, **Memory** y
+**Settings**.
 La tarjeta del nodo muestra tu identidad, modo por defecto, nivel de
 privacidad, red local, pares y si compartes tu equipo; el panel **Current
 request** sigue la solicitud en curso etapa por etapa.
@@ -412,6 +462,38 @@ Ajustes → Swarm.
   círculo encendido, y un servicio de modelos solo con
   `privacy.third_party_passages`; si no, la tarea se ejecuta en local o falla
   honestamente.
+
+**Equipos.** Un **equipo** es un plan guardado para repetir: pasos con
+nombre, cada uno con una instrucción y, si hace falta, un rol de nodo
+(`search`, `corpus`, `large_model`, `reasoner`), más dependencias de pasos
+anteriores. Es una plantilla, no un agente: nunca elige un destino ni agrega
+un permiso. El mismo equipo corre en esta computadora (su pool local, cuando
+tiene todos los roles) o entre los miembros de un círculo, por rol. En
+**Equipos → Nuevo equipo** le pones nombre y escribes cada paso; usa
+`{request}` donde va tu mensaje (al menos un paso lo necesita), elige un rol
+solo cuando el paso lo requiera y marca los pasos anteriores de los que
+depende. Un paso solo puede depender de pasos de arriba, así que el plan no
+puede formar un ciclo. Se guardan solo en este equipo: en el directorio de
+datos de la app o dentro de la carpeta del proyecto cuando estás en uno; los
+límites son 12 pasos, 60 caracteres de nombre y 2.000 por instrucción, y se
+rechazan roles desconocidos o dependencias hacia adelante. Hay tres ejemplos
+incorporados y de solo lectura: **Duplicar** crea una copia editable. Elige el
+equipo en el selector **Equipo** del chat y envía el mensaje; la respuesta,
+*Explorar el procesamiento* y el recibo muestran los pasos y dónde corrió cada
+uno. Las reglas de privacidad, admisión de círculo, salida, rol y pasajes
+siguen igual: un rol nunca amplía un permiso. Si falta un rol, un paso
+`large_model` o `reasoner` cae al mejor worker genérico y lo dice; uno de
+`search` o `corpus` falla honestamente. **Respuestas parciales:** un paso que
+no puede terminar (se va un nodo, vence el plazo, una política lo rechaza,
+falta un rol) ya no pierde toda la respuesta. La app ensambla los pasos que sí
+terminaron y añade una nota que nombra cada paso faltante y por qué; un paso
+que dependía de él queda *bloqueado por* ese paso y no se ejecuta. Los
+metadatos dicen `complete`, `partial` o `failed` (nada utilizable se completó)
+y los estados por paso están en *Explorar el procesamiento*. En una lista
+(receta 4) cada elemento conserva su estado; una ola fallida marca solo sus
+elementos como fallidos y las olas siguientes siguen. **Detener** deja
+*stopped*, no una respuesta parcial. El solicitante es el coordinador: si
+desaparece, la ejecución termina; no hay migración de plan en 3.5.
 
 **Memory.** C0 activa; C1 recupera pasajes de tus fuentes para las
 respuestas hechas en este equipo; C2–C4 en fases posteriores.

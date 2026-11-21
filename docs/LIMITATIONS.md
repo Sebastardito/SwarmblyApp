@@ -121,6 +121,25 @@ Limitations are documented, never hidden. *[Español](#español) below.*
     passage already returned; revoking the member or removing the circle from
     the share stops new retrievals.
 
+29. **The coordinator is a single point.** The requester plans, dispatches
+    and assembles. If it goes away (stop, crash, lost machine) its run ends;
+    3.5 has no plan migration, replication or hand-over. A worker that goes
+    away only costs its own steps, which is what the partial answer reports.
+30. **Teams are templates, not agents.** A team is a fixed list of at most 12
+    steps with dependencies only on earlier steps. It cannot replan, choose
+    a destination, inspect intermediate results or delegate recursively, and
+    it never adds a permission. Built-in examples are read-only (duplicate
+    them to edit). Teams are stored on this computer (per user, and per
+    project inside a project folder): there is no account, sync or sharing of
+    team definitions in 3.5.
+31. **A partial answer is honest about steps, not about quality.** `complete`
+    means every step returned a usable result; it does not mean the answer is
+    correct. A missing step is named with its stable reason and its dependents
+    are marked blocked and not retried. Recipe 4's per-item `failed` status
+    carries the wave reason, but a failure of the *local* list path still
+    fails that request (the per-wave continuation applies to distributed
+    waves).
+
 ## Upstream (audited repositories)
 
 - SwarmblyAI: `swarmbly_v0` is a measurement harness; no networking, no
@@ -187,4 +206,22 @@ Limitations are documented, never hidden. *[Español](#español) below.*
     proyecto a la vez. Todos los pares admitidos de un círculo elegido ven el
     nombre visible y el tamaño, aunque nunca pidan un pasaje; el dueño no
     puede revocar un pasaje ya devuelto, pero quitar el círculo de la
-    compartición detiene las nuevas recuperaciones.
+    compartición detiene las nuevas recuperaciones. 29. El coordinador es un
+    único punto: el solicitante planifica, despacha y ensambla; si desaparece
+    (parada, caída, equipo perdido) su ejecución termina. 3.5 no tiene
+    migración de plan, replicación ni traspaso. Un worker que se va solo
+    cuesta sus propios pasos, y eso es lo que informa la respuesta parcial.
+    30. Los equipos son plantillas, no agentes: una lista fija de como mucho
+    12 pasos con dependencias solo de pasos anteriores. No replanifican, no
+    eligen destino, no inspeccionan resultados intermedios ni delegan
+    recursivamente, y nunca agregan un permiso. Los ejemplos incorporados son
+    de solo lectura (duplícalos para editar). Se guardan en este equipo (por
+    usuario y, dentro de un proyecto, por proyecto): en 3.5 no hay cuenta,
+    sincronización ni compartición de definiciones de equipos. 31. Una
+    respuesta parcial es honesta sobre los pasos, no sobre la calidad:
+    `complete` significa que todos los pasos devolvieron un resultado
+    utilizable, no que la respuesta sea correcta. Un paso faltante se nombra
+    con su razón estable y sus dependientes quedan bloqueados y no se
+    reintentan. El estado `failed` por elemento de la receta 4 lleva la razón
+    de la ola, pero un fallo del camino local de listas todavía hace fallar
+    esa solicitud (la continuación por olas aplica a olas distribuidas).

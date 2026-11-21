@@ -116,8 +116,42 @@ deprioritises a node whose role failed recently. A role never widens circle
 admission, egress, lane/tier or model-size rules. If no worker advertises a
 `large_model`/`reasoner` role the task may run on the best generic worker,
 and the metadata, the attempt and the receipt say «role X unavailable, ran on
-Y»; `search`/`corpus` have no truthful substitute, so the task fails honestly
-until WP4b adds their executors.
+Y»; `search`/`corpus` have no truthful substitute, so the step fails honestly
+and the partial answer names it.
+
+**Teams (3.5, D-019).** A **team** is a named, stored plan template: an
+ordered list of steps, each with a name, an instruction template (`{request}`
+is replaced by the user's message), an optional node role (`search`,
+`corpus`, `large_model`, `reasoner`) and dependencies on **earlier** steps
+only. The same template runs on one computer (its local model pool, when that
+node has every role) or across circle members, by role, because it becomes an
+ordinary plan of the existing requester-central scheduler. `teams.py` stores
+them as JSON under `<data>/teams.json` for the user and `<project>/teams.json`
+for a project, validated on load and on save (at most 12 steps, bounded names
+and instructions, known roles, unique ids, no forward edge and therefore no
+cycle); writes are atomic and mode 0600. Three built-in examples are shipped
+in code, read-only, and can only be duplicated. `Orchestrator.run(team=…)`
+replaces the router and the planner with the template; it does **not** replace
+any gate: lane/tier, circle admission at the handshake and the worker, the
+egress gate, passage rules, the WP4b public-query guard for `search` and the
+corpus provenance rules run unchanged, and a role never widens a permission.
+The wire stays 0.2: the steps travel as ordinary packets, and a team run
+produces the same receipt as any other run.
+
+**Honest partial results (3.5, D-019).** A step that cannot complete no
+longer fails the whole request. `run_levels` keeps a per-step state
+(`completed`, `failed`, `blocked`), records the honest reason (`node_lost`,
+`deadline`, `policy_refusal`, `role_unavailable`, `no_worker`, `failed`),
+marks every step that depends on a failed one as `blocked by <step>` and never
+runs it, while independent steps continue. The orchestrator assembles the
+steps that completed, appends a short note naming each missing step and why,
+and reports `status` (`complete` / `partial` / `failed` when nothing usable
+completed), `steps` (per-step status) and `missing_steps` in the metadata. A
+receipt is unchanged in meaning: it lists only what was really sent. Recipe 4
+keeps its per-item statuses; a failed wave marks its own items `failed` with
+the reason and later waves still run. A user stop cancels the run and stays
+`stopped`, never a partial answer. The requester is the coordinator: if it
+goes away the run ends; there is no plan migration in 3.5.
 
 ## 4. Security model (summary)
 
@@ -158,6 +192,7 @@ sources/  wiki/  adapters/  capsules/   LCE planes (local only)
 output/   exports/ reports/             logical default output location
 identity/ node_key (0600)               cache/tls/ node.crt, node.key (0600)
 circles/ manifests, invitations, joins  api_token (0600)   logs/   app.db (SQLite)
+teams.json (0600)                       <project>/teams.json (0600)
 ```
 
 macOS `~/Library/Application Support/Swarmbly` · Linux `~/.local/share/swarmbly`
@@ -235,3 +270,39 @@ glosario ni memoria, y solo se reenvían a un nodo con `circle_passages`
 encendido o a un servicio de modelos con `privacy.third_party_passages`; si
 no, se ejecutan en local o la tarea falla honestamente. Las decisiones Q1–Q5,
 D1–D14 y D-018/D-021 están en la tabla anterior.
+
+**Equipos (3.5, D-019).** Un **equipo** es un plan guardado con nombre:
+pasos ordenados, cada uno con nombre, una plantilla de instrucción (`{request}`
+se sustituye por el mensaje del usuario), un rol de nodo opcional (`search`,
+`corpus`, `large_model`, `reasoner`) y dependencias solo de pasos
+**anteriores**. El mismo equipo corre en una computadora (su pool local,
+cuando ese nodo tiene todos los roles) o entre miembros de un círculo, por
+rol, porque se convierte en un plan ordinario del planificador central
+existente. `teams.py` los guarda como JSON en `<data>/teams.json` y, por
+proyecto, en `<project>/teams.json`, validados al cargar y al guardar (como
+mucho 12 pasos, nombres e instrucciones acotados, roles conocidos, ids únicos,
+sin dependencias hacia adelante y por tanto sin ciclos); la escritura es
+atómica y con modo 0600. Hay tres ejemplos incorporados, de solo lectura, que
+solo se pueden duplicar. `Orchestrator.run(team=…)` sustituye al router y al
+planificador por la plantilla, pero **no** sustituye ninguna puerta: carril y
+tier, admisión de círculo en el handshake y en el worker, puerta de salida,
+reglas de pasajes, la protección de consulta pública de `search` (WP4b) y la
+procedencia del corpus siguen igual, y un rol nunca amplía un permiso. El wire
+sigue en 0.2: los pasos viajan como paquetes ordinarios y el recibo es el
+mismo.
+
+**Resultados parciales honestos (3.5, D-019).** Un paso que no puede
+completarse ya no hace fallar toda la solicitud. `run_levels` guarda el estado
+de cada paso (`completed`, `failed`, `blocked`), registra la razón honesta
+(`node_lost`, `deadline`, `policy_refusal`, `role_unavailable`, `no_worker`,
+`failed`), marca cada paso que depende de uno fallido como `blocked by
+<step>` y no lo ejecuta, mientras los pasos independientes continúan. El
+orquestador ensambla los pasos completados, añade una nota corta que nombra
+cada paso faltante y su razón, e informa `status` (`complete` / `partial` /
+`failed` cuando nada utilizable se completó), `steps` (estado por paso) y
+`missing_steps` en los metadatos. El recibo conserva su significado: solo
+enumera lo que realmente se envió. La receta 4 conserva sus estados por
+elemento; una ola fallida marca sus elementos como `failed` con la razón y las
+olas siguientes siguen. Una parada del usuario cancela la ejecución y queda
+`stopped`, nunca una respuesta parcial. El solicitante es el coordinador: si
+desaparece, la ejecución termina; no hay migración de plan en 3.5.

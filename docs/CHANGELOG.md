@@ -136,6 +136,59 @@
   services, real loopback search and corpus in a shared circle, and the local
   pool path. Network calls are faked.
 
+**Teams and honest partial results, WP5 (D-019).**
+
+- **Stored plan templates** (`swarmbly_app/teams.py`, `tests/test_teams.py`).
+  A team is a named list of steps with an instruction template (`{request}`),
+  an optional node role and dependencies on earlier steps only. User teams
+  live in `<data>/teams.json` and project teams in `<project>/teams.json`,
+  validated on load and on save (at most 12 steps, bounded names and
+  instructions, known roles, unique ids, no forward edge and therefore no
+  cycle); writes are atomic and mode 0600. Three neutral built-in examples are
+  read-only and can only be duplicated.
+- **Running a team** (`engine/orchestrator.py`, `chat.py`, `api/__init__.py`).
+  `Orchestrator.run(team=…)` builds the plan from the template instead of
+  calling the router and the planner, substitutes the user's request and
+  passes the step roles as `task_roles`. The same template runs on one node
+  (local pool with every role) or across circle members by role. No new wire
+  message: the task plane stays 0.2. Every gate still applies: lane/tier,
+  circle admission, the egress gate, passage rules, the WP4b public-query
+  guard and corpus provenance; a team never widens a permission.
+- **Teams API and UI** (`api/__init__.py`, `web/js/teams.js`,
+  `web/js/chat.js`, `web/index.html`, `web/i18n/*.json`). List, create, edit,
+  delete, duplicate a built-in, and a composer selector that runs the chosen
+  team for one message, with English and Spanish strings. The Teams view says
+  what a team is and that the stored templates are local.
+- **Honest partial results** (`engine/scheduler.py`,
+  `engine/orchestrator.py`, `chat.py`). `run_levels` records a state per step
+  (`completed`, `failed`, `blocked`), with a stable reason (`node_lost`,
+  `deadline`, `policy_refusal`, `role_unavailable`, `no_worker`, `failed`).
+  A failed step no longer aborts the plan: independent steps continue, and
+  every dependent step is marked `blocked by <step>` and is not run. The
+  answer assembles the completed steps and appends a note naming each missing
+  step and why; the metadata carries `status` (`complete` / `partial` /
+  `failed` when nothing usable completed), `steps` and `missing_steps`. A
+  failed run goes through the normal error path and still keeps its per-step
+  record. The receipt is unchanged in meaning: only what was really sent.
+- **Lists** (`chat.py`, `recipes.py`). Recipe 4 keeps its per-item statuses;
+  a failed wave marks its own items `failed` with the reason and later waves
+  continue. The table summary and metadata report the failed count, and the
+  answer names the waves that failed.
+- **Stops and coordination** (`engine/scheduler.py`). A user stop cancels the
+  run and stays `stopped`, never a partial answer. The requester remains the
+  only coordinator: if it goes away the run ends; no plan migration.
+- **Tests**: `tests/test_teams.py` covers validation (cycles, forward and
+  self dependencies, unknown role, bounds, duplicate ids), read-only
+  built-ins, per-user/per-project storage, the API and the en/es strings;
+  `tests/test_teams_run.py` covers a team entirely on the local pool, the
+  same team across two real loopback nodes in a shared circle with role
+  placement, a node stopped mid-run (partial answer, missing step named,
+  dependent blocked), nothing completed (`failed`, not `partial`), user stop,
+  chat status, a failing recipe-4 wave that keeps the other waves, and a
+  no-team regression. Network calls are faked.
+- **Docs**: architecture, this changelog, the user guide (en/es) and
+  limitations describe teams, partial answers and the single coordinator.
+
 **Honest peer classification, WP2 (D-017).**
 
 - **Destination class `CIRCLE`** (`swarmbly_app/egress.py`,
