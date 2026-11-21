@@ -2,6 +2,36 @@
 
 ## Unreleased — 3.5 (work in progress)
 
+**App leftovers from the 3.4 evaluation, WP9 (T10.17).**
+
+- **MCP suspensions reach the user.** A tool waiting for approval, refused by
+  policy, stopped by the loop guard or no longer answering now adds a plain
+  note to the answer and a `TOOL` stage with the tool, the reason and what was
+  done instead; `meta.suspensions` and the receipt's agent summary repeat it.
+- **The loop guard never returns a raw tool block.** The App strips fenced or
+  bare protocol JSON, tool tags and protocol markers from the final text; when
+  no prose remains it says the tool loop was stopped instead of showing the
+  model's tool call.
+- **A skill no longer displaces the document passages.** Both reach the model;
+  the passages come first and keep their room, and the skill body is shortened
+  (with a visible marker) when the material budget is short.
+- **Retrieval widens the App-side query.** Glossary equivalents and regular
+  accent/inflection variants are added to the terms handed to LCE (which is
+  unchanged), with an open neutral test set under `tests/fixtures/retrieval/`.
+- **The conversation language reaches every recipe.** List, code and compose
+  prompts take the conversation's language; a clearly English answer to a
+  Spanish question is regenerated once with the language rule, and list status
+  cells are localised.
+- **Cancel keeps a message.** A stopped request shows the text already
+  streamed plus a note that the answer was stopped, never an empty message.
+- **A table header is not a list answer.** Header and separator rows are
+  rejected as missing by the list parser, so a model that only echoes its
+  table header gets the item marked like any other empty answer.
+- **Recipe 5 records the model that wrote the script.** The script writer now
+  follows the conversation's configured model (not `compose.model` or the
+  composition writer), and `meta.code`/the receipt state the actual model and
+  backend.
+
 **First-launch sandbox preparation and doctor export, WP7 App part
 (R-005/R-014).**
 

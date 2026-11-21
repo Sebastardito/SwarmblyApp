@@ -216,6 +216,21 @@ Limitations are documented, never hidden. *[Español](#español) below.*
     the relay host. Model tags are the local Ollama names. Read the preview
     before attaching the file; the App writes exactly that preview.
 
+39. **Retrieval widening is lexical, not semantic.** The App adds the
+    glossary's equivalents and regular accent/inflection variants to the query
+    it hands to LCE. A synonym the glossary does not list, an irregular verb
+    form or a paraphrase can still miss the one short passage that answers the
+    question; LCE remains a keyword/BM25 search with its own local embeddings.
+40. **When the passages and a skill do not fit, the skill yields.** Both are
+    sent, but the material budget is shared: a large skill body is shortened
+    (with a marker) and, if there is no useful room left, only its labelled
+    header remains. The passages are never cut for the skill.
+41. **The language check only acts on a clear drift.** It uses the existing
+    stopword helper, so a very short or ambiguous English answer to a Spanish
+    question is not regenerated; list and code prompts do take the
+    conversation's language, and the retry is recorded in
+    `meta.language_retry`.
+
 ### Protocol appendix: credit control messages (D-020/D-021)
 
 The App already keeps its MINOR-safe extension list in item 16 above, so this
@@ -386,3 +401,19 @@ consult.
     respuestas, glosario, memoria, claves de API ni el host del relay. Lee la
     vista previa antes de adjuntarla: la App escribe exactamente esa vista
     previa.
+
+39. **La ampliación de la búsqueda es léxica, no semántica.** La App añade
+    los equivalentes del glosario y variantes regulares de acento y flexión a
+    la consulta que entrega a LCE. Un sinónimo que el glosario no lista, una
+    forma verbal irregular o una paráfrasis todavía pueden no encontrar el
+    pasaje corto que responde; LCE sigue siendo una búsqueda BM25/palabras
+    clave con sus embeddings locales.
+40. **Si los pasajes y una skill no caben, cede la skill.** Ambos se envían,
+    pero el presupuesto de material es compartido: un cuerpo de skill grande se
+    acorta (con una marca) y, si no queda espacio útil, solo permanece su
+    cabecera etiquetada. Los pasajes nunca se recortan por la skill.
+41. **La comprobación de idioma solo actúa ante una desviación clara.** Usa el
+    detector de palabras vacías existente, así que una respuesta inglesa muy
+    corta o ambigua a una pregunta en español no se regenera; las recetas de
+    lista y código sí reciben el idioma de la conversación, y el reintento queda
+    en `meta.language_retry`.
