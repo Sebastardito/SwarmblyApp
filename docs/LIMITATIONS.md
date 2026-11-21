@@ -199,8 +199,11 @@ Limitations are documented, never hidden. *[Español](#español) below.*
     first code recipe needs a one-time WebAssembly compile that peaks at about
     3.3 GB. The App shows a notice with the expected time (about 5 s on Apple
     Silicon, about 60 s on a 2-vCPU machine) and memory, refuses to start with
-    fewer than 4 GB free even when the user presses *Prepare now*, and runs
-    the compile in the background. Until the cache is ready, recipe 5 is
+    fewer than 4 GB free on the automatic start and on a plain *Prepare now*,
+    and runs the compile in the background. An explicit *Prepare anyway* (or
+    `--prepare-sandbox --force`) may override that floor after a one-line
+    warning; the state, events and doctor export then record `forced: true`
+    and the free memory at start. Until the cache is ready, recipe 5 is
     unavailable with the reason (preparing, not prepared, failed or too little
     free memory) and the answer continues without it: the one-time compile
     never happens inside a request. A cache recorded by another `wasi-python`
@@ -384,8 +387,12 @@ consult.
 37. La caché del sandbox se prepara, no se compila dentro de una solicitud:
     la primera receta de código necesita una compilación WebAssembly de unos
     3,3 GB de pico. La App muestra un aviso con el tiempo y la memoria
-    previstos, no la inicia con menos de 4 GB libres ni al pulsar *Preparar
-    ahora*, y la ejecuta en segundo plano. Hasta que la caché está lista, la
+    previstos, no la inicia con menos de 4 GB libres en el arranque automático
+    ni al pulsar *Preparar ahora*, y la ejecuta en segundo plano. Una acción
+    explícita *Preparar de todos modos* (o `--prepare-sandbox --force`) puede
+    anular ese mínimo tras un aviso de una línea; entonces el estado, los
+    eventos y la exportación de diagnóstico registran `forced: true` y la
+    memoria libre al iniciar. Hasta que la caché está lista, la
     receta 5 no está disponible con la razón (preparando, sin preparar, falló
     o poca memoria libre) y la respuesta sigue sin ella: la compilación nunca
     ocurre dentro de una solicitud. Una caché de otra versión de

@@ -413,9 +413,15 @@ unavailable until you prepare it from Settings or with the installer flag.
 The compile runs in the background (`preparing`, then `ready`, or `failed`
 with the reason); the chat keeps working. Until it is ready, recipe 5 reports
 why it is unavailable and the answer continues without it; the compile is
-never paid inside a request. With less than 4 GB of free memory Swarmbly does
-not start the compile, even from **Prepare now**; close other applications or
-use a machine with more memory.
+never paid inside a request. With less than 4 GB of free memory the automatic
+start and a plain **Prepare now** do not start the compile; close other
+applications or use a machine with more memory. If you still need recipe 5 on
+that machine, an explicit **Prepare anyway** starts it after a warning: the
+compile may take minutes and slow the computer or swap, so close other apps
+first. That override is never automatic, the plain button keeps the floor, and
+the state and doctor export record that it was forced. The command line has
+the same explicit flag, `--prepare-sandbox --force`; the umbrella installer
+never passes it by itself.
 The measured compile time and peak memory stay local and appear in the doctor
 export. The same step is available in **Settings → System**.
 
@@ -424,8 +430,9 @@ writes one JSON and one readable text file. The screen shows the exact text
 and JSON before saving, and saving writes that same snapshot. Attach either
 file to a bug report: it contains only App/LCE/Core versions, OS and
 architecture, Python version, CPU/RAM/GPU class, installed extras, whether
-Ollama answers and its model tags, the sandbox state and compile measurements,
-P2P counts (listening, peers, circles, relay configured and push codes), and
+Ollama answers and its model tags, the sandbox state and compile measurements
+(including whether a low-memory override was forced), P2P counts (listening,
+peers, circles, relay configured and push codes), and
 the last error codes with timestamps. It never contains node ids or keys,
 names, circle names or ids, member names, IP addresses or host names, paths
 under your home, project names, document titles, prompts, answers, glossary,
@@ -679,10 +686,18 @@ sigue sin estar disponible hasta que la prepares desde Ajustes o con la opción
 del instalador. La compilación ocurre en segundo plano (`preparando`, luego `listo`,
 o `falló` con la razón) y el chat sigue funcionando. Hasta que está lista, la
 receta 5 explica por qué no está disponible y la respuesta continúa sin ella;
-la compilación nunca se paga dentro de una solicitud.
-Con menos de 4 GB de memoria libre la App no inicia la compilación, ni
-siquiera al pulsar **Preparar ahora**; cierra otras aplicaciones o usa una
-computadora con más memoria. El tiempo y el pico de memoria medidos se quedan
+la compilación nunca se paga dentro de una solicitud. Con menos de 4 GB de
+memoria libre, el arranque automático y un clic normal en **Preparar ahora**
+no inician la compilación; cierra otras aplicaciones o usa una computadora con
+más memoria. Si aun así necesitas la receta 5 en esa máquina, **Preparar de
+todos modos** la inicia tras un aviso: la compilación puede tardar minutos y
+ralentizar la computadora o usar swap, así que cierra otras aplicaciones
+primero. Esa anulación nunca es automática, el botón normal mantiene el
+mínimo, y el estado y la exportación de diagnóstico registran que se forzó.
+La línea de comandos tiene la misma opción explícita,
+`--prepare-sandbox --force`; el instalador para todo el proyecto nunca la pasa
+por sí solo.
+El tiempo y el pico de memoria medidos se quedan
 en este equipo y aparecen en la exportación de diagnóstico; el mismo paso está
 en **Ajustes → Sistema**.
 **Exportación de diagnóstico.** **Ajustes → Sistema → Exportación de
@@ -691,8 +706,8 @@ pantalla muestra el texto y el JSON exactos antes de guardar, y al guardar se
 escribe esa misma instantánea. Adjunta cualquiera de los dos a un informe de
 error: solo contiene versiones de App/LCE/Core, sistema y arquitectura,
 versión de Python, clase de CPU/RAM/GPU, complementos instalados, si Ollama
-responde y sus etiquetas de modelo, el estado del sandbox y sus mediciones,
-contadores P2P (escucha, pares, círculos, relay configurado y códigos de envío)
+responde y sus etiquetas de modelo, el estado del sandbox y sus mediciones (incluido si se forzó la
+anulación por poca memoria), contadores P2P (escucha, pares, círculos, relay configurado y códigos de envío)
 y los últimos códigos de error con fecha. Nunca contiene identificadores de
 nodo ni claves, nombres, nombres de círculo o sus identificadores, nombres de
 miembros, direcciones IP ni nombres de host, rutas bajo tu carpeta personal,

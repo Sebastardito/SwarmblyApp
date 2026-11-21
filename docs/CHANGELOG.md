@@ -43,9 +43,16 @@
   / **Later**, in the web UI and in the first-run assistant. The compile runs
   in one daemon thread (`preparing` → `ready`, or `failed` with the reason) and
   publishes `sandbox.prepare` events, so chat is never blocked. A machine with
-  fewer than **4 GiB free** is refused, even from **Prepare now**; `Later`
-  hides the notice for a week. The measured wall time and peak RSS are stored
-  next to the cache and never leave the computer.
+  fewer than **4 GiB free** is refused from the automatic start and a plain
+  **Prepare now**; the explicit override is the next bullet. `Later` hides the
+  notice for a week. The measured wall time and peak RSS are stored next to the
+  cache and never leave the computer.
+- **Explicit low-memory override.** Below the 4 GiB floor the automatic start
+  and a plain **Prepare now** still refuse. An explicit **Prepare anyway**
+  (API `{"force": true}`, CLI `--force`) starts the compile after a one-line
+  warning; the state records `forced: true` and the free memory at start, the
+  `sandbox.prepare` event is marked forced, and the doctor export carries the
+  boolean. The umbrella installer never passes `--force` by itself.
 - **Recipe 5 never compiles inside a request.** An unprepared, stale,
   preparing, failed or memory-refused cache reports unavailable with the
   reason and the request continues without the code recipe. The one-time
