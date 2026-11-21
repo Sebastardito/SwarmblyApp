@@ -91,6 +91,17 @@ local families, aligned by the same consensus.
   mutations and WebSocket; per-launch token; CSP; untrusted strings escaped.
 - **Privacy:** LOCAL tier and SANITISABLE/SENSITIVE lanes never leave the
   device; packets never carry the session id or the complete request.
+- **Peer sends and passages (D-017).** Every task packet passes
+  `egress.check_call` with purpose `FRAGMENT` before it is written. Its
+  destination class comes from the circle service, not the address:
+  `CIRCLE` when the peer is listed by a valid shared manifest (the receipt
+  names the circle and the member), `OWN_NETWORK` only in the explicit
+  *my own devices* mode, and refused when neither holds, so an unclassified
+  peer is never labelled. Document passages reach a peer only when the
+  sender's per-circle `circle_passages` switch is on (off by default) or, in
+  *my own devices* mode, when `circle.own_devices_passages` is on. These are
+  separate from `privacy.third_party_passages`, which is about model
+  services; enabling that flag never enables circle passages.
 
 ## 5. Data directory
 
@@ -135,5 +146,12 @@ campos, el planificador asíncrono, la red P2P, la API local protegida y la
 interfaz. Cada etapa del pipeline informa completada, parcial, omitida o
 fallida. La identidad del nodo es su clave Ed25519; el handshake liga esa
 identidad al certificado TLS y detecta intermediarios. La API local valida
-Host, Origin y un token por arranque. Las decisiones Q1–Q5 y D1–D14 están en la
-tabla anterior.
+Host, Origin y un token por arranque. Cada paquete de tarea pasa por la puerta
+de salida con clase `CIRCLE` (miembro de un círculo de confianza, nombrando
+círculo y miembro), `OWN_NETWORK` solo en el modo explícito «mis propios
+dispositivos», o se rechaza: un par fuera de todo círculo no se etiqueta. Los
+pasajes de tus documentos solo llegan a un par con el interruptor por círculo
+`circle_passages` encendido (apagado por defecto), o con
+`circle.own_devices_passages` en el modo de dispositivos propios; nunca
+reutilizan `privacy.third_party_passages`. Las decisiones Q1–Q5 y D1–D14 están
+en la tabla anterior.

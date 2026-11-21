@@ -53,6 +53,38 @@
   egress gate, receipts naming the circle and member, and `circle_passages`
   are WP2. A peer still appears as `OWN_NETWORK` in the receipt today.
 
+**Honest peer classification, WP2 (D-017).**
+
+- **Destination class `CIRCLE`** (`swarmbly_app/egress.py`,
+  `swarmbly_app/p2p/circles.py`). A peer send is classified by the circle
+  service: a member of a valid shared manifest is `CIRCLE` with its
+  `circle_id`; the explicit *my own devices* mode is `OWN_NETWORK`; a peer
+  outside every circle is refused, never labelled. `Policy` admits `CIRCLE`
+  only through that classification.
+- **Peer sends through the egress gate** (`swarmbly_app/p2p/node.py`,
+  `engine/scheduler.py`). `NodeManager.dispatch_async` calls
+  `egress.check_call` with purpose `FRAGMENT` before it writes a packet; a
+  refusal raises before `_write`, so no bytes leave. Attempts keep the real
+  destination class for the receipt.
+- **Receipts tell the truth** (`swarmbly_app/chat.py`, `web/js/chat.js`).
+  The hard-coded `OWN_NETWORK` is gone: a circle send shows `CIRCLE`, the
+  circle name and the member's display name plus short node id; a blocked
+  peer is not counted as a send. A list wave also reports how many document
+  passages reached each destination.
+- **Per-circle `circle_passages`** (`swarmbly_app/p2p/circles.py`,
+  `swarmbly_app/config.py`, `api/__init__.py`, `web/js/monitor.js`). Stored
+  with the circle on this node, off by default, independent of
+  `privacy.third_party_passages`. Recipe 4 attaches passages only to the
+  peers of circles whose switch is on: in a mixed swarm the grounded wave is
+  sent to those members and never to the others. *My own devices* mode uses
+  the equivalent `circle.own_devices_passages` switch (also off by default).
+  An existing `third_party_passages=true` does not turn either on.
+- **Docs and tests.** `ARCHITECTURE.md` now states the exact rule instead of
+  leaving passages unaddressed; the user guide explains the receipt classes
+  and both switches. New tests cover classification per mode, the gate
+  refusing a non-member before any write, the receipt naming circle and
+  member, passages only with the switch on, and the migration default.
+
 ## 0.7.0 — Tools (2026-11-20)
 
 Swarmbly AI 3.4. Tools and data with code. One broker for every tool; an MCP

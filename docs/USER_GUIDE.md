@@ -115,6 +115,16 @@ offers *Also search public sources*, with the names that would be sent. The
 yes covers that question only. *Explore processing → What left this
 computer* shows the scope (personal or project) and the consent.
 
+**What left this computer.** The privacy receipt names every destination and
+its class: *local* (this computer), *your network* (my-own-devices mode),
+*trusted circle* (with the circle and the member) or *third party*. Every
+task packet passes the egress gate before it is written; a peer outside every
+circle is refused and appears as a blocked attempt, never as a send. Passages
+of your documents are listed per destination: they reach a circle only when
+that circle's *Document passages* switch is on (Swarm → Trusted circles), and
+reach *my own devices* only with the equivalent switch in that mode. Both are
+off by default and are separate from the third-party model-service setting.
+
 ## 2. Explore processing
 
 *Explore processing* under an answer opens **How this answer was made**:
@@ -203,10 +213,16 @@ Change it in **Settings → Swarm → Peer admission**. **Accepting an invitatio
 is not membership yet**: the owner must approve it, and until then the
 connection can only carry the join request, never a task.
 
-The circle does not change the privacy tier or the receipt yet: peer traffic
-is still labelled `OWN_NETWORK` and the `CIRCLE` destination class with its
-egress gate arrives in WP2. Keep the node key private: 3.5 has no mutual TLS,
-so a stolen key can impersonate a member until the owner revokes it.
+Circle traffic is labelled `CIRCLE` in the receipt, with the circle's name and
+the member's display name and short node id. The receipt never shows packet
+content. **Document passages** are a per-circle switch in the circle card,
+off by default: recipe 4 may attach passages of your project documents to
+items sent to that circle only when it is on. It is separate from
+`privacy.third_party_passages` (model services); an existing installation
+with that flag on does not enable circle passages. *My own devices* mode has
+its own switch in the same panel, also off by default. Keep the node key
+private: 3.5 has no mutual TLS, so a stolen key can impersonate a member until
+the owner revokes it.
 
 ## 4. Memory
 
@@ -318,9 +334,16 @@ vigente (*Solo mis círculos*); una instalación anterior a 3.5 conserva la regl
 LAN de 3.4 (*Mis propios dispositivos*) y muestra un aviso hasta que elijas en
 **Ajustes → Swarm → Admisión de pares**. Aceptar una invitación no da
 membresía: el dueño tiene que aprobarla y, hasta entonces, la conexión solo
-puede llevar la solicitud, nunca una tarea. El recibo todavía etiqueta el
-tráfico entre pares como `OWN_NETWORK`; la clase `CIRCLE` y su puerta de salida
-llegan en WP2. Sin TLS mutuo en 3.5, protege la clave del nodo: una clave
+puede llevar la solicitud, nunca una tarea. El recibo etiqueta el tráfico entre
+pares como `CIRCLE`, con el nombre del círculo y el nombre y el id corto del
+miembro; nunca muestra el contenido del paquete. **Los pasajes de documentos**
+son un interruptor por círculo en la tarjeta del círculo, apagado por defecto:
+la receta 4 solo adjunta pasajes de tus documentos a los elementos enviados a
+ese círculo cuando está activo. Es independiente de
+`privacy.third_party_passages` (servicios de modelos); una instalación que ya
+tenía esa opción activa no enciende los pasajes del círculo. El modo *Mis
+propios dispositivos* tiene su propio interruptor en el mismo panel, también
+apagado por defecto. Sin TLS mutuo en 3.5, protege la clave del nodo: una clave
 robada puede suplantar a un miembro hasta que el dueño lo revoque.
 
 **Memory.** C0 activa; C1 recupera pasajes de tus fuentes para las
