@@ -191,7 +191,8 @@ class SandboxPreparation:
                               minimum_free_memory_gb=estimate["minimum_free_memory_gb"])
                 return {"started": False, "reason_code": "low_memory",
                         "status": self.status()}
-            forced = bool(force)
+            # Recorded only when the override changed the outcome.
+            forced = bool(force and low_memory)
             self._state = cache.write_state(
                 self.root, status="preparing", stage="starting", trigger=trigger,
                 forced=forced,

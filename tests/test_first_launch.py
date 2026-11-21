@@ -368,3 +368,13 @@ def test_ui_force_strings_exist_in_english_and_spanish():
     assert "sandbox.prepareAnyway" in ui
     assert "sandbox.forceWarning" in ui
     assert "s.can_force" in ui
+
+
+def test_force_with_enough_memory_is_not_recorded_as_forced(tmp_path):
+    """--force on a machine above the floor changes nothing and is not
+    reported as an override."""
+    prep = make(tmp_path, free=8 * GIB)
+    started = prep.start(trigger="installer", force=True)
+    assert started["started"] is True
+    status = prep.wait(30)
+    assert status.get("forced") is False
