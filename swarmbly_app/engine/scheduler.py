@@ -801,6 +801,10 @@ class Scheduler:
                             attempt: Attempt) -> Replica | None:
         started = time.monotonic()
         attempt.attempt_id = str(message.get("attempt_id", "") or "")
+        # D-020: offer one earned credit only to a worker this requester knows
+        # is busy (it refused a task at its concurrency limit, or missed a
+        # deadline); spending a receipt on an idle worker buys nothing.
+        offer_credit = self.speed.busy(node_id)
         async with self._slot(node_id), self._sem:
             wait = self._busy_until.get(node_id, 0.0) - time.monotonic()
             if wait > 0:
@@ -815,8 +819,12 @@ class Scheduler:
             attempt.circle_name = str(destination.get("circle_name") or "")
             attempt.member_name = str(destination.get("member_name") or "")
             try:
-                result = await self.nodes.dispatch_async(node_id, message,
-                                                         self.timeout_s)
+                if offer_credit:
+                    result = await self.nodes.dispatch_async(
+                        node_id, message, self.timeout_s, offer_credit=True)
+                else:
+                    result = await self.nodes.dispatch_async(node_id, message,
+                                                             self.timeout_s)
             except asyncio.CancelledError:
                 self._busy_until[node_id] = time.monotonic() + CANCEL_GRACE_S
                 raise

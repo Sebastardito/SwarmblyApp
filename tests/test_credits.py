@@ -608,7 +608,8 @@ class TestGates:
         packet = {"v": WIRE_VERSION, "type": "task", "attempt_id": "x:0",
                   "task": {"instruction": "answer", "kind": "generate"}}
         with pytest.raises(Exception) as err:
-            asyncio.run(state.nodes.dispatch_async(peer_id, packet, 1))
+            asyncio.run(state.nodes.dispatch_async(peer_id, packet, 1,
+                                                   offer_credit=True))
         assert getattr(err.value, "code", "") in (
             "E_CIRCLE_REQUIRED", "E_EGRESS_DENIED")
         assert calls == []
@@ -616,7 +617,8 @@ class TestGates:
         # before any byte (and therefore before any credit) is written.
         state.nodes.peers[peer_id].admitted = True
         with pytest.raises(Exception) as err:
-            asyncio.run(state.nodes.dispatch_async(peer_id, packet, 1))
+            asyncio.run(state.nodes.dispatch_async(peer_id, packet, 1,
+                                                   offer_credit=True))
         assert getattr(err.value, "code", "") in (
             "E_CIRCLE_REQUIRED", "E_EGRESS_DENIED")
         assert calls == []
@@ -665,12 +667,27 @@ class TestEndToEnd:
             assert receipt["issuer"] == owner.identity.node_id
             assert receipt["worker"] == worker.identity.node_id
 
-            # Worker spends it when it sends work back to the owner.
+            # An ordinary send to an idle worker spends nothing: a receipt
+            # is offered only to a worker known to be busy.
             conv = worker.chat.create_conversation(mode="lan")
             worker.chat.send(conv["id"], TEST_PROMPT, mode="lan",
                              run_async=False)
             final = worker.chat.get_messages(conv["id"])[-1]
             assert final["meta"]["status"] == "done", final["meta"]
+            time.sleep(0.2)
+            assert worker.credits.wallet_summary(
+                circle["circle_id"])["spent"] == 0
+
+            # Worker spends it when it sends work to the owner it knows is
+            # busy (the scheduler passes offer_credit in that case).
+            packet = {"v": WIRE_VERSION, "type": "task",
+                      "attempt_id": "c" * 16 + ":0",
+                      "task": {"instruction": "answer", "kind": "generate"}}
+            try:
+                worker.nodes.dispatch(owner.identity.node_id, packet, 5,
+                                      offer_credit=True)
+            except Exception:
+                pass          # the task itself may be refused; the spend is not
             assert _wait_for(lambda: worker.credits.wallet_summary(
                 circle["circle_id"])["spent"] >= 1)
             # The issuer (also the receiving worker here) logged the report.
@@ -681,3 +698,53 @@ class TestEndToEnd:
         finally:
             for state in created:
                 state.stop()
+
+
+
+
+def test_scheduler_offers_a_credit_only_to_a_busy_worker():
+    """D-020: the scheduler passes offer_credit to the directory only after
+    it saw that worker busy (a concurrency refusal or a missed deadline);
+    an idle worker gets the task without spending a receipt."""
+    from swarmbly_app.engine.scheduler import LatencyStats, Scheduler, SpeedStats
+    from swarmbly_app.events import EventBus
+    worker_id = "w" * 43
+    offers: list[bool] = []
+
+    class Directory:
+        def __init__(self):
+            self.peer = SimpleNamespace(
+                node_id=worker_id, tasks_inflight=0, rtt_ms=1.0,
+                advertisement={"models": [{"family": "fake", "version": "fake:1b"}],
+                               "policy": {"max_concurrent": 1}})
+            self.peers = {worker_id: self.peer}
+
+        def available_workers(self, kind="generate"):
+            return [self.peer]
+
+        def classify_peer(self, node_id):
+            return {"clase": egress.CIRCLE, "circle_id": CIRCLE_A}
+
+        async def dispatch_async(self, node_id, message, timeout_s, *,
+                                 offer_credit=False):
+            offers.append(offer_credit)
+            raise RuntimeError("stop here")
+
+    def build(attempt, family=None, model=None):
+        return {"v": WIRE_VERSION, "type": "task",
+                "attempt_id": f"wire-task:{attempt}",
+                "task": {"instruction": "answer", "kind": "generate",
+                         "expects": {"max_tokens": 10}},
+                "lane": "PUBLIC", "tier": "GLOBAL", "deadline_ms": 4000}
+
+    for busy, expected in ((False, False), (True, True)):
+        offers.clear()
+        speed = SpeedStats()
+        if busy:
+            speed.record_busy(worker_id, 0.05)
+        sched = Scheduler(Directory(), EventBus(), "req", k_min=1, k_max=1,
+                          max_concurrency=1, timeout_s=2, hedge_fallback_s=1,
+                          latency=LatencyStats(), speed=speed)
+        with pytest.raises(Exception) as err:
+            asyncio.run(sched.run_task("t0", build, 10, validate=None))
+        assert offers and offers[0] is expected, (busy, offers, err.value)

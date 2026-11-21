@@ -130,9 +130,14 @@ class Directory:
         return self.nodes.classify_peer(node_id)
 
     async def dispatch_async(self, node_id: str, message: dict[str, Any],
-                             timeout_s: float) -> dict[str, Any]:
+                             timeout_s: float, *,
+                             offer_credit: bool = False) -> dict[str, Any]:
         if self.local is not None and node_id == self.local.peer.node_id:
             return await self.local.dispatch(message, timeout_s)
         if not self.remote_allowed or self.nodes is None:
             raise PeerError("E_TIER_VIOLATION", "remote dispatch not allowed")
+        if offer_credit:
+            # D-020: a credit is offered only to a worker known to be busy.
+            return await self.nodes.dispatch_async(node_id, message, timeout_s,
+                                                   offer_credit=True)
         return await self.nodes.dispatch_async(node_id, message, timeout_s)

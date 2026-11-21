@@ -185,7 +185,8 @@ Nothing is issued for the local pool, *my own devices*, rejected/degraded
 replicas or an executor that returned nothing.
 
 `credit_spend` — spender (the named worker) → a member of the same circle,
-sent just before the task it is offered for. Fields: `v`, `type`, `spender`,
+sent just before the task it is offered for, and only to a member the spender
+already saw busy (a concurrency refusal or a missed deadline). Fields: `v`, `type`, `spender`,
 `attempt_id` (the task this applies to), and the same signed `receipt` object.
 Validation at the receiver: `spender` is the sending node and equals
 `receipt.worker`; the signature verifies; a valid manifest lists the sender

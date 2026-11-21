@@ -171,7 +171,9 @@ and the id are all valid. The wallet is local (`<data>/credits/wallet.json`,
 indivisible courtesy unit, so `balance`, `earned` and `spent` count receipts.
 
 Only the named worker can spend one, only in the same circle, by sending one
-`credit_spend` just before a task to a member. The receiver verifies it again
+`credit_spend` just before a task to a member it already saw busy (a
+concurrency refusal or a missed deadline): a receipt is never spent on an idle
+worker. The receiver verifies it again
 and, **only while busy**, lets that task wait for a slot while an uncredited
 task is refused; a requester without credits is still served whenever a slot
 is free. The spend is offered inside `dispatch_async` *after* circle admission
@@ -331,7 +333,9 @@ válidos. La cartera es local (`<data>/credits/wallet.json`, 0600, escritura
 atómica, acotada a 256 recibos) y por círculo; un recibo es una unidad de
 cortesía indivisible, así que `balance`, `earned` y `spent` cuentan recibos.
 Solo el worker nombrado puede gastarlo, solo en el mismo círculo, enviando un
-`credit_spend` justo antes de una tarea a un miembro. El receptor lo verifica
+`credit_spend` justo antes de una tarea a un miembro que ya vio ocupado (un
+rechazo por límite de concurrencia o un plazo vencido): nunca se gasta un recibo
+en un worker libre. El receptor lo verifica
 otra vez y, **solo mientras está ocupado**, deja que esa tarea espere un turno
 mientras una tarea sin crédito se rechaza; quien no tiene créditos sigue
 siendo atendido si hay un turno libre. El gasto se ofrece dentro de

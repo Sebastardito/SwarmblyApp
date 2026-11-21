@@ -16,7 +16,8 @@
   quality check accepted the replica.
 - **Control plane** (`p2p/circles.py`, `p2p/node.py`). Three new MINOR-safe
   types on the same TLS session: `credit_receipt` (issuer → worker),
-  `credit_spend` (worker → member, just before a task) and `credit_spent`
+  `credit_spend` (worker → member, just before a task to a member already seen
+  busy, so a receipt is never spent on an idle worker) and `credit_spent`
   (accepting worker → issuer, receipt id and spender only). An older node
   ignores them. Delivery checks signature, manifest membership of issuer and
   worker, addressee, expiry and duplicate id; spend checks the same plus

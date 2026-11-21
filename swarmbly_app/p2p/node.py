@@ -641,12 +641,15 @@ class NodeManager:
         return self.circles.classify_peer(node_id)
 
     def dispatch(self, node_id: str, packet_message: dict[str, Any],
-                 timeout_s: float = 120.0) -> dict[str, Any]:
-        return self._call(self.dispatch_async(node_id, packet_message, timeout_s),
+                 timeout_s: float = 120.0, *,
+                 offer_credit: bool = False) -> dict[str, Any]:
+        return self._call(self.dispatch_async(node_id, packet_message, timeout_s,
+                                              offer_credit=offer_credit),
                           timeout=timeout_s + 10)
 
     async def dispatch_async(self, node_id: str, packet_message: dict[str, Any],
-                             timeout_s: float) -> dict[str, Any]:
+                             timeout_s: float, *,
+                             offer_credit: bool = False) -> dict[str, Any]:
         """Send one packet and await its result (must run on the P2P loop)."""
         peer = self.peers.get(node_id)
         if peer is None or not peer.connected or peer.session is None:
@@ -688,9 +691,13 @@ class NodeManager:
         # 3.5, D-020: only after admission and the egress gate accepted the
         # send may this node offer one earned receipt for this exact attempt.
         # The credit can change queue order while the worker is busy; it can
-        # never bypass a gate (this line runs after all of them).
+        # never bypass a gate (this line runs after all of them). It is
+        # offered only when the caller knows the worker is busy (it refused a
+        # task as at its concurrency limit, or missed a deadline): a receipt
+        # spent on an idle worker buys nothing.
         credits = getattr(self.circles, "credits", None) if self.circles else None
-        if credits is not None and str(destination.get("clase") or "") \
+        if offer_credit and credits is not None \
+                and str(destination.get("clase") or "") \
                 == egress.CIRCLE and str(destination.get("circle_id") or ""):
             try:
                 await credits.present_spend_async(
