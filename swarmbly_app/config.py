@@ -137,6 +137,17 @@ DEFAULTS: dict[str, Any] = {
         # per-circle circle_passages defaults off as well.
         "own_devices_passages": False,
     },
+    # 3.5, D-018: node roles are a property of the machine, not of a model
+    # task (those are ``roles`` below). WP4a advertises only what it can run:
+    # a shared model at or above the threshold is ``large_model``; a shared
+    # model the user marks here is a ``reasoner`` (used with think: true).
+    # ``search``/``corpus`` keys are deliberately absent until WP4b.
+    "node_roles": {
+        # 7 B is the smallest widely available class that is reliably better
+        # than the 1–3 B SLMs this swarm mostly runs, and fits an 8 GB GPU.
+        "large_model_min_b": 7.0,
+        "reasoner_models": [],        # model tags the user marks as reasoning
+    },
     "privacy": {
         "tier": "LOCAL",              # GLOBAL | TRUSTED | LOCAL
         "manual_tier": None,          # authoritative manual override, never downgraded
@@ -426,6 +437,7 @@ _RANGES = {
     "swarm.composer_max_sections": (3, 12),
     "swarm.composer_length_factor": (0.3, 1.5),
     "swarm.min_model_params_b": (0.0, 100.0),
+    "node_roles.large_model_min_b": (0.1, 10000.0),
     "swarm.min_items_per_fragment": (1, 50),
     "circle.manifest_ttl_days": (1, 365),
     "circle.invitation_ttl_s": (300, 2592000),
@@ -539,6 +551,17 @@ def validate_changes(changes: dict[str, Any]) -> dict[str, Any]:
                 raise ConfigError(
                     "circle.node_name must be at most 64 printable characters")
             flat[key] = text
+        if key == "node_roles.reasoner_models":
+            cleaned: list[str] = []
+            for name in value:
+                if not isinstance(name, str) or not name.strip() or len(name) > 96 \
+                        or any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
+                    raise ConfigError(
+                        "node_roles.reasoner_models items must be model tags of "
+                        "at most 96 printable characters")
+                if name not in cleaned:
+                    cleaned.append(name)
+            flat[key] = cleaned
     if flat.get("model.backend") == "anthropic" \
             and not str(flat.get("model.backend_url") or "").strip():
         flat["model.backend_url"] = ANTHROPIC_DEFAULT_URL

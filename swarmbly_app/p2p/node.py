@@ -33,6 +33,7 @@ from .discovery import DiscoveredNode, DiscoveryService
 from .circles import CONTROL_TYPES, CircleError
 from .handshake import (Handshake, HandshakeResult, sign_advertisement_update,
                         validate_advertisement, verify_advertisement_update)
+from ..node_roles import normalise_advertisement
 from .messages import WIRE_VERSION, error
 from .transport import (PeerSession, TLSServer, cert_fingerprint, dial,
                         generate_cert, read_frame, read_frame_with_timeout,
@@ -71,6 +72,11 @@ class Peer:
         policy = self.advertisement.get("policy") or {}
         return bool(policy.get("kinds"))
 
+    @property
+    def roles(self) -> list[dict[str, Any]]:
+        """Node roles this peer advertises (3.5, D-018), already normalised."""
+        return list(self.advertisement.get("roles") or [])
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "node_id": self.node_id,
@@ -86,6 +92,7 @@ class Peer:
             "worker": self.is_worker,
             "source": self.source,
             "models": self.advertisement.get("models", []),
+            "roles": self.roles,
             "policy": self.advertisement.get("policy", {}),
             "resources": self.advertisement.get("resources", {}),
             "rtt_ms": self.rtt_ms,
@@ -397,6 +404,10 @@ class NodeManager:
             self.bus.publish("node.rejected", node_id=node_id[:12],
                              reason="; ".join(problems[:2]))
             return None
+        # Unknown roles and roles naming a model this peer does not offer are
+        # dropped after the signature check: they must reach neither placement
+        # nor the UI (forward compatibility, D-018).
+        advertisement = normalise_advertisement(advertisement)
         admitted = True
         if self.circles is not None:
             ok, code, detail = self.circles.admit(node_id, advertisement)
@@ -537,7 +548,7 @@ class NodeManager:
             if seq <= peer.adv_seq or validate_advertisement(adv, node_id):
                 return
             peer.adv_seq = seq
-            peer.advertisement = adv
+            peer.advertisement = normalise_advertisement(adv)
             self.bus.publish("node.updated", node_id=node_id,
                              short_id=node_id[:12], worker=peer.is_worker)
         elif mtype in CONTROL_TYPES:

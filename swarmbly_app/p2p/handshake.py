@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..identity import IdentityManager
+from ..node_roles import clean_roles
 from .messages import WIRE_VERSION, canonical_bytes, hello, hello_ack, WireError
 
 HANDSHAKE_REVISION = 2
@@ -230,6 +231,11 @@ def validate_advertisement(adv: dict[str, Any], expected_node_id: str | None = N
         for key in ("family", "version", "quantization"):
             if not _safe(model.get(key)):
                 problems.append(f"model {key} has disallowed characters or length")
+    # 3.5, D-018: node roles. Known roles with malformed metadata are rejected
+    # like the rest of the advertisement; an unknown role and a role for a
+    # model that is not advertised are dropped for forward compatibility.
+    role_problems, _ = clean_roles(adv.get("roles"), models)
+    problems.extend(role_problems)
     policy = adv.get("policy")
     if policy is not None:
         if not isinstance(policy, dict):
