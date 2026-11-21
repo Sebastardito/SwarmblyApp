@@ -58,9 +58,13 @@ Limitations are documented, never hidden. *[Español](#español) below.*
 16. **App protocol extensions** (all MINOR-safe, ignored by implementations
     that do not know them, SPEC §3): handshake fields `hs`/`tls_fp`, message
     `advertisement_update`, advertisement fields `endpoint` and
-    `policy.max_concurrent`, packet field `constraints.model_family` (SWIP draft
-    in `docs/SWIP-DRAFT-model-family-hint.md`), error codes `E_POLICY`,
-    `E_EXECUTION`, `E_DUPLICATE`, `E_DISCONNECTED`.
+    `policy.max_concurrent`, advertisement field `roles` (node roles, D-018),
+    packet fields `constraints.model_family` (SWIP draft in
+    `docs/SWIP-DRAFT-model-family-hint.md`), `constraints.role` and
+    `constraints.think`, error codes `E_POLICY`, `E_EXECUTION`,
+    `E_DUPLICATE`, `E_DISCONNECTED`, `E_ROLE_UNAVAILABLE`. In 3.5 WP4a only
+    `large_model` and `reasoner` are advertised and executed; `search` and
+    `corpus` are fixed in the wire schema but their executors arrive in WP4b.
 17. **Several local models share one machine.** In multi-model mode replicas
     run on different model families but the same hardware; unless the
     recommendation allows parallel generation they take turns. Their agreement

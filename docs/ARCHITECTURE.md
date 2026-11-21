@@ -71,6 +71,34 @@ others). Requests that may not leave the device use the pool alone; requests
 that cannot be fragmented can still get whole-request replicas from several
 local families, aligned by the same consensus.
 
+**Node roles versus model roles (3.5, D-018).** These are two different ideas
+and the code names them separately:
+
+- **Model roles** (`swarmbly_app/roles.py`: `writer`, `search_terms`,
+  `fusion`, `verifier`, `embeddings`) choose *which model does which job
+  inside one answer*. They are local settings and never travel on the wire.
+- **Node roles** (`swarmbly_app/node_roles.py`: `large_model`, `reasoner`,
+  `search`, `corpus`) describe *what a worker machine can run*. They ride in
+  the signed advertisement (`roles`) and, for a role task, in the packet as
+  `constraints.role` / `constraints.think`, both MINOR-safe. In WP4a a node
+  advertises only `large_model` (a shared model at or above
+  `node_roles.large_model_min_b`, 7 B by default) and `reasoner` (a shared
+  model the user marked in `node_roles.reasoner_models`), and only while the
+  worker role is on. The local pool derives the same roles from its own
+  models without the "shared" condition, so a role-aware plan can run on one
+  node.
+
+Placement sends a role task only to workers that advertise the role; the
+models considered are the ones the role names (for `reasoner`, the worker
+also honours `think: true`). Roles are self-declared and never trust the
+advertiser: the requester records per-role outcomes per node (`RoleStats`) and
+deprioritises a node whose role failed recently. A role never widens circle
+admission, egress, lane/tier or model-size rules. If no worker advertises a
+`large_model`/`reasoner` role the task may run on the best generic worker,
+and the metadata, the attempt and the receipt say «role X unavailable, ran on
+Y»; `search`/`corpus` have no truthful substitute, so the task fails honestly
+until WP4b adds their executors.
+
 ## 4. Security model (summary)
 
 - **Identity:** Ed25519 per node (`node_id` = public key), never the IP.
@@ -133,6 +161,8 @@ macOS `~/Library/Application Support/Swarmbly` · Linux `~/.local/share/swarmbly
 | D8 | Rendezvous: VPS primary + Raspberry Pi secondary (Phase 3) | 2026-10-12 |
 | D13 | Recommendations never enable the network, sharing or a tier; applying keeps a backup | 2026-10-12 |
 | D14 | Installer limited to known Python packages in the app venv | 2026-10-12 |
+| D-018 | Node roles (`large_model`, `reasoner`, `search`, `corpus`) are self-declared in the signed advertisement with validated metadata; placement tracks per-role success and roles never widen permissions | 2026-11-21 |
+| D-021 | Task plane stays wire 0.2; control and role extensions are MINOR-safe and ignored by older nodes | 2026-11-21 |
 
 ---
 
@@ -153,5 +183,18 @@ dispositivos», o se rechaza: un par fuera de todo círculo no se etiqueta. Los
 pasajes de tus documentos solo llegan a un par con el interruptor por círculo
 `circle_passages` encendido (apagado por defecto), o con
 `circle.own_devices_passages` en el modo de dispositivos propios; nunca
-reutilizan `privacy.third_party_passages`. Las decisiones Q1–Q5 y D1–D14 están
-en la tabla anterior.
+reutilizan `privacy.third_party_passages`. Los **roles de nodo** (3.5, D-018:
+`large_model`, `reasoner`, `search`, `corpus`) no son los roles de modelo por
+respuesta de `roles.py` (writer, search_terms, fusion, verifier, embeddings):
+describen lo que una máquina ofrece como worker, viajan en el anuncio firmado
+(`roles`) y en el paquete (`constraints.role`/`constraints.think`), ambos
+MINOR-safe, y solo sirven para colocación. En WP4a se anuncian `large_model`
+(modelos compartidos con al menos `node_roles.large_model_min_b`, 7 B por
+defecto) y `reasoner` (modelos compartidos marcados por el usuario); el pool
+local deriva los mismos roles sin la condición de «compartido». El solicitante
+solo envía una tarea con rol a un worker que lo anuncie, aprende por rol y por
+nodo (`RoleStats`) y desprioriza a quien falló; un rol nunca amplía permisos.
+Sin worker para `large_model`/`reasoner` se puede usar el mejor worker genérico
+y el intento, los metadatos y el recibo dicen «rol X no disponible, ejecutado
+en Y»; `search`/`corpus` fallan honestamente hasta WP4b. Las decisiones Q1–Q5,
+D1–D14 y D-018/D-021 están en la tabla anterior.

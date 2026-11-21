@@ -53,6 +53,44 @@
   egress gate, receipts naming the circle and member, and `circle_passages`
   are WP2. A peer still appears as `OWN_NETWORK` in the receipt today.
 
+**Node roles, WP4a (D-018).**
+
+- **Validated node-role schema** (`swarmbly_app/node_roles.py`,
+  `swarmbly_app/p2p/handshake.py`). The signed advertisement may carry
+  `roles`, a list of at most eight entries: `large_model` (a model that is
+  advertised plus `params_b`), `reasoner` (an advertised model plus
+  `think: true`), `search` (up to four engine short names) and `corpus` (a
+  display name of at most 40 characters and size `S|M|L`, never titles,
+  paths or contents). Unknown roles and roles naming a model the node does
+  not advertise are dropped, not fatal; malformed known metadata is rejected
+  like the rest of the advertisement.
+- **What this node advertises.** Only `large_model` and `reasoner`, only
+  while the worker role is on and only for models actually shared:
+  `large_model` for shared models at or above
+  `node_roles.large_model_min_b` (default 7 B; a tag without a parameter
+  count is not guessed into the role), `reasoner` for shared models
+  the user marked in `node_roles.reasoner_models` (default empty). The local
+  pool derives the same roles from its own models without the "shared"
+  condition. A settings change re-announces through the existing signed
+  `advertisement_update`.
+- **Role-aware placement** (`swarmbly_app/engine/scheduler.py`). A task may
+  carry a role; only workers that advertise it are candidates and only the
+  role's models are considered. Per-role outcomes are learned per node in
+  memory (`RoleStats`), never from the peer's claim, and a recently failed
+  role node is deprioritised. Without a role worker, `large_model`/`reasoner`
+  fall back to the best generic worker and the attempt, metadata, stage and
+  receipt say `role X unavailable, ran on Y`; `search`/`corpus` fail honestly.
+- **Packet and worker** (`swarmbly_app/p2p/worker.py`). MINOR-safe
+  `constraints.role` and `constraints.think`; a worker refuses an
+  unadvertised role with `E_ROLE_UNAVAILABLE` before taking a slot or running
+  anything, and passes `think` only to a backend that accepts it.
+- **UI** (`web/js/settings.js`, `web/js/monitor.js`, i18n en/es). Settings →
+  Swarm exposes the threshold and the reasoning-model list with one-line
+  explanations; the Swarm panel shows the node's own roles and each peer's
+  advertised roles.
+- **Not in WP4a:** the search and corpus executors (WP4b) and teams (WP5).
+  Their roles are already in the wire schema so those changes are additive.
+
 **Honest peer classification, WP2 (D-017).**
 
 - **Destination class `CIRCLE`** (`swarmbly_app/egress.py`,

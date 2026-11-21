@@ -183,6 +183,21 @@ others. Settings → Swarm controls it:
 Workers serve the base model only. Your memory, sources and conversations are
 never used for other people's tasks.
 
+### Node roles · Roles del nodo
+
+A **node role** describes what this machine offers the swarm as a worker; it is
+not the per-answer model role you choose in Settings → Models. In this version
+a node advertises `large_model` for shared models at or above the
+**Large-model threshold** (Settings → Swarm, 7 B by default) and `reasoner`
+for shared models you mark as **Reasoning models**. Both are announced in the
+signed advertisement and only while **Share this computer** is on; a role
+never widens a permission. A role task is sent only to a node that advertises
+it. If no node has `large_model` or `reasoner`, the task may run on the best
+generic worker and the answer, its stages and the receipt say «role X
+unavailable, ran on Y»; tasks that need `search` or `corpus` fail honestly
+until their executors arrive. The Swarm panel shows your own roles and each
+peer's advertised roles.
+
 ### Trusted circles · Círculos de confianza
 
 A **circle** is a list of members signed by its owner. Each version has a
@@ -345,6 +360,20 @@ tenía esa opción activa no enciende los pasajes del círculo. El modo *Mis
 propios dispositivos* tiene su propio interruptor en el mismo panel, también
 apagado por defecto. Sin TLS mutuo en 3.5, protege la clave del nodo: una clave
 robada puede suplantar a un miembro hasta que el dueño lo revoque.
+
+**Roles del nodo.** Un **rol de nodo** describe lo que esta computadora
+ofrece al enjambre como worker; no es el rol de modelo por respuesta que
+eliges en Ajustes → Modelos. En esta versión el nodo anuncia `large_model`
+para los modelos compartidos con al menos el **Umbral de modelo grande**
+(Ajustes → Swarm, 7 B por defecto) y `reasoner` para los modelos compartidos
+que marques como **Modelos de razonamiento**. Ambos viajan en el anuncio
+firmado y solo con **Compartir este equipo** activo; un rol nunca amplía un
+permiso. Una tarea con rol se envía solo a un nodo que anuncie ese rol. Si
+ningún nodo tiene `large_model` o `reasoner`, la tarea puede ejecutarse en el
+mejor worker genérico y la respuesta, sus etapas y el recibo dicen «rol X no
+disponible, ejecutado en Y»; las tareas que necesitan `search` o `corpus`
+fallan honestamente hasta que lleguen sus ejecutores. El panel Swarm muestra
+tus roles y los roles anunciados por cada par.
 
 **Memory.** C0 activa; C1 recupera pasajes de tus fuentes para las
 respuestas hechas en este equipo; C2–C4 en fases posteriores.
