@@ -601,7 +601,8 @@
    "models": "Modelos",
    "rtt": "Latencia",
    "inflight": "En curso",
-   "seen": "Visto"
+   "seen": "Visto",
+   "link": "Enlace"
   },
   "cache": {
    "hint": "Nodo",
@@ -621,7 +622,9 @@
   "bytesOut": "Datos enviados",
   "sharedModels": "Modelos compartidos",
   "availability": "Tiempo disponible",
-  "bootstrap": "bootstrap: no admitido"
+  "bootstrap": "bootstrap: no admitido",
+  "direct": "directa",
+  "relayed": "por relay"
  },
  "memory": {
   "title": "Memoria",
@@ -1432,7 +1435,27 @@
   "corpusShareHelp": "Este círculo puede recuperar pasajes del corpus compartido. Todos los pares admitidos ven su nombre visible y su tamaño.",
   "corpusPickFirst": "Elige primero un proyecto en Ajustes → Swarm.",
   "ownPassages": "Pasajes de documentos a mis propios dispositivos",
-  "ownPassagesHelp": "Si está activo, la receta 4 puede adjuntar pasajes de tus documentos a los elementos enviados a pares en modo mis propios dispositivos. Está apagado por defecto y es independiente de privacy.third_party_passages."
+  "ownPassagesHelp": "Si está activo, la receta 4 puede adjuntar pasajes de tus documentos a los elementos enviados a pares en modo mis propios dispositivos. Está apagado por defecto y es independiente de privacy.third_party_passages.",
+  "relay": "Relay",
+  "relaySet": "Configurar relay…",
+  "relayChange": "Cambiar relay…",
+  "relayRemove": "Quitar relay",
+  "relaySetTitle": "Configurar el relay del círculo",
+  "relayChangeTitle": "Cambiar el relay del círculo",
+  "relayHost": "Host del relay",
+  "relayPort": "Puerto del relay",
+  "relayPinLabel": "Pin SHA-256 del certificado del relay",
+  "relayHelp": "El pin es obligatorio: es el SHA-256 de los bytes DER del certificado del relay. El dueño publica cada nueva versión firmada del manifiesto en el relay, así la revocación llega antes del próximo emparejamiento.",
+  "relayPinRequired": "Un relay necesita dirección y pin de su certificado.",
+  "relayNone": "Este círculo no tiene relay.",
+  "relayNoneOwner": "Este círculo no tiene relay. Configura uno para que los miembros se alcancen fuera de la LAN.",
+  "relayConnected": "registrado",
+  "relayDown": "inaccesible (reintentando)",
+  "relayOff": "sin conectar",
+  "relayRefused": "rechazado por el relay",
+  "relayLimited": "no iniciado (límite de conexiones)",
+  "relaySecurity": "AVISO DE SEGURIDAD: el pin del certificado no coincide; este relay está detenido",
+  "relayPin": "pin {pin}"
  },
  "teams": {
   "title": "Equipos",

@@ -262,6 +262,14 @@ class Orchestrator:
         elif mode not in ("lan", "auto"):
             egress_block = f"mode {mode}: no network dispatch"
         pool = self.local_pool_factory() if self.local_pool_factory else None
+        if not egress_block and mode in ("lan", "auto"):
+            # 3.5, WP3 / D-016: a circle relay lets a member that is not on
+            # this LAN become visible to placement. Direct paths are still
+            # tried first inside ensure_peer; a relay failure is swallowed.
+            try:
+                self.nodes.ensure_circle_peers()
+            except Exception:
+                pass
         directory = Directory(self.nodes, pool, remote_allowed=not egress_block,
                               allowed_remote=passage_peer_ids)
         routing_meta["remote_allowed"] = not egress_block

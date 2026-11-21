@@ -1523,6 +1523,20 @@ def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
         return _circle_call(state.circles.set_circle_passages, circle_id,
                             bool(body.get("enabled")))
 
+    @app.post("/api/circles/{circle_id}/relay")
+    def circles_relay(circle_id: str, body: dict | None = None) -> dict:
+        """Owner: set (or remove) the circle relay address and certificate pin.
+
+        The pin is mandatory with an address; ``{"relay": null}`` removes it.
+        The change is a new signed manifest version and is published to the
+        relay's manifest spool.
+        """
+        payload = body or {}
+        relay = payload.get("relay", payload)
+        if relay in ({}, "", None):
+            relay = None
+        return _circle_call(state.circles.set_relay, circle_id, relay)
+
     @app.post("/api/circles/{circle_id}/invite")
     def circles_invite(circle_id: str, body: dict | None = None) -> dict:
         body = body or {}

@@ -35,9 +35,11 @@ from .handshake import (Handshake, HandshakeResult, sign_advertisement_update,
                         validate_advertisement, verify_advertisement_update)
 from ..node_roles import normalise_advertisement
 from .messages import WIRE_VERSION, error
-from .transport import (PeerSession, TLSServer, cert_fingerprint, dial,
-                        generate_cert, read_frame, read_frame_with_timeout,
-                        write_frame)
+from .relay_client import (RelayAddress, RelayClient, RelayError,
+                           RelayRefused)
+from .transport import (PeerSession, TLSServer, accept_over_stream,
+                        cert_fingerprint, dial, dial_over_stream, generate_cert,
+                        read_frame, read_frame_with_timeout, write_frame)
 
 DEFAULT_P2P_PORT = 9765
 MAX_PEERS = 64
@@ -46,6 +48,12 @@ DEAD_AFTER_S = 95.0
 DIAL_BACKOFF_S = 4.0          # higher node_id waits this long before dialing
 REPLAY_WINDOW = 4096          # attempt_ids remembered per peer
 MAX_QUEUED_TASKS_PER_PEER = 8
+# 3.5, WP3 / D-023: bounded relay connections. One idle acceptor per
+# (circle, relay); a few short-lived initiators while direct paths fail.
+MAX_RELAY_CONNECTIONS = 4
+RELAY_BACKOFF_S = 1.0
+RELAY_BACKOFF_MAX_S = 30.0
+RELAY_REACH_TIMEOUT_S = 15.0
 
 
 @dataclass
@@ -64,6 +72,10 @@ class Peer:
     session: PeerSession | None = None
     adv_seq: int = 0
     tasks_inflight: int = 0
+    # 3.5, WP3 / D-016: how this peer is reached. The relay is a transport
+    # hop, never a different authorisation: admission and egress are unchanged.
+    transport: str = "direct"         # direct | relayed
+    relay: dict[str, Any] | None = None
     seen_attempts: collections.OrderedDict = field(
         default_factory=collections.OrderedDict)
 
@@ -99,6 +111,8 @@ class Peer:
             "first_seen": self.first_seen,
             "last_seen": self.last_seen,
             "tasks_inflight": self.tasks_inflight,
+            "transport": self.transport,
+            "relay": dict(self.relay) if self.relay else None,
         }
 
 
@@ -130,6 +144,12 @@ class NodeManager:
         self.listen_port: int | None = None
         self.listen_error: str = ""
         self.node_id = identity.load_or_create().node_id
+        # 3.5, WP3: relay registrations and their visible state.
+        self._relay_tasks: dict[str, asyncio.Task] = {}
+        self._relay_state: dict[str, dict[str, Any]] = {}
+        self._relay_clients: set[RelayClient] = set()
+        self._relay_event: asyncio.Event | None = None
+        self._relay_stopping = False
 
     # -- lifecycle ---------------------------------------------------------------
     def start(self, task_handler=None, cancel_handler=None) -> None:
@@ -174,6 +194,11 @@ class NodeManager:
         self.listen_port = port
         self._spawn(self._keepalive_loop())
         await self._apply_discovery()
+        # 3.5, WP3: start relay supervision only when a circle manifest names
+        # a relay. Off by default: no manifest, no connection.
+        self._relay_stopping = False
+        self._relay_event = asyncio.Event()
+        self._spawn(self._relay_supervisor())
         self.bus.publish("node.listening", port=port)
 
     def _data_dirs(self):
@@ -205,6 +230,13 @@ class NodeManager:
             for peer in list(self.peers.values()):
                 if peer.session is not None:
                     peer.session.close()
+            self._relay_stopping = True
+            for client in list(self._relay_clients):
+                try:
+                    await client.close()
+                except Exception:
+                    pass
+            self._relay_clients.clear()
             current = asyncio.current_task()
             for task in list(self._tasks):
                 if task is not current:
@@ -313,7 +345,8 @@ class NodeManager:
         await self._connect(node.address, node.port, source="mdns")
 
     # -- connections -----------------------------------------------------------------
-    async def _connect(self, host: str, port: int, source: str = "manual") -> Peer | None:
+    async def _connect(self, host: str, port: int, source: str = "manual",
+                       *, timeout: float | None = None) -> Peer | None:
         key = f"{host}:{port}"
         if key in self._dialing:
             return None
@@ -334,7 +367,9 @@ class NodeManager:
                     self.handshake.join_token = ""
             hello_msg, nonce = self.handshake.build_hello()
             try:
-                session, ack_message, observed = await dial(host, port, hello_msg)
+                session, ack_message, observed = await dial(
+                    host, port, hello_msg,
+                    timeout=float(timeout or self._direct_timeout_s()))
             except Exception as exc:
                 self.bus.publish("node.handshake_failed", address=host, port=port,
                                  reason=f"unreachable: {str(exc)[:80]}")
@@ -461,6 +496,11 @@ class NodeManager:
         peer.admitted = admitted
         peer.last_seen = time.time()
         peer.session = session
+        # D-016: a relayed session is admitted by exactly the same manifest
+        # gate as a direct one; only its transport hop is recorded here.
+        hop = getattr(session, "relay_hop", None)
+        peer.transport = "relayed" if hop else "direct"
+        peer.relay = dict(hop) if hop else None
         if self.discovery is not None and admitted:
             self.discovery.mark_verified(node_id, session.address)
         self.db.upsert_node(node_id, peer.address, peer.port,
@@ -468,7 +508,8 @@ class NodeManager:
         self.bus.publish("node.connected", node_id=node_id,
                          short_id=node_id[:12], address=peer.address,
                          source=source, worker=peer.is_worker,
-                         admitted=admitted)
+                         admitted=admitted, transport=peer.transport,
+                         relay=peer.relay)
         self._spawn(self._read_loop(session, node_id))
         if self.circles is not None:
             self._spawn(self.circles.on_peer_connected(peer))
@@ -632,6 +673,522 @@ class NodeManager:
                 future.set_exception(PeerError("E_DISCONNECTED",
                                                "peer disconnected"))
 
+    # -- relay registration and pairing (3.5, WP3 / D-016, D-023) -----------------
+    @staticmethod
+    def _relay_key(circle_id: str, relay: dict[str, Any]) -> str:
+        return (f"{circle_id}|{relay.get('host')}|{relay.get('port')}|"
+                f"{relay.get('tls_cert_sha256')}")
+
+    def _relay_max_connections(self) -> int:
+        try:
+            value = int(self.config.get("circle.relay_max_connections") or 4)
+        except (TypeError, ValueError):
+            value = 4
+        return max(1, min(value, 16))
+
+    def _relay_timeout_s(self) -> float:
+        try:
+            value = float(self.config.get("circle.relay_timeout_s") or 8.0)
+        except (TypeError, ValueError):
+            value = 8.0
+        return max(3.0, min(value, 30.0))
+
+    def _direct_timeout_s(self) -> float:
+        try:
+            value = float(self.config.get("circle.reach_timeout_s") or 2.0)
+        except (TypeError, ValueError):
+            value = 2.0
+        return max(0.5, min(value, 15.0))
+
+    def _desired_relays(self) -> dict[str, dict[str, Any]]:
+        """Relays this node should keep an acceptor connection for.
+
+        Off by default: a circle without a relay contributes nothing. Only a
+        current, unexpired manifest that lists this node counts.
+        """
+        if self.circles is None:
+            return {}
+        out: dict[str, dict[str, Any]] = {}
+        for circle_id, manifest in list(self.circles.manifests.items()):
+            try:
+                if not self.circles._valid(manifest):
+                    continue
+                if not self.circles._is_member(manifest, self.node_id):
+                    continue
+            except Exception:
+                continue
+            relay = manifest.get("relay")
+            if not isinstance(relay, dict):
+                continue
+            try:
+                from .circles import normalise_relay
+                clean = normalise_relay(relay)
+            except Exception:
+                clean = None
+            if clean:
+                out[str(circle_id)] = clean
+        return out
+
+    def refresh_relays(self) -> None:
+        """Wake the supervisor after a manifest change (thread-safe)."""
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            loop.call_soon_threadsafe(self._wake_relay_supervisor)
+
+    def _wake_relay_supervisor(self) -> None:
+        if self._relay_event is not None:
+            self._relay_event.set()
+
+    async def _relay_wait(self, timeout: float = 5.0) -> None:
+        if self._relay_event is None:
+            await asyncio.sleep(timeout)
+            return
+        try:
+            await asyncio.wait_for(self._relay_event.wait(), timeout)
+        except asyncio.TimeoutError:
+            pass
+        self._relay_event.clear()
+
+    async def _relay_supervisor(self) -> None:
+        """Keep exactly the relay acceptors the current manifests ask for."""
+        while not self._relay_stopping:
+            try:
+                desired = self._desired_relays()
+                wanted = {self._relay_key(cid, relay)
+                          for cid, relay in desired.items()}
+                for key, task in list(self._relay_tasks.items()):
+                    if key not in wanted:
+                        task.cancel()
+                        self._relay_tasks.pop(key, None)
+                for cid, relay in desired.items():
+                    key = self._relay_key(cid, relay)
+                    task = self._relay_tasks.get(key)
+                    if task is not None and not task.done():
+                        continue
+                    if len(self._relay_tasks) >= self._relay_max_connections():
+                        self._relay_state[cid] = {
+                            "circle_id": cid, "status": "limited",
+                            "host": relay.get("host", ""),
+                            "port": relay.get("port", 0),
+                            "last_error": ("too many relay circles; raise "
+                                           "circle.relay_max_connections"),
+                            "security_warning": False,
+                        }
+                        continue
+                    task = self._spawn(self._relay_acceptor_loop(cid, relay))
+                    self._relay_tasks[key] = task
+                    task.add_done_callback(
+                        lambda _t, k=key: self._relay_tasks.pop(k, None))
+                for cid in list(self._relay_state):
+                    if cid not in desired:
+                        self._relay_state.pop(cid, None)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # one bad manifest never kills the loop
+                self.bus.publish("relay.supervisor_error",
+                                 reason=str(exc)[:160])
+            await self._relay_wait()
+        for task in list(self._relay_tasks.values()):
+            task.cancel()
+        self._relay_tasks.clear()
+
+    def _relay_state_for(self, circle_id: str, relay: dict[str, Any]) -> dict[str, Any]:
+        return self._relay_state.setdefault(circle_id, {
+            "circle_id": circle_id, "status": "off",
+            "host": relay.get("host", ""), "port": relay.get("port", 0),
+            "last_error": "", "security_warning": False,
+        })
+
+    async def _relay_acceptor_loop(self, circle_id: str,
+                                   relay: dict[str, Any]) -> None:
+        """One idle registered connection per (circle, relay), reconnecting.
+
+        The prototype can accept one incoming splice per connection, so after
+        a pair the loop opens a fresh registered connection immediately. A
+        pin mismatch stops this relay and stays visible until the manifest
+        changes; a transient failure backs off.
+        """
+        backoff = RELAY_BACKOFF_S
+        address = RelayAddress(str(relay["host"]), int(relay["port"]),
+                               str(relay["tls_cert_sha256"]))
+        while not self._relay_stopping:
+            if self._desired_relays().get(circle_id) != relay:
+                return
+            state = self._relay_state_for(circle_id, relay)
+            state.update(host=str(relay["host"]), port=int(relay["port"]))
+            if state.get("security_warning"):
+                await self._relay_wait(15.0)
+                continue
+            client = RelayClient(
+                address, circle_id, self.node_id, self.identity_manager.sign,
+                timeout=self._relay_timeout_s(),
+                pair_timeout=60.0)
+            self._relay_clients.add(client)
+            try:
+                await client.connect()
+            except RelayError as exc:
+                await client.close()
+                self._relay_clients.discard(client)
+                if exc.code == "relay_certificate_mismatch":
+                    state.update(status="security_warning",
+                                 security_warning=True,
+                                 last_error=f"{exc.code}: {exc.message}")
+                    self.bus.publish("relay.security_warning",
+                                     circle_id=circle_id,
+                                     host=address.host, port=address.port,
+                                     reason=exc.message,
+                                     code=exc.code)
+                    await self._relay_wait(15.0)
+                    continue
+                state.update(status="down",
+                             last_error=f"{exc.code}: {exc.message}")
+                self.bus.publish("relay.down", circle_id=circle_id,
+                                 host=address.host, port=address.port,
+                                 code=exc.code, reason=exc.message)
+                await asyncio.sleep(backoff)
+                backoff = min(RELAY_BACKOFF_MAX_S, backoff * 2)
+                continue
+            except asyncio.CancelledError:
+                await client.close()
+                self._relay_clients.discard(client)
+                raise
+            except Exception as exc:
+                await client.close()
+                self._relay_clients.discard(client)
+                state.update(status="down", last_error=str(exc)[:160])
+                self.bus.publish("relay.down", circle_id=circle_id,
+                                 host=address.host, port=address.port,
+                                 code="E_RELAY_UNREACHABLE",
+                                 reason=str(exc)[:160])
+                await asyncio.sleep(backoff)
+                backoff = min(RELAY_BACKOFF_MAX_S, backoff * 2)
+                continue
+
+            backoff = RELAY_BACKOFF_S
+            state.update(status="connected", last_error="",
+                         security_warning=False)
+            self.bus.publish("relay.connected", circle_id=circle_id,
+                             host=address.host, port=address.port)
+            handed = False
+            try:
+                stream = await client.accept_pair(
+                    check=lambda peer_id, pair_circle: self._relay_pair_allowed(
+                        circle_id, peer_id, pair_circle))
+            except asyncio.CancelledError:
+                await client.close()
+                self._relay_clients.discard(client)
+                raise
+            except RelayRefused as exc:
+                state.update(status="refused",
+                             last_error=f"{exc.code}: {exc.message}")
+                self.bus.publish("relay.refused", circle_id=circle_id,
+                                 host=address.host, code=exc.code,
+                                 reason=exc.message)
+                await client.close()
+                self._relay_clients.discard(client)
+                await asyncio.sleep(0.2)
+                continue
+            except RelayError as exc:
+                state.update(status="error",
+                             last_error=f"{exc.code}: {exc.message}")
+                self.bus.publish("relay.error", circle_id=circle_id,
+                                 host=address.host, code=exc.code,
+                                 reason=exc.message)
+                await client.close()
+                self._relay_clients.discard(client)
+                continue
+            except Exception as exc:
+                state.update(status="error", last_error=str(exc)[:160])
+                await client.close()
+                self._relay_clients.discard(client)
+                await asyncio.sleep(0.2)
+                continue
+            if stream is not None:
+                handed = True
+                self._spawn(self._handle_relayed_incoming(
+                    stream, circle_id, relay, client))
+            if not handed:
+                await client.close()
+                self._relay_clients.discard(client)
+
+    def _relay_pair_allowed(self, circle_id: str, peer_node_id: str,
+                            pair_circle_id: str = "") -> bool:
+        """The App's own admission check before an explicit ``pair_accept``."""
+        if not peer_node_id or peer_node_id == self.node_id:
+            return False
+        if pair_circle_id and pair_circle_id != circle_id:
+            return False
+        if self.circles is None:
+            return False
+        manifest = self.circles.manifests.get(circle_id)
+        if manifest is None or not self.circles._valid(manifest):
+            return False
+        if not self.circles._is_member(manifest, self.node_id):
+            return False
+        if not self.circles._is_member(manifest, peer_node_id):
+            return False
+        ok, _code, _detail = self.circles.admits_local(peer_node_id)
+        return bool(ok)
+
+    async def _handle_relayed_incoming(self, stream: Any, circle_id: str,
+                                       relay: dict[str, Any],
+                                       client: RelayClient) -> None:
+        session = None
+        try:
+            cert_dir = self._data_dirs().cache / "tls"
+            session, hello = await accept_over_stream(
+                stream, cert_dir / "node.crt", cert_dir / "node.key",
+                address=f"relay:{relay['host']}", timeout=30.0)
+            session.relay_hop = {
+                "kind": "relayed", "host": str(relay["host"]),
+                "port": int(relay["port"]), "metadata_only": True,
+            }
+            await self._on_session(session, hello)
+            peer = self.peers.get(session.node_id)
+            if peer is None or peer.session is not session:
+                session.close()
+        except asyncio.CancelledError:
+            if session is not None:
+                session.close()
+            raise
+        except Exception as exc:
+            if session is not None:
+                session.close()
+            self.bus.publish("relay.handshake_failed", circle_id=circle_id,
+                             host=str(relay.get("host") or ""),
+                             reason=str(exc)[:160])
+        finally:
+            self._relay_clients.discard(client)
+            peer = self.peers.get(session.node_id) if session is not None else None
+            if peer is None or peer.session is not session:
+                await client.close()
+
+    def _direct_candidates(self, node_id: str) -> list[tuple[str, int]]:
+        out: list[tuple[str, int]] = []
+        peer = self.peers.get(node_id)
+        if peer is not None and peer.address and peer.transport == "direct":
+            out.append((peer.address, int(peer.port or 0)))
+        if self.discovery is not None:
+            for node in self.discovery.entries():
+                if node.node_id == node_id:
+                    for addr in (node.addresses or [node.address]):
+                        out.append((addr, int(node.port or 0)))
+        if self.circles is not None:
+            for manifest in list(self.circles.manifests.values()):
+                try:
+                    if not self.circles._valid(manifest):
+                        continue
+                    if not self.circles._is_member(manifest, self.node_id):
+                        continue
+                except Exception:
+                    continue
+                member = self.circles._member(manifest, node_id)
+                for endpoint in (member or {}).get("endpoints") or []:
+                    try:
+                        from .circles import endpoint_host_port
+                        out.append(endpoint_host_port(endpoint))
+                    except Exception:
+                        continue
+        clean: list[tuple[str, int]] = []
+        for host, port in out:
+            if not host or not 0 < port < 65536:
+                continue
+            if port == self.listen_port and host in (
+                    "127.0.0.1", "localhost", "::1", "0.0.0.0", "::"):
+                continue
+            if (host, port) not in clean:
+                clean.append((host, port))
+        return clean
+
+    def _relay_candidates(self, node_id: str) -> list[tuple[str, dict[str, Any]]]:
+        if self.circles is None:
+            return []
+        out: list[tuple[str, dict[str, Any]]] = []
+        for circle_id, manifest in list(self.circles.manifests.items()):
+            try:
+                if not self.circles._valid(manifest):
+                    continue
+                if not self.circles._is_member(manifest, self.node_id):
+                    continue
+                if not self.circles._is_member(manifest, node_id):
+                    continue
+            except Exception:
+                continue
+            relay = manifest.get("relay")
+            if isinstance(relay, dict) and relay.get("host") \
+                    and relay.get("tls_cert_sha256"):
+                out.append((str(circle_id), {
+                    "host": str(relay["host"]), "port": int(relay["port"]),
+                    "tls_cert_sha256": str(relay["tls_cert_sha256"])}))
+        out.sort(key=lambda item: str(
+            self.circles.manifests[item[0]].get("name") or "").casefold())
+        return out
+
+    async def _dial_via_relay(self, node_id: str, circle_id: str,
+                              relay: dict[str, Any], timeout: float
+                              ) -> Peer | None:
+        address = RelayAddress(str(relay["host"]), int(relay["port"]),
+                               str(relay["tls_cert_sha256"]))
+        client = RelayClient(
+            address, circle_id, self.node_id, self.identity_manager.sign,
+            timeout=min(max(3.0, timeout), 15.0),
+            pair_timeout=max(10.0, timeout))
+        self._relay_clients.add(client)
+        session = None
+        try:
+            await client.connect()
+            stream = await client.pair(node_id)
+            self.handshake.advertisement = self._advertisement()
+            self.handshake.join_token = ""
+            hello_msg, nonce = self.handshake.build_hello()
+            session, ack_message, observed = await dial_over_stream(
+                stream, hello_msg, address=f"relay:{address.host}",
+                timeout=timeout)
+            result = self.handshake.verify_ack(ack_message, nonce, observed)
+            if result.node_id == self.node_id:
+                raise ValueError("connected to ourselves")
+            final_ack = self.handshake.build_final_ack(
+                _nonce_bytes(ack_message.get("nonce", "")), observed,
+                self.handshake.advertisement)
+            await write_frame(session.writer, final_ack)
+            session.relay_hop = {
+                "kind": "relayed", "host": address.host,
+                "port": address.port, "metadata_only": True,
+            }
+            return await self._register(
+                result, session, source="relay",
+                listen_port=_listen_port(result.advertisement))
+        except Exception as exc:
+            state = self._relay_state_for(circle_id, relay)
+            state.update(status="error", last_error=str(exc)[:160])
+            if isinstance(exc, RelayRefused):
+                self.bus.publish("relay.refused", circle_id=circle_id,
+                                 host=address.host, code=exc.code,
+                                 reason=exc.message)
+            self.bus.publish("relay.pair_failed", circle_id=circle_id,
+                             host=address.host, peer_node=node_id[:12],
+                             reason=f"{type(exc).__name__}: "
+                                    f"{getattr(exc, 'code', 'E_RELAY')}: "
+                                    f"{getattr(exc, 'message', str(exc))}"[:160])
+            if session is not None:
+                session.close()
+            return None
+        finally:
+            self.handshake.join_token = ""
+            self._relay_clients.discard(client)
+            peer = self.peers.get(session.node_id) if session is not None else None
+            if peer is None or peer.session is not session:
+                await client.close()
+
+    def ensure_circle_peers(self, limit: int = 8) -> int:
+        """Before planning, reach members of circles that have a relay.
+
+        Placement only sees connected workers. This makes a relay-reachable
+        circle member visible *before* the plan is built, while direct
+        addresses are still tried first inside :meth:`ensure_peer`. Circles
+        without a relay are left to discovery/manual connection.
+        """
+        if self.circles is None:
+            return 0
+        wanted: set[str] = set()
+        for circle_id, manifest in list(self.circles.manifests.items()):
+            try:
+                relay = manifest.get("relay")
+                if not isinstance(relay, dict) or not relay.get("host"):
+                    continue
+                if not self.circles._valid(manifest):
+                    continue
+                if not self.circles._is_member(manifest, self.node_id):
+                    continue
+            except Exception:
+                continue
+            for member in manifest.get("members") or []:
+                node_id = str(member.get("node_id") or "")
+                if node_id and node_id != self.node_id:
+                    wanted.add(node_id)
+        if not wanted:
+            return 0
+        try:
+            return int(self._call(
+                self._ensure_circle_peers_async(sorted(wanted), limit),
+                timeout=20.0 + 20.0 * min(limit, 8)))
+        except Exception:
+            return 0
+
+    async def _ensure_circle_peers_async(self, node_ids: list[str],
+                                         limit: int) -> int:
+        sem = asyncio.Semaphore(max(1, limit))
+
+        async def one(node_id: str) -> int:
+            peer = self.peers.get(node_id)
+            if peer is not None and peer.connected:
+                return 0
+            async with sem:
+                got = await self.ensure_peer(node_id)
+            return 1 if got is not None and got.connected else 0
+
+        results = await asyncio.gather(*(one(nid) for nid in node_ids),
+                                       return_exceptions=True)
+        return sum(1 for item in results if item == 1)
+
+    async def ensure_peer(self, node_id: str) -> Peer | None:
+        """Reach a circle member: direct addresses first, then its relay.
+
+        The direct attempts are short and bounded. A relay that is down or
+        refuses never affects peers that are already reachable directly.
+        """
+        peer = self.peers.get(node_id)
+        if peer is not None and peer.connected:
+            return peer
+        direct_timeout = self._direct_timeout_s()
+        for host, port in self._direct_candidates(node_id):
+            try:
+                candidate = await self._connect(host, port, source="manual",
+                                                timeout=direct_timeout)
+            except Exception:
+                candidate = None
+            if candidate is not None and candidate.node_id == node_id \
+                    and candidate.connected:
+                return candidate
+        last_error = ""
+        for circle_id, relay in self._relay_candidates(node_id):
+            state = self._relay_state_for(circle_id, relay)
+            state.update(host=str(relay["host"]), port=int(relay["port"]))
+            if state.get("security_warning"):
+                last_error = "relay stopped after a certificate pin mismatch"
+                continue
+            got = await self._dial_via_relay(
+                node_id, circle_id, relay, timeout=self._relay_timeout_s())
+            if got is not None and got.connected:
+                return got
+            last_error = str(state.get("last_error") or "")
+        if last_error:
+            self.bus.publish("node.reach_failed", node_id=node_id[:12],
+                             reason=last_error[:160])
+        return None
+
+    def transport_hop(self, node_id: str) -> dict[str, Any]:
+        """The receipt's transport hop for a peer send."""
+        peer = self.peers.get(node_id)
+        if peer is not None and peer.transport == "relayed" and peer.relay:
+            return {"transport": "relayed", "relay": {
+                "host": str(peer.relay.get("host") or ""),
+                "port": int(peer.relay.get("port") or 0),
+                "metadata_only": True,
+                "saw": ["who", "when", "bytes"],
+                "content": False,
+            }}
+        return {"transport": "direct"}
+
+    def relay_status(self, circle_id: str | None = None) -> Any:
+        if circle_id is not None:
+            return dict(self._relay_state.get(circle_id) or {
+                "circle_id": circle_id, "status": "off",
+                "last_error": "", "security_warning": False})
+        return [dict(state) for state in
+                sorted(self._relay_state.values(),
+                       key=lambda item: str(item.get("circle_id") or ""))]
+
     # -- dispatch API (called from engine threads) ---------------------------------------
     def classify_peer(self, node_id: str) -> dict[str, Any]:
         """The destination class of a peer send (D-017), from the circle service."""
@@ -653,7 +1210,14 @@ class NodeManager:
         """Send one packet and await its result (must run on the P2P loop)."""
         peer = self.peers.get(node_id)
         if peer is None or not peer.connected or peer.session is None:
-            raise PeerError("E_DISCONNECTED", f"node {node_id[:12]} not connected")
+            # D-016: direct addresses first, then the circle relay. This is
+            # deliberately done here, so dispatch and placement keep using the
+            # normal Peer object, admission and egress gate once connected.
+            peer = await self.ensure_peer(node_id)
+        if peer is None or not peer.connected or peer.session is None:
+            raise PeerError("E_DISCONNECTED",
+                            f"node {node_id[:12]} not connected directly or "
+                            "through a circle relay")
         if not peer.admitted:
             raise PeerError("E_CIRCLE_REQUIRED",
                             f"node {node_id[:12]} is not admitted to a circle")
@@ -807,6 +1371,7 @@ class NodeManager:
             "admitted_count": sum(1 for p in peers if p.admitted and p.connected),
             "unreachable_count": sum(1 for p in peers if not p.connected),
             "circles": self.circles.summary() if self.circles is not None else None,
+            "relays": self.relay_status(),
         }
 
     def available_workers(self, kind: str = "generate") -> list[Peer]:

@@ -120,6 +120,17 @@ class Directory:
         except Exception:
             return False
 
+    def transport_hop(self, node_id: str) -> dict[str, Any]:
+        """The transport hop for a send (3.5, WP3 / D-016)."""
+        if self.local is not None and node_id == self.local.peer.node_id:
+            return {"transport": "direct"}
+        if self.nodes is None:
+            return {"transport": "direct"}
+        try:
+            return self.nodes.transport_hop(node_id)
+        except Exception:
+            return {"transport": "direct"}
+
     def classify_peer(self, node_id: str) -> dict[str, Any]:
         """Destination class for a send (D-017): local pool, circle, own network."""
         if self.local is not None and node_id == self.local.peer.node_id:

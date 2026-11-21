@@ -601,7 +601,8 @@
    "models": "Models",
    "rtt": "Latency",
    "inflight": "In flight",
-   "seen": "Last seen"
+   "seen": "Last seen",
+   "link": "Link"
   },
   "cache": {
    "hint": "Node",
@@ -621,7 +622,9 @@
   "bytesOut": "Data sent",
   "sharedModels": "Shared models",
   "availability": "Time available",
-  "bootstrap": "bootstrap: not admitted"
+  "bootstrap": "bootstrap: not admitted",
+  "direct": "direct",
+  "relayed": "relayed"
  },
  "memory": {
   "title": "Memory",
@@ -1421,7 +1424,28 @@
   "corpusShareHelp": "This circle may retrieve passages from the shared corpus. Every admitted peer sees its display name and size bucket.",
   "corpusPickFirst": "Choose a project in Settings → Swarm first.",
   "ownPassages": "Document passages to my own devices",
-  "ownPassagesHelp": "When on, recipe 4 may attach passages of your documents to items sent to peers in my-own-devices mode. Off by default; separate from privacy.third_party_passages."
+  "ownPassagesHelp": "When on, recipe 4 may attach passages of your documents to items sent to peers in my-own-devices mode. Off by default; separate from privacy.third_party_passages.",
+  "relay": "Relay",
+  "relaySet": "Set relay…",
+  "relayChange": "Change relay…",
+  "relayRemove": "Remove relay",
+  "relaySetTitle": "Set the circle relay",
+  "relayChangeTitle": "Change the circle relay",
+  "relayHost": "Relay host",
+  "relayPort": "Relay port",
+  "relayPinLabel": "Relay certificate SHA-256 pin",
+  "relayHelp": "The pin is mandatory: it is the SHA-256 of the relay certificate's DER bytes. The owner pushes every new signed manifest version to the relay, so a revocation reaches it before the next pairing.",
+  "relayPinRequired": "A relay needs both an address and its certificate pin.",
+  "relayNone": "No relay for this circle.",
+  "relayNoneOwner": "No relay for this circle. Set one to let members reach each other beyond the LAN.",
+  "relayNoneOff": "No relay.",
+  "relayConnected": "registered",
+  "relayDown": "unreachable (backing off)",
+  "relayOff": "not connected",
+  "relayRefused": "refused by the relay",
+  "relayLimited": "not started (connection limit)",
+  "relaySecurity": "SECURITY WARNING: certificate pin mismatch; this relay is stopped",
+  "relayPin": "pin {pin}"
  },
  "teams": {
   "title": "Teams",

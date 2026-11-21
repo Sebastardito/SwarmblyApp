@@ -216,11 +216,14 @@ const Monitor = (() => {
       return;
     }
     els.peers.appendChild(h("table.data",
-      h("thead", h("tr", ["node", "address", "state", "role", "roles", "models", "rtt", "inflight", "seen"]
+      h("thead", h("tr", ["node", "address", "link", "state", "role", "roles", "models", "rtt", "inflight", "seen"]
         .map((k) => h("th", { scope: "col" }, t(`monitor.col.${k}`))))),
       h("tbody", peers.map((p) => h("tr",
         h("td", h("code", { title: peerTitle(p) }, p.short_id || UI.shortId(p.node_id))),
         h("td", `${p.address}:${p.port}`),
+        h("td", p.transport === "relayed"
+          ? chip(t("monitor.relayed"), "", p.relay?.host || "")
+          : t("monitor.direct")),
         h("td", h(`span.status-word.${p.connected ? "completed" : "failed"}`,
           t(p.connected ? (p.admitted === false ? "monitor.bootstrap"
             : p.authenticated ? "monitor.authenticatedShort" : "monitor.connectedShort")
@@ -324,6 +327,7 @@ const Monitor = (() => {
         h("h3", circle.name),
         chip(t("circle.version").replace("{v}", circle.version)),
         circle.is_owner ? chip(t("circle.owner")) : null),
+      relaySummary(circle),
       h("p.muted", t("circle.expires").replace("{when}",
         new Date(circle.expires_at * 1000).toLocaleDateString())),
       h("h4", t("circle.members")),
@@ -377,6 +381,14 @@ const Monitor = (() => {
                 "ghost small")))))))
         : h("p.empty", t("circle.noRequests")));
     }
+    if (circle.is_owner) {
+      card.appendChild(h("div.form-actions",
+        button(circle.relay ? t("circle.relayChange") : t("circle.relaySet"),
+          () => relayDialog(circle), "ghost small"),
+        circle.relay
+          ? button(t("circle.relayRemove"), () => removeRelay(circle), "ghost small")
+          : null));
+    }
     card.appendChild(h("div.form-actions",
       circle.is_owner
         ? button(t("circle.invite"), () => inviteDialog(circle), "small")
@@ -429,6 +441,67 @@ const Monitor = (() => {
           h("td", String(item.reports ?? 0)),
           h("td", item.reason || "—"))))))
       : h("p.empty", t("credits.noFlagged")));
+  }
+
+  function relaySummary(circle) {
+    const relay = circle.relay;
+    const status = circle.relay_status || {};
+    if (!relay) {
+      return h("p.muted", t(circle.is_owner ? "circle.relayNoneOwner"
+        : "circle.relayNone"));
+    }
+    const target = `${relay.host}:${relay.port}`;
+    const state = status.security_warning
+      ? t("circle.relaySecurity")
+      : status.status === "connected" ? t("circle.relayConnected")
+      : status.status === "down" ? t("circle.relayDown")
+      : status.status === "refused" ? t("circle.relayRefused")
+      : status.status === "limited" ? t("circle.relayLimited")
+      : t("circle.relayOff");
+    const extra = status.last_error
+      ? h("span.muted", ` — ${status.last_error}`) : null;
+    return h("p.muted", { class: status.security_warning ? "warn" : "" },
+      `${t("circle.relay")}: ${target} · ${state}`, extra,
+      h("br"), h("span.muted", t("circle.relayPin").replace("{pin}",
+        `${String(relay.tls_cert_sha256 || "").slice(0, 16)}…`)));
+  }
+
+  async function relayDialog(circle) {
+    const relay = circle.relay || {};
+    const host = h("input", { type: "text", value: relay.host || "",
+      placeholder: "relay.example.org" });
+    const port = h("input", { type: "number", min: "1", max: "65535",
+      value: String(relay.port || 8765) });
+    const pin = h("input", { type: "text", value: relay.tls_cert_sha256 || "",
+      placeholder: "64 hex characters", spellcheck: "false" });
+    const ok = await UI.modal(t(circle.relay ? "circle.relayChangeTitle"
+      : "circle.relaySetTitle"),
+      h("div.form",
+        h("label.field", h("span", t("circle.relayHost")), host),
+        h("label.field", h("span", t("circle.relayPort")), port),
+        h("label.field", h("span", t("circle.relayPinLabel")), pin),
+        h("p.muted", t("circle.relayHelp"))),
+      [{ label: t("common.cancel"), value: false, kind: "ghost" },
+       { label: t("common.save"), value: true, kind: "primary" }]);
+    if (!ok) return;
+    if (!host.value.trim() || !pin.value.trim()) {
+      UI.toast(t("circle.relayPinRequired"), "error");
+      return;
+    }
+    try {
+      await Api.post(`/api/circles/${encodeURIComponent(circle.circle_id)}/relay`,
+        { host: host.value.trim(), port: Number(port.value),
+          tls_cert_sha256: pin.value.trim() });
+      await refresh();
+    } catch (e) { UI.toast(e.message, "error"); }
+  }
+
+  async function removeRelay(circle) {
+    try {
+      await Api.post(`/api/circles/${encodeURIComponent(circle.circle_id)}/relay`,
+        { relay: null });
+      await refresh();
+    } catch (e) { UI.toast(e.message, "error"); }
   }
 
   async function setCirclePassages(circle, enabled) {
