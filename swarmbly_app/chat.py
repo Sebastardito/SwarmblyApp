@@ -128,6 +128,8 @@ class ChatService:
         self.agent: Any = None
         self._code_runner: Any = None
         self._code_tool_spec: Any = None
+        # 3.5, R-005: first-launch cache state (None when the App did not wire it).
+        self.sandbox: Any = None
         self._code_roots: dict[str, Path] = {}
         self._code_proposals: dict[str, dict[str, Any]] = {}
         self._code_lock = threading.RLock()
@@ -1532,14 +1534,50 @@ class ChatService:
         }
 
     def code_status(self) -> dict[str, Any]:
-        """Whether recipe 5 can run here, plus the limits the approval shows."""
+        """Whether recipe 5 can run here, plus the limits the approval shows.
+
+        R-005: recipe 5 never pays the one-time compile inside a request. An
+        unprepared, stale, preparing, failed or memory-refused cache reports
+        unavailable with the reason and the request proceeds without the code
+        recipe, as before. The user prepares it from the notice, Settings, or
+        ``swarmbly-app --prepare-sandbox``.
+        """
         try:
             from .sandbox import available
             ok, reason = available()
         except Exception as exc:
             ok, reason = False, f"the isolated environment is not available: {exc}"
+        preparation: dict[str, Any] | None = None
+        service = getattr(self, "sandbox", None)
+        if ok and service is not None:
+            try:
+                preparation = service.status()
+            except Exception:
+                preparation = None
+            if preparation is not None:
+                state = str(preparation.get("status") or "")
+                if state == "preparing":
+                    ok = False
+                    reason = ("the isolated environment is being prepared in the "
+                              "background; this request runs without the code recipe")
+                elif state == "refused" or not preparation.get("enough_memory", True):
+                    ok = False
+                    reason = ("not enough free memory to prepare the isolated "
+                              "environment; this request runs without the code recipe")
+                elif state == "failed":
+                    ok = False
+                    reason = ("the isolated environment could not be prepared; "
+                              "retry from the sandbox notice; this request runs "
+                              "without the code recipe")
+                elif state in ("missing", "stale"):
+                    ok = False
+                    reason = ("the isolated environment has not been prepared yet; "
+                              "prepare it from the sandbox notice or with "
+                              "swarmbly-app --prepare-sandbox; this request runs "
+                              "without the code recipe")
         guard = self._code_platform_guard()
         return {"available": bool(ok), "reason": "" if ok else str(reason),
+                "preparation": preparation,
                 "platform_guard": guard, "watchdog_only": guard == "watchdog",
                 "limits": self._code_limits_payload(),
                 "max_corrections": self._code_cfg()["max_corrections"]}

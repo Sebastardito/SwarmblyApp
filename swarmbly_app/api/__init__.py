@@ -547,6 +547,42 @@ def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
             "status": job.status, "packages": job.packages, "log": job.log[-20:],
             "verified": job.verified}
 
+    # ---- first-launch sandbox preparation (3.5, R-005) -----------------------------
+    @app.get("/api/sandbox")
+    def sandbox_status() -> dict:
+        return state.sandbox.status()
+
+    @app.post("/api/sandbox/prepare")
+    def sandbox_prepare(body: dict[str, Any] | None = None) -> dict:
+        body = body or {}
+        if body.get("consent") is False:
+            raise HTTPException(status_code=400, detail="explicit consent is required")
+        result = state.sandbox.start(trigger="user")
+        if result.get("reason_code") == "low_memory":
+            detail = (str((result.get("status") or {}).get("last_error"))
+                      or "not enough free memory to prepare the sandbox")
+            raise HTTPException(status_code=409, detail=detail)
+        return result
+
+    @app.post("/api/sandbox/defer")
+    def sandbox_defer() -> dict:
+        return state.sandbox.defer()
+
+    # ---- doctor export (3.5, R-014) --------------------------------------------------
+    @app.get("/api/doctor/export/preview")
+    def doctor_export_preview() -> dict:
+        return state.doctor_export.preview()
+
+    @app.post("/api/doctor/export")
+    def doctor_export_save(body: dict[str, Any] | None = None) -> dict:
+        body = body or {}
+        try:
+            return state.doctor_export.save(str(body.get("snapshot_id") or ""))
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
     # ---- optional local SearXNG and web-search check (consent required) ----------
     @app.get("/api/evidence/searxng")
     def searxng_status() -> dict:

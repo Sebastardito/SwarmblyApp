@@ -129,6 +129,13 @@ class AppState:
         egress.configure(self.config.all)
         self.db = Database(self.dirs.db_path())
         self.bus = EventBus()
+        # 3.5, R-014: only stable error codes are kept for the doctor export.
+        from .recent_errors import RecentErrors
+        self.errors = RecentErrors(self.bus, self.db)
+        # 3.5, R-005: the compiled sandbox cache is prepared from first launch,
+        # never inside a request. The state object is cheap and never compiles.
+        from .sandbox import SandboxPreparation
+        self.sandbox = SandboxPreparation(self.dirs.root / "sandbox", self.bus)
         self.identity_manager = IdentityManager(self.dirs.identity_key_path())
         self.identity: NodeIdentity = self.identity_manager.load_or_create()
         self.model_manager = ModelManager()
@@ -163,6 +170,7 @@ class AppState:
         self.role_stats = RoleStats()
         self.chat = ChatService(self.db, self.bus, self.backends,
                                 self.config.all, self.get_orchestrator)
+        self.chat.sandbox = self.sandbox
         self.chat.report_sink = self._auto_report
         self.chat.self_node = self.identity.node_id[:12]
         self.chat.circles = self.circles
@@ -232,6 +240,9 @@ class AppState:
         self.bus.subscribe(lambda e: self.model_manager.invalidate()
                            if e["type"] == "models.pull"
                            and e["payload"].get("status") == "done" else None)
+        # 3.5, R-014: preview and save share one snapshot (same bytes).
+        from .doctor_export import DoctorExportService
+        self.doctor_export = DoctorExportService(self)
 
     def _personal_c1(self) -> bool:
         cfg = self.config.all().get("lce") or {}

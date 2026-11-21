@@ -259,6 +259,9 @@ def test_xlsx_script_runs_in_the_sandbox(app_state, tmp_path, monkeypatch):
                   "print(len(df))\n"
                   "```")
     app_state.backends.resolve = lambda config=None: fake  # type: ignore[method-assign]
+    # R-005: prepare the real guest cache before recipe 5 is offered.
+    assert app_state.sandbox.start()["started"] is True
+    assert app_state.sandbox.wait(300)["status"] == "ready"
     client = make_client(app_state)
     proposal = client.post("/api/recipes/code/propose", json={
         "project_id": project.id, "question": "how many rows",

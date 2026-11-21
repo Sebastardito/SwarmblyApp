@@ -486,6 +486,10 @@ def test_recipe5_script_reads_the_text_and_the_spreadsheet(
         "print(nota.strip(), len(rows))\n"
         "```")
     app_state.backends.resolve = lambda config=None: fake    # type: ignore[method-assign]
+    # R-005: recipe 5 refuses an unprepared cache instead of compiling inside
+    # the request; this test runs the real guest.
+    assert app_state.sandbox.start()["started"] is True
+    assert app_state.sandbox.wait(300)["status"] == "ready"
     client = make_client(app_state)
     proposal = client.post("/api/recipes/code/propose", json={
         "project_id": project.id, "question": "combine the note and the table",
