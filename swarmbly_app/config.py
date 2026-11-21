@@ -122,6 +122,16 @@ DEFAULTS: dict[str, Any] = {
             "max_observation_chars": 4000,
         },
     },
+    # 3.5, D-015: trusted circles. New installs admit peers only through a
+    # valid shared circle manifest; an upgrade from 3.4 keeps the old LAN
+    # admission ("my own devices") and shows a notice until the user chooses.
+    "circle": {
+        "admission_mode": "circle",   # circle | own_devices
+        "notice_pending": False,      # upgrade notice, cleared when acknowledged
+        "node_name": "",              # display name in manifests ("" = host name)
+        "manifest_ttl_days": 30,      # owner re-signs a manifest after this
+        "invitation_ttl_s": 604800,   # invitation lifetime (7 days)
+    },
     "privacy": {
         "tier": "LOCAL",              # GLOBAL | TRUSTED | LOCAL
         "manual_tier": None,          # authoritative manual override, never downgraded
@@ -287,10 +297,23 @@ class Config:
         if path.exists():
             try:
                 raw = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(raw, dict):
+                    raise ValueError("config root is not an object")
+                # 3.5 migration: a file written by an older release keeps the
+                # 3.4 LAN admission until the user explicitly opts into circles.
+                # New installs (no file) keep the circle-only default.
+                has_circle_mode = isinstance(raw.get("circle"), dict) \
+                    and "admission_mode" in raw["circle"]
                 with self._lock:
                     self._data = _deep_merge(DEFAULTS, raw)
                     _anthropic_default_url(self._data)
-            except (json.JSONDecodeError, OSError) as exc:  # corrupt file -> defaults
+                if not has_circle_mode:
+                    with self._lock:
+                        self._data["circle"]["admission_mode"] = "own_devices"
+                        self._data["circle"]["notice_pending"] = True
+                    self.save()
+            except (json.JSONDecodeError, OSError, ValueError, AttributeError) as exc:
+                # corrupt file -> defaults (circle-only, the safe default)
                 path.rename(path.with_suffix(".json.bak"))
                 self.save()
                 with self._lock:
@@ -366,6 +389,7 @@ _ENUMS = {
        for r in ("writer", "search_terms", "fusion", "verifier", "embeddings")},
     "model.embedder": {"hash", "server"},
     "swarm.mode": {"local", "lan", "internet", "auto"},
+    "circle.admission_mode": {"circle", "own_devices"},
     "privacy.tier": {"GLOBAL", "TRUSTED", "LOCAL"},
     "privacy.manual_tier": {None, "GLOBAL", "TRUSTED", "LOCAL"},
     "privacy.public_lookup_consent": {"ask", "always"},
@@ -398,6 +422,8 @@ _RANGES = {
     "swarm.composer_length_factor": (0.3, 1.5),
     "swarm.min_model_params_b": (0.0, 100.0),
     "swarm.min_items_per_fragment": (1, 50),
+    "circle.manifest_ttl_days": (1, 365),
+    "circle.invitation_ttl_s": (300, 2592000),
     "evidence.timeout_s": (0.5, 30.0),
     "evidence.max_chars": (60, 1000),
     "evidence.max_items": (1, 100),
@@ -502,6 +528,12 @@ def validate_changes(changes: dict[str, Any]) -> dict[str, Any]:
             raise ConfigError(f"{key} items must be among {sorted(_PROVIDERS)}")
         if key == "privacy.tool_hosts":
             flat[key] = sorted({_normalise_host(h, key) for h in value})
+        if key == "circle.node_name":
+            text = str(value or "").strip()
+            if len(text) > 64 or any(ord(ch) < 32 or ord(ch) == 127 for ch in text):
+                raise ConfigError(
+                    "circle.node_name must be at most 64 printable characters")
+            flat[key] = text
     if flat.get("model.backend") == "anthropic" \
             and not str(flat.get("model.backend_url") or "").strip():
         flat["model.backend_url"] = ANTHROPIC_DEFAULT_URL
