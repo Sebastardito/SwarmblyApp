@@ -504,6 +504,10 @@ class AppState:
         re-advertise, rebuild the orchestrator with the current model."""
         self.orchestrator = None
         self.nodes.apply_config()
+        circles = getattr(self, "circles", None)
+        if circles is not None:
+            # Switching to circle-only must not leave 3.4 LAN peers connected.
+            circles.enforce_admission()
 
     def _update_config(self, changes: dict) -> dict:
         merged = self.config.update(changes)

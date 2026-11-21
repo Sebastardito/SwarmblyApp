@@ -18,8 +18,6 @@ text as ASCII base64url.
 
 from __future__ import annotations
 
-from xml.sax.saxutils import escape
-
 MIN_VERSION = 1
 MAX_VERSION = 40
 ECC_LEVEL_M = 1
@@ -377,8 +375,3 @@ def encode_svg(text: str, *, border: int = 4, scale: int = 4) -> str:
 def encode_matrix(text: str) -> list[list[bool]]:
     """The raw modules (dark = True), for tests and non-SVG renderers."""
     return _build(text.encode("utf-8")).modules
-
-
-def escape_text(text: str) -> str:
-    """Convenience for embedding a token in an HTML attribute elsewhere."""
-    return escape(text, {'"': "&quot;"})

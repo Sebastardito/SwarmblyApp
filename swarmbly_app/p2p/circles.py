@@ -31,7 +31,7 @@ import threading
 import time
 import zlib
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Iterable
 
 from .. import qr
 from ..identity import IdentityManager, b64url, b64url_decode
@@ -811,6 +811,26 @@ class CircleService:
             return (False, E_CIRCLE_REQUIRED,
                     "sender is not in a valid, unexpired circle manifest")
         return True, "", ""
+
+    def enforce_admission(self) -> None:
+        """When the user switches to circles, drop admitted peers outside them.
+
+        Bootstrap sessions (``admitted is False``) are left alone: they are
+        how a pending join is delivered, and they still cannot receive tasks.
+        """
+        node = self.node
+        if node is None or self.mode() != "circle":
+            return
+        for peer in list(node.peers.values()):
+            if not getattr(peer, "connected", False) \
+                    or not getattr(peer, "admitted", False):
+                continue
+            allowed, _, _ = self.admits_local(peer.node_id)
+            if not allowed:
+                try:
+                    node.drop_peer(peer.node_id, "not a member of a circle")
+                except Exception:
+                    pass
 
     @staticmethod
     def _claimed_versions(advertisement: dict[str, Any]) -> dict[str, int]:

@@ -225,6 +225,11 @@ class TestJoinAndAdmission:
         reply = asyncio.run(owner.worker.handle(
             client.identity.node_id, task_message("own:0")))
         assert reply["type"] == "result"
+        # Switching to circle-only drops the LAN peer that is not in a circle.
+        owner.config.update({"circle": {"admission_mode": "circle"}})
+        owner.on_config_changed()
+        assert wait_for(lambda: not any(
+            p["connected"] for p in owner.nodes.status()["peers"]))
 
     def test_circle_only_default_refuses_without_circle(self, nodes):
         owner, _ = nodes("owner", worker=True, mode="circle")
