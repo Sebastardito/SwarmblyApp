@@ -91,7 +91,7 @@ class WorkerService:
                  backend_factory, model_info: Callable[[str], dict] | None = None,
                  circle_guard: Callable[[str], tuple[bool, str, str]] | None = None,
                  role_provider: Callable[..., list[dict[str, Any]]] | None = None,
-                 circle_for: Callable[[str], dict[str, Any] | None] | None = None,
+                 circle_for: Callable[..., dict[str, Any] | None] | None = None,
                  project_provider: Callable[[str], Any] | None = None):
         self.config = config
         self.db = db
@@ -106,7 +106,7 @@ class WorkerService:
         # WP4b: executors need the app's resolved roles, circles and projects;
         # the defaults keep a headless/test worker usable without AppState.
         self.role_provider = role_provider
-        self.circle_for = circle_for or (lambda node_id: None)
+        self.circle_for = circle_for or (lambda node_id, allowed=None: None)
         self.project_provider = project_provider or (lambda project_id: None)
         # A test seam for the public engines: no real network in unit tests.
         self.search_fetch: Callable[..., Any] | None = None
@@ -545,7 +545,7 @@ class WorkerService:
                     url, len(query.encode("utf-8")),
                     f"consulta pública para nodo {short} en círculo "
                     f"{circle_name or 'local'}", kind=egress.PUBLIC_QUERY,
-                    destination_label=f"nodo {short}", **extra)
+                    **extra)
             if self.search_fetch is not None:
                 return self.search_fetch(url, timeout_s, user_agent)
             from ..engine.providers import _get
@@ -610,13 +610,17 @@ class WorkerService:
         if share is None:
             return error(E_ROLE_UNAVAILABLE,
                          "this node shares no corpus", attempt_id)
-        circle = None if local else self.circle_for(requester)
+        circle = None
         if not local:
-            if not circle:
+            if not self.circle_for(requester):
                 return error(E_ROLE_UNAVAILABLE,
                              "the corpus is shared only inside a trusted circle",
                              attempt_id)
-            if str(circle.get("circle_id") or "") not in share["circle_ids"]:
+            # The requester may share several circles with this node: match
+            # the one(s) the corpus is shared with, never just the first.
+            circle = self.circle_for(requester, list(share["circle_ids"]))
+            if not circle or str(circle.get("circle_id") or "") \
+                    not in share["circle_ids"]:
                 return error(E_ROLE_UNAVAILABLE,
                              "this corpus is not shared with the requester's circle",
                              attempt_id)

@@ -258,6 +258,11 @@ def test_search_role_runs_in_a_circle_and_records_on_behalf(nodes):
     assert on_behalf and on_behalf[0]["query"] == "mockingbird"
     assert on_behalf[0]["circle_name"] == CIRCLE_NAME
     assert on_behalf[0]["executor"] == "search"
+    # The worker's own ledger names the real destination (the engine host),
+    # not the requester: the requester is the on-behalf field.
+    assert all("wikipedia.org" in event["destino"] for event in on_behalf
+               if event.get("clase") != egress.LOCAL)
+    assert on_behalf[0]["on_behalf"] == owner.identity.node_id[:12]
     assert calls and "wikipedia.org" in calls[0]
 
     # Requester receipt: public query text, circle, member and executor kind;
@@ -416,8 +421,9 @@ def test_corpus_not_shared_with_the_requesters_circle_is_refused(nodes):
     state.config.update({"node_roles": {"corpus": {
         "project_id": project.id, "circle_ids": ["circle-b"],
         "display_name": "Field set"}}})
-    state.worker.circle_for = lambda node_id: {
-        "circle_id": "circle-a", "circle_name": "Other circle"}
+    state.worker.circle_for = lambda node_id, allowed=None: (
+        None if allowed is not None and "circle-a" not in allowed
+        else {"circle_id": "circle-a", "circle_name": "Other circle"})
     called = []
     state.worker.lce.retrieve = lambda *a, **k: called.append(1) or []
     message = role_packet("corpus", "piquero")
@@ -585,3 +591,20 @@ def test_corpus_passages_need_the_requester_passage_permission_for_a_model_servi
                                            passages=True)
     assert replica is not None and replica.text == "answer"
     assert backend.calls == 2
+
+
+def test_circle_for_matches_the_shared_circle_among_several(nodes, monkeypatch):
+    """A requester in two circles with this node reaches a corpus shared with
+    the second one; only valid manifests listing both nodes count."""
+    state, _ = nodes("corpus-two-circles", worker=True, models=["qwen2.5:3b"])
+    manifests = [{"circle_id": "circle-a", "name": "Alpha"},
+                 {"circle_id": "circle-b", "name": "Beta"}]
+    monkeypatch.setattr(state.circles, "mode", lambda: "circle")
+    monkeypatch.setattr(state.circles, "_local_candidates",
+                        lambda node_id, now=None: list(manifests))
+    assert state._circle_for("peer")["circle_id"] == "circle-a"
+    assert state._circle_for("peer", ["circle-b"])["circle_id"] == "circle-b"
+    assert state._circle_for("peer", ["circle-c"]) is None
+    monkeypatch.setattr(state.circles, "_local_candidates",
+                        lambda node_id, now=None: [])
+    assert state._circle_for("peer") is None

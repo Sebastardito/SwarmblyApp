@@ -503,25 +503,34 @@ class AppState:
             models = self.worker.shared_models() if self.worker is not None else []
         return self._node_roles(models, announce=announce, remote=remote)
 
-    def _circle_for(self, node_id: str) -> dict[str, Any] | None:
-        """The shared trusted circle that admits ``node_id``, if any.
+    def _circle_for(self, node_id: str,
+                    allowed: Any = None) -> dict[str, Any] | None:
+        """A valid shared trusted circle that admits ``node_id``, if any.
 
         Executors that send data to a third party (search) or read a shared
         collection (corpus) require a circle; the explicit *my own devices*
         mode is not enough. This is deliberately stricter than the 3.4 LAN
-        admission.
+        admission. Only valid, unexpired manifests that list both nodes count
+        (the same rule as admission). With ``allowed`` (circle ids), only one
+        of those circles is returned, so a requester who shares several
+        circles with this node is matched against the one the corpus is
+        shared with.
         """
         circles = getattr(self, "circles", None)
         if circles is None or circles.mode() != "circle":
             return None
         try:
-            payload = circles.list_payload()
+            candidates = circles._local_candidates(node_id)
         except Exception:
             return None
-        for circle in payload.get("circles") or []:
-            if node_id in {str(m.get("node_id")) for m in circle.get("members") or []}:
-                return {"circle_id": str(circle.get("circle_id") or ""),
-                        "circle_name": str(circle.get("name") or "")}
+        wanted = {str(c) for c in allowed} if allowed is not None else None
+        for manifest in sorted(candidates, key=lambda m: (
+                str(m.get("name") or "").casefold(), str(m.get("circle_id") or ""))):
+            circle_id = str(manifest.get("circle_id") or "")
+            if wanted is not None and circle_id not in wanted:
+                continue
+            return {"circle_id": circle_id,
+                    "circle_name": str(manifest.get("name") or "")}
         return None
 
     def _public_query(self, text: str, project_id: str = "") -> str:
