@@ -248,17 +248,29 @@ hop, not a new authorisation. The responder accepts a pair only from a node
 listed by a current, shared manifest (the prototype's explicit `pair_accept`
 is still required); it has no `pair_reject` frame, so a refusal closes the
 connection. A pin mismatch stops that relay and raises a security warning; a
-relay that is down never prevents a direct LAN peer from working. The
-prototype has **no admin API**: the owner "pushes" each new signed manifest
-version by writing it atomically to the relay's manifest spool
-(`circle.relay_publish_dir`, by default `<data>/circles/relay-publish`), which
-the relay reloads before every registration and pair. If the relay runs on
-another host the operator syncs that directory; there is no authenticated
-push frame to implement without changing the server. The relay's own limits
-(4 concurrent splices, 2 GiB per member per UTC day, 300 s idle, 30 s pair
-timeout) are enforced by the service and surfaced in the circle card. A send
-that used the relay carries the hop in its receipt: relay host/port and that
-it saw who, when and how many bytes, never content.
+relay that is down never prevents a direct LAN peer from working.
+
+**Owner push.** The operator installs the **first** signed manifest of a
+circle on the relay once (the bootstrap copy in the relay's `circles/`
+directory). After that the owner's App pushes every new signed version
+(approval, revocation, relay change, dissolve, renewal) over a registered
+connection with the relay's `manifest_update` frame, retrying with backoff
+while the relay is unreachable. Only the newest unacknowledged version is
+kept per target; a new version replaces an older pending one, and an ack
+clears it. The circle card shows the acknowledged version, the pending
+version and a refusal code with a one-line hint (`unknown_circle` means the
+operator must install the first manifest, `rate_limited` is the relay's
+30-per-hour owner cap, `stale_version` means the relay already has a newer
+version). On a relay change the same new version is pushed to the relay named
+in the **previous** manifest first and then to the new one, so the old relay
+stops admitting removed members. The signed file in
+`circle.relay_publish_dir` (default `<data>/circles/relay-publish`) remains
+the operator's bootstrap copy and the fallback; the network push is the
+primary path. The relay's own limits (4 concurrent splices, 2 GiB per member
+per UTC day, 300 s idle, 30 s pair timeout, 30 owner pushes per hour) are
+enforced by the service and surfaced in the circle card. A send that used the
+relay carries the hop in its receipt: relay host/port and that it saw who,
+when and how many bytes, never content.
 
 ## 5. Data directory
 
@@ -267,7 +279,7 @@ sources/  wiki/  adapters/  capsules/   LCE planes (local only)
 output/   exports/ reports/             logical default output location
 identity/ node_key (0600)               cache/tls/ node.crt, node.key (0600)
 circles/ manifests, invitations, joins  api_token (0600)   logs/   app.db (SQLite)
-circles/relay-publish/  signed manifests the owner pushes to its relay
+circles/relay-publish/  signed manifests: operator bootstrap copy and fallback
 credits/ wallet.json, issued.json (0600)  teams.json (0600)
 <project>/teams.json (0600)
 ```

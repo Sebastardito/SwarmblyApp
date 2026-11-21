@@ -10,12 +10,21 @@
   refused (`E_CIRCLE_RELAY_PIN`). The optional field is signed inside the
   manifest and inside new invitations, so older nodes ignore it and a
   tampered endpoint fails the signature.
-- **Owner pushes each version.** `circles.py` writes every new signed manifest
-  version (approval, revocation, relay change) atomically to
-  `circle.relay_publish_dir` (default `<data>/circles/relay-publish`). That is
-  exactly the prototype's operator path: it has no admin API and reloads a
-  signed file before every registration and pair. A relay on another host
-  needs the directory synced; no server change was made.
+- **Owner pushes each version over the network.** The App now sends the relay's
+  `manifest_update` frame (`relay_client.py`, copied from the umbrella
+  protocol) on a registered connection for every new owner-signed version:
+  approval, revocation, relay change, dissolve and renewal. Only the newest
+  unacknowledged version is queued per target, with backoff while the relay is
+  unreachable. A relay change pushes the same version to the relay named in
+  the **previous** manifest too, then to the new one. The circle card shows
+  the acknowledged version, pending version and refusal code with hints for
+  `unknown_circle` (operator must install the first manifest),
+  `rate_limited` (30 pushes per hour) and `stale_version`. The owner can sign
+  a fresh version with the same members and relay via
+  `POST /api/circles/{id}/renew` (or the circle card's **Renew manifest**);
+  it is pushed like every other version. The existing signed file in
+  `circle.relay_publish_dir` remains the operator's bootstrap copy and
+  fallback; it is no longer the only update path.
 - **App-side client** (`swarmbly_app/p2p/relay_client.py`, AGPL header). A
   deliberate copy of the prototype's protocol client and `MemoryBIO` inner
   TLS adapter: pinned outer TLS 1.3, signed single-use challenge, `pair` /
@@ -44,7 +53,11 @@
   an unpinned relay, owner publish on approval/revocation, wrong pin before
   any frame, a real umbrella relay end to end (no direct path, task done,
   ciphertext only), direct-first, revocation, non-members, pin-mismatch
-  warning and relay-down with working LAN peers.
+  warning and relay-down with working LAN peers. `tests/test_relay_push.py`
+  covers the network push with the real umbrella relay: approval acknowledged,
+  revocation cutting an open session and blocking re-entry, `unknown_circle`
+  before bootstrap, relay down/up delivering only the newest version, a relay
+  change reaching old and new relays, and a non-owner never pushing.
 
 **Reciprocity credits, WP6 (D-020/D-021).**
 

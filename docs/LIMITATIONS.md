@@ -174,21 +174,26 @@ Limitations are documented, never hidden. *[Español](#español) below.*
     circle's relay (or a direct address/overlay the circle runs). UDP/QUIC hole
     punching is a stretch goal moved to 3.6 if not ready; the relay remains the
     fallback and the correctness baseline.
-35. **The relay's operator path is a file, not a push API.** The prototype has
-    no authenticated admin frame. The owner writes each signed manifest version
-    to `circle.relay_publish_dir`; the relay reloads changed files before every
-    registration and pair, so revocation reaches it at the next attempt. If the
-    relay runs on another host, the operator must sync that directory
-    (rsync/scp); there is no built-in remote push and the server was not
-    changed. One connection is kept per (circle, relay), not literally per
-    relay, because the prototype binds a registration to one `circle_id`; the
-    number is bounded by `circle.relay_max_connections`.
+35. **The first relay manifest is a manual bootstrap.** The operator must
+    install the first signed manifest of each circle in the relay's `circles/`
+    directory once; until then the owner's push gets `unknown_circle` and the
+    circle card says so. After that the App pushes each new version over a
+    registered connection; the signed file in `circle.relay_publish_dir` is
+    only the bootstrap copy and the fallback. If the relay is unreachable the
+    App retries with backoff and keeps the newest unacknowledged version in
+    memory; an App restart loses that in-memory queue, so the operator can
+    still copy the file. A relay change also pushes the same version to the
+    old endpoint. One connection is kept per (circle, relay), not literally
+    per relay, because the prototype binds a registration to one `circle_id`;
+    the number is bounded by `circle.relay_max_connections`.
 36. **Relay limits are the service's.** 4 concurrent splices per member,
     2 GiB per member per UTC day, 300 s idle and 30 s pair timeout are enforced
     by the prototype relay, not duplicated in the App; the App surfaces the
-    refusal (`limit_splices`, `limit_bytes`, …) and backs off. A relay restart
-    resets its byte counters (a budget, not accounting), and a member can spend
-    the relay's bandwidth up to those limits.
+    refusal (`limit_splices`, `limit_bytes`, …) and backs off. Owner pushes
+    are capped at **30 per hour per owner**; the App keeps the newest version
+    queued and shows `rate_limited` until the relay accepts it. A relay
+    restart resets its byte counters (a budget, not accounting), and a member
+    can spend the relay's bandwidth up to those limits.
 
 ### Protocol appendix: credit control messages (D-020/D-021)
 

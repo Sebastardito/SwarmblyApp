@@ -260,9 +260,20 @@ the owner revokes it.
 **Relay (members on different networks).** If the circle's owner runs a relay,
 set it in the circle card (**Set relay…**): `host:port` and the relay
 certificate's **SHA-256 pin**. The pin is mandatory; a relay without it is
-refused. The relay and pin travel in the signed manifest and in invitations,
-and the owner publishes every new signed manifest version to it, so a
-revocation reaches the relay before the next pairing. Members keep one
+refused. The relay and pin travel in the signed manifest and in invitations.
+The operator installs the **first** signed manifest of the circle on the relay
+once; after that the owner's App pushes every new signed version over a
+registered connection (with backoff while the relay is unreachable), so a
+revocation reaches the relay before the next pairing. The circle card shows
+the acknowledged version, the pending version and a refusal code:
+`unknown_circle` means the operator must install the first manifest,
+`rate_limited` is the relay's 30-push-per-hour cap, and `stale_version` means
+the relay already has a newer version. The signed file the App writes under
+`circle.relay_publish_dir` is the bootstrap copy and the fallback, not the
+normal update path. **Renew manifest** signs a fresh version with the same
+members and relay; it is pushed like any other version. On a relay change the
+same new version is also pushed to the old relay, so it stops admitting
+removed members. Members keep one
 outbound connection to the relay; direct addresses (LAN discovery, manual
 address, manifest hints) are always tried first, and only then the relay. A
 relayed peer gets the **same** circle admission, worker policy and egress gate
@@ -471,9 +482,21 @@ robada puede suplantar a un miembro hasta que el dueño lo revoque.
 relay, configúralo en la tarjeta del círculo (**Configurar relay…**):
 `host:puerto` y el **pin SHA-256** del certificado del relay. El pin es
 obligatorio; un relay sin él se rechaza. El relay y el pin viajan en el
-manifiesto firmado y en las invitaciones, y el dueño publica en él cada nueva
-versión firmada, así la revocación llega antes del siguiente emparejamiento.
-Cada miembro mantiene una conexión saliente al relay; las direcciones directas
+manifiesto firmado y en las invitaciones. El operador instala **una vez** el
+primer manifiesto firmado del círculo en el relay; después la App del dueño
+envía por red cada nueva versión firmada por una conexión registrada (con
+backoff si el relay está caído), así la revocación llega antes del siguiente
+emparejamiento. La tarjeta del círculo muestra la versión confirmada, la
+pendiente y el código de rechazo: `unknown_circle` significa que el operador
+debe instalar el primer manifiesto, `rate_limited` es el límite del relay de
+30 envíos por hora, y `stale_version` significa que el relay ya tiene una
+versión más nueva. El archivo firmado que la App escribe en
+`circle.relay_publish_dir` es la copia de arranque y el respaldo, no el camino
+normal de actualización. **Renovar manifiesto** firma una versión nueva con los
+mismos miembros y relay; se envía como cualquier otra versión. Si cambia el
+relay, la misma versión se envía también al relay anterior para que deje de
+admitir a los miembros retirados. Cada miembro mantiene una conexión saliente
+al relay; las direcciones directas
 (descubrimiento LAN, dirección manual, pistas del manifiesto) se prueban
 primero y solo después el relay. Un par por relay pasa por la **misma**
 admisión de círculo, política de worker y puerta de salida que uno directo; los

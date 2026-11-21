@@ -114,30 +114,48 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
 # SHA-256 of the DER certificate: this is the pin for the circle settings.
 openssl x509 -in relay.pem -outform DER | shasum -a 256
 
-# Serve the directory the owner's App publishes into (read-only in production).
+# Serve the operator's bootstrap directory; an accepted owner push is
+# persisted here as the current signed manifest.
 python -m relay.server --manifest /srv/swarmbly-relay/circles \
   --cert relay.pem --key relay-key.pem --host 0.0.0.0 --port 8765
 ```
 
 Open **TCP 8765** in the firewall (or 443 with TCP passthrough; a reverse proxy
-that terminates TLS breaks pinning). The directory must be writable by the
-owner's App, or synced from it.
+that terminates TLS breaks pinning). The relay user must be able to write the
+directory: accepted owner pushes replace the circle's file there.
 
 **On the owner's App:**
 
-1. **Swarm → Trusted circles → Set relay…**: host, port and the 64-hex pin.
-   The pin is mandatory; the App refuses an address without it.
-2. Point the publish spool at the relay's directory, or sync it. The App writes
-   every new signed manifest version there atomically; the relay reloads it
-   before each registration and pair, which is how a revocation reaches it.
+1. **Bootstrap once, before setting the relay.** Create the circle; the App
+   writes its first signed manifest to
+   `<data>/circles/relay-publish/<circle_id>.json`. Copy that file to the
+   relay's `circles/` directory once:
    ```bash
-   swarmbly-app config set circle.relay_publish_dir /srv/swarmbly-relay/circles
-   # if the relay is on another host:
-   rsync -a "<data>/circles/relay-publish/" relay-host:/srv/swarmbly-relay/circles/
+   scp "<data>/circles/relay-publish/<circle_id>.json" \
+     relay-host:/srv/swarmbly-relay/circles/
    ```
-3. Both nodes receive the new manifest on the control plane and show
-   **registered** next to the relay in the circle card. A revoked member is
-   refused by the relay at the next registration or pair.
+   The first relay manifest must come from the operator directory; a push for
+   a circle the relay does not serve yet gets `unknown_circle`, and the circle
+   card says so with the hint that the operator must install it.
+2. **Swarm → Trusted circles → Set relay…**: host, port and the 64-hex pin.
+   The pin is mandatory; the App refuses an address without it. This signs the
+   next version, which the App now pushes over the network.
+3. After the bootstrap, the owner's App **pushes every new signed version
+   over a registered connection**. It retries with backoff while the relay is
+   unreachable and keeps only the newest unacknowledged version queued.
+   The file in `circle.relay_publish_dir` stays as the bootstrap copy and the
+   fallback; no periodic `rsync` is needed in normal operation. If the push
+   cannot run at all, the App still writes the file and the operator can copy
+   it.
+4. Both nodes receive the new manifest on the control plane and show
+   **registered** next to the relay in the circle card. The card also shows
+   the pushed/acknowledged version, any pending version and a refusal code:
+   `unknown_circle` (install the first manifest), `rate_limited` (the relay's
+   30 pushes per hour), `stale_version` (the relay already has a newer
+   version). A revoked member is refused and its open relay session is cut.
+5. On a relay change the App pushes the same new version to the **old** relay
+   too, then to the new one, so the old endpoint stops admitting members the
+   new version removed.
 
 **Test:** on the member on the *other* network, Chat mode **Swarm LAN**, send
 the five-item request above. Expected: `executed: distributed`, the peer's
@@ -183,14 +201,22 @@ la API usando el token del directorio de datos.
 el relay del prototipo (checkout umbrella) en un host con **TCP 8765** abierto,
 con un certificado autofirmado; calcula el pin SHA-256 del DER y lo pone en
 **Swarm → Círculos de confianza → Configurar relay…** (el pin es obligatorio).
-Apunta `circle.relay_publish_dir` al directorio de manifiestos del relay, o
-sincronízalo con `rsync` si el relay está en otra máquina: la App escribe ahí
-cada versión firmada y el relay la recarga antes de cada registro y
-emparejamiento, así la revocación llega. Ambos nodos muestran **registrado**;
-el miembro de la otra red envía la solicitud de cinco ítems en modo Swarm LAN.
-Esperado: `executed: distributed`, la columna **Enlace** dice *por relay* y el
-recibo incluye `saltos_relay` con el host y que solo vio metadatos (quién,
-cuándo, bytes), nunca el contenido. Las direcciones directas se prueban
-primero; si el relay cae, los pares de la LAN siguen funcionando. Un aviso de
-seguridad significa que el certificado no coincide con el pin: verifica la
-huella en el host del relay antes de publicar una versión nueva.
+El operador instala **una vez** el primer manifiesto firmado del círculo en el
+directorio `circles/` del relay (la App lo deja en
+`<data>/circles/relay-publish/<circle_id>.json`; cópialo a mano). Sin ese
+arranque el relay responde `unknown_circle` y la tarjeta del círculo lo indica.
+Después la App del dueño **envía por red cada versión firmada** por una conexión
+registrada, reintenta con backoff si el relay está caído y solo conserva la
+versión más nueva sin confirmar; el archivo queda como copia de arranque y
+respaldo. La tarjeta muestra la versión confirmada, la pendiente y el código de
+rechazo (`unknown_circle`, `rate_limited` —30 envíos por hora—,
+`stale_version`). Si cambia el relay, la misma versión se envía también al
+relay anterior para que deje de admitir a los miembros retirados. Ambos nodos
+muestran **registrado**; el miembro de la otra red envía la solicitud de cinco
+ítems en modo Swarm LAN. Esperado: `executed: distributed`, la columna
+**Enlace** dice *por relay* y el recibo incluye `saltos_relay` con el host y
+que solo vio metadatos (quién, cuándo, bytes), nunca el contenido. Las
+direcciones directas se prueban primero; si el relay cae, los pares de la LAN
+siguen funcionando. Un aviso de seguridad significa que el certificado no
+coincide con el pin: verifica la huella en el host del relay antes de publicar
+una versión nueva.
