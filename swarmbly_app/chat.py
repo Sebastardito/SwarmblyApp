@@ -1265,7 +1265,8 @@ class ChatService:
                 # itself keeps its normal cap.
                 blocks.append(_fit_skill_block(
                     skill_block, sum(len(block) for block in blocks), lang_now))
-            if lang_now == "es" and not _ASKS_ENGLISH.search(user_text):
+            if (lang_now == "es" and (blocks or late_blocks or skill_block)
+                    and not _ASKS_ENGLISH.search(user_text)):
                 # T10.17: the conversation's language travels with every
                 # recipe; the model gets one explicit rule, not just the
                 # language of the sources block.
