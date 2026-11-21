@@ -2972,6 +2972,11 @@ class ChatService:
                         "passages": att.get("passages") or 0,
                         # 3.5, D-018: the node role this packet requested.
                         "role": att.get("role") or "",
+                        # 3.5, WP3 / D-016: direct or through the circle
+                        # relay, with the metadata the relay saw.
+                        "transport": att.get("transport") or "direct",
+                        **({"relay": dict(att["relay"])}
+                           if att.get("relay") else {}),
                         **({"role_fallback": True}
                            if att.get("role_fallback") else {})}
                     if executor == "search" and att.get("query"):

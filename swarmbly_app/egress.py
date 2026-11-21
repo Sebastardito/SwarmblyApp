@@ -392,6 +392,19 @@ def record_public_query(url: str, provider: str, via: str = "") -> None:
 # Receipt
 # ---------------------------------------------------------------------------
 
+def _relay_hops(sends: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Distinct relay transport hops named by this receipt's sends."""
+    seen: dict[tuple[str, int], dict[str, Any]] = {}
+    for entry in sends:
+        relay = entry.get("relay")
+        if not isinstance(relay, dict) or not relay.get("host"):
+            continue
+        key = (str(relay.get("host")), int(relay.get("port") or 0))
+        seen[key] = {"host": key[0], "port": key[1], "metadata_only": True,
+                     "saw": ["who", "when", "bytes"], "content": False}
+    return [seen[key] for key in sorted(seen)]
+
+
 def _name_parts(name: str) -> list[str]:
     return [w.lower() for w in name.replace(",", " ").split() if len(w) >= 3]
 
@@ -450,6 +463,18 @@ def build_receipt(ledger: Ledger | None, *, lane: str, route: str, answer: str,
         for key in ("circle_id", "circle_name", "member_name", "role", "executor"):
             if ev.get(key):
                 entry[key] = str(ev[key])
+        # 3.5, WP3 / D-016: the transport hop is part of the receipt. The
+        # relay saw who, when and how many bytes; never content.
+        if ev.get("transport"):
+            entry["transport"] = str(ev["transport"])
+        if isinstance(ev.get("relay"), dict):
+            entry["relay"] = {
+                "host": str(ev["relay"].get("host") or ""),
+                "port": int(ev["relay"].get("port") or 0),
+                "metadata_only": True,
+                "saw": ["who", "when", "bytes"],
+                "content": False,
+            }
         for key in ("role_fallback", "on_behalf", "engine_unverified"):
             if ev.get(key):
                 # D-018/WP4b: a generic fallback for a role, or a public search
@@ -516,6 +541,7 @@ def build_receipt(ledger: Ledger | None, *, lane: str, route: str, answer: str,
             1 for s in sends if s["tipo"] == "nombre_personal" or s.get("personal_name")),
         "bytes_salientes": sum(s["bytes"] for s in sends),
         "fragmentos_creados": int(fragments),
+        "saltos_relay": _relay_hops(sends),
         "respuesta_sintetica": answer,
         "hash_respuesta_sha256": hashlib.sha256(answer.encode("utf-8")).hexdigest(),
         "origen": "registrado por la app en el punto de envío",

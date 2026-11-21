@@ -270,6 +270,12 @@ class Attempt:
     executor: str = ""
     query: str = ""
     carries_passages: bool = False
+    # 3.5, WP3 / D-016: the transport hop of the send. ``direct`` is the
+    # normal path; ``relayed`` names the circle relay that forwarded
+    # ciphertext and saw metadata only.
+    transport: str = "direct"
+    relay_host: str = ""
+    relay_port: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         out = self._base()
@@ -291,7 +297,14 @@ class Attempt:
                 **({"role_fallback": True} if self.role_fallback else {}),
                 **({"executor": self.executor} if self.executor else {}),
                 **({"query": self.query} if self.query else {}),
-                **({"carries_passages": True} if self.carries_passages else {})}
+                **({"carries_passages": True} if self.carries_passages else {}),
+                "transport": self.transport,
+                **({"relay": {"host": self.relay_host,
+                              "port": self.relay_port,
+                              "metadata_only": True,
+                              "saw": ["who", "when", "bytes"],
+                              "content": False}}
+                   if self.transport == "relayed" and self.relay_host else {})}
 
 
 @dataclass
@@ -797,6 +810,19 @@ class Scheduler:
             self._slots[node_id] = asyncio.Semaphore(max(1, cap))
         return self._slots[node_id]
 
+    def _record_transport(self, attempt: Attempt) -> None:
+        try:
+            hop = self.nodes.transport_hop(attempt.node_id)
+        except Exception:
+            hop = {"transport": "direct"}
+        attempt.transport = str(hop.get("transport") or "direct")
+        relay = hop.get("relay") or {}
+        attempt.relay_host = str(relay.get("host") or "")
+        try:
+            attempt.relay_port = int(relay.get("port") or 0)
+        except (TypeError, ValueError):
+            attempt.relay_port = 0
+
     async def _dispatch_one(self, node_id: str, message: dict[str, Any],
                             attempt: Attempt) -> Replica | None:
         started = time.monotonic()
@@ -818,6 +844,7 @@ class Scheduler:
             attempt.circle_id = str(destination.get("circle_id") or "")
             attempt.circle_name = str(destination.get("circle_name") or "")
             attempt.member_name = str(destination.get("member_name") or "")
+            self._record_transport(attempt)
             try:
                 if offer_credit:
                     result = await self.nodes.dispatch_async(
@@ -825,10 +852,12 @@ class Scheduler:
                 else:
                     result = await self.nodes.dispatch_async(node_id, message,
                                                              self.timeout_s)
+                self._record_transport(attempt)
             except asyncio.CancelledError:
                 self._busy_until[node_id] = time.monotonic() + CANCEL_GRACE_S
                 raise
             except Exception as exc:
+                self._record_transport(attempt)
                 attempt.status = "failed"
                 attempt.code = getattr(exc, "code", "") or "E_TRANSPORT"
                 attempt.note = str(getattr(exc, "detail", "") or exc)[:160]
