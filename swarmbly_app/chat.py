@@ -2380,6 +2380,12 @@ class ChatService:
         lines: list[str] = []
         if trapped:
             lines.append(f"**{'El script no terminó' if es else 'The script did not finish'}** — {reason}")
+            if int(proposal.get("corrections") or 0) < int(cfg["max_corrections"] or 0):
+                lines.append(
+                    "Puedes pedir un script corregido con el botón «Corregir script»; "
+                    "no se ejecuta nada hasta que lo apruebes." if es else
+                    "You can ask for a corrected script with the «Correct script» "
+                    "button; nothing runs until you approve it.")
         else:
             lines.append(f"**{'Calculado por el script' if es else 'Computed by the script'}** "
                          f"({'no por el modelo' if es else 'not by the model'}).")

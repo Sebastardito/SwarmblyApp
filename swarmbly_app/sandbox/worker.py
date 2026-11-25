@@ -341,8 +341,20 @@ def _run_guest(script: str, data_dir: Path, out_dir: Path, limits: Any,
     done = None
     guest_error: str | None = None
     try:
+        # Recipe 5 scripts commonly open the input by bare file name
+        # (``pd.read_csv("hive.csv")``).  The guest starts at "/", where a
+        # relative read cannot resolve, so the script runs with its working
+        # directory at the read-only /data.  A relative write then lands in
+        # /data and is refused by the read-only grant; /out stays the only
+        # writable place.  The approved script text is not modified: it is
+        # compiled under its own name after the chdir.
+        wrapped = (
+            "import os\n"
+            "os.chdir('/data')\n"
+            "exec(compile(" + repr(script) + ", '<script>', 'exec'), "
+            "{'__name__': '__main__', '__file__': '<script>'})\n")
         done = wasi.run(
-            ["-c", script],
+            ["-c", wrapped],
             root=False,
             grants=[Grant(data_dir, "/data"),
                     Grant(out_dir, "/out", writable=True)],

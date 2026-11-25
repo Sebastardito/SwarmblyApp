@@ -735,6 +735,43 @@ def test_09_functional_pandas_and_openpyxl(runner: SandboxRunner,
     assert len(files["result.csv"]["sha256"]) == 64
 
 
+def test_relative_reads_resolve_in_data_and_relative_writes_are_refused(
+        runner: SandboxRunner, tmp_path: Path) -> None:
+    """Recipe 5 writes bare names (`pd.read_csv("hive.csv")`): the guest's
+    working directory is the read-only /data, so a relative read resolves and
+    a relative write is refused (only /out is writable)."""
+    source = tmp_path / "hive.csv"
+    source.write_text("hive,apiary,weight\nh1,a1,10\nh2,a2,20\n",
+                      encoding="utf-8")
+    script = textwrap.dedent(
+        """
+        import os
+        import pandas as pd
+
+        print("CWD=" + os.getcwd())
+        df = pd.read_csv("hive.csv")
+        print("ROWS=" + str(len(df)))
+        print("HEAD=" + open("./hive.csv", encoding="utf-8").readline().strip())
+        try:
+            open("escape.txt", "w", encoding="utf-8").write("no")
+        except OSError:
+            print("RELATIVE_WRITE_REFUSED")
+        else:
+            print("RELATIVE_WRITE_SUCCEEDED")
+        with open("/out/ok.txt", "w", encoding="utf-8") as handle:
+            handle.write("ok")
+        """
+    )
+    result = runner.run(script, [source], Limits(deadline_s=60), "pytest")
+    assert result.ok, result.stderr
+    assert "CWD=/data" in result.stdout
+    assert "ROWS=2" in result.stdout
+    assert "HEAD=hive,apiary,weight" in result.stdout
+    assert "RELATIVE_WRITE_REFUSED" in result.stdout
+    assert "RELATIVE_WRITE_SUCCEEDED" not in result.stdout
+    assert [item["name"] for item in result.files] == ["ok.txt"]
+
+
 def test_09b_shared_cache_has_no_user_data(sandbox_root: Path,
                                            runner: SandboxRunner,
                                            tmp_path: Path) -> None:

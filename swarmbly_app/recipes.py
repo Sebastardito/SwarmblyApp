@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -819,28 +820,58 @@ def _clean_rows(rows: list[list[Any]], max_rows: int) -> tuple[list[str], list[l
 
 
 def sample_csv(path: Path | str, max_rows: int = 5) -> dict[str, Any] | None:
-    """Header + first ``max_rows`` data rows of a CSV file (never more)."""
+    """Header + first ``max_rows`` data rows of a CSV/TSV file (never more).
+
+    The sample also carries the first lines exactly as the file has them, and
+    the delimiter, encoding and header-row facts in words.  A prompt that
+    showed cells joined with ``" | "`` made a model read a comma-separated
+    file with ``sep='|'`` (6 of 12 proposals); the raw line cannot be mistaken
+    for another delimiter.
+    """
     path = Path(path)
+    suffix = path.suffix.lower()
     try:
-        with open(path, "r", encoding="utf-8", errors="replace", newline="") as handle:
-            sample = handle.read(8192)
-            try:
-                delimiter = csv.Sniffer().sniff(sample, delimiters=",;\t").delimiter
-            except csv.Error:
-                delimiter = ","
-            handle.seek(0)
-            rows: list[list[str]] = []
-            for row in csv.reader(handle, delimiter=delimiter):
-                rows.append(row)
-                if len(rows) >= max_rows + 1:
-                    break
+        raw = path.read_bytes()[:262_144]
     except OSError as exc:
         raise CodeRecipeError(f"cannot read {path.name}: {exc}") from exc
+    encoding = "utf-8"
+    if raw.startswith(b"\xef\xbb\xbf"):
+        encoding = "utf-8-sig"
+    try:
+        text = raw.decode(encoding)
+    except UnicodeDecodeError:
+        encoding = "latin-1"
+        text = raw.decode(encoding)
+    text = text.lstrip("\ufeff")
+    sample = text[:8192]
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters=",;\t")
+        delimiter = dialect.delimiter
+    except csv.Error:
+        delimiter = "\t" if suffix == ".tsv" else ","
+    try:
+        has_header = bool(csv.Sniffer().has_header(sample))
+    except csv.Error:
+        has_header = True
+    try:
+        rows: list[list[str]] = []
+        for row in csv.reader(io.StringIO(text), delimiter=delimiter):
+            rows.append(row)
+            if len(rows) >= max_rows + 1:
+                break
+    except csv.Error as exc:
+        raise CodeRecipeError(f"invalid CSV: {exc}") from exc
     cleaned = _clean_rows(rows, max_rows)
     if cleaned is None:
         return None
     headers, data = cleaned
-    return {"name": path.name, "sheet": "", "headers": headers, "rows": data}
+    raw_lines = [line[:1000] for line in text.splitlines()[:max_rows + 1]]
+    names = {",": "comma", ";": "semicolon", "\t": "tab"}
+    return {"name": path.name, "sheet": "", "headers": headers, "rows": data,
+            "kind": "csv", "format": "TSV" if suffix == ".tsv" else "CSV",
+            "delimiter": delimiter, "delimiter_name": names.get(delimiter, "other"),
+            "encoding": encoding, "has_header": has_header,
+            "raw_lines": raw_lines}
 
 
 def sample_text(path: Path | str, max_lines: int = CODE_SAMPLE_LINES,
@@ -1026,6 +1057,24 @@ def sample_document(path: Path | str, max_rows: int = 5,
     return tables
 
 
+def _code_read_example(name: str, table: dict[str, Any] | None) -> str:
+    """One concrete read line with the exact /data path of a provided file."""
+    path = json.dumps(f"/data/{name}", ensure_ascii=False)
+    table = table or {}
+    if table.get("kind") == "text":
+        return f"open({path}, encoding=\"utf-8\").read()"
+    if table.get("kind") == "csv":
+        delimiter = str(table.get("delimiter") or ",")
+        if delimiter == ",":
+            return f"pd.read_csv({path})"
+        shown = "\t" if delimiter == "\t" else delimiter
+        return f"pd.read_csv({path}, sep={json.dumps(shown)})"
+    sheet = str(table.get("sheet") or "")
+    if sheet:
+        return f"pd.read_excel({path}, sheet_name={json.dumps(sheet, ensure_ascii=False)})"
+    return f"open({path}, \"rb\").read()"
+
+
 def build_code_prompt(question: str, files: list[dict[str, Any]],
                       samples: list[dict[str, Any]],
                       correction: dict[str, Any] | None = None,
@@ -1068,19 +1117,39 @@ def build_code_prompt(question: str, files: list[dict[str, Any]],
     for item in files:
         name = str(item.get("name") or "")
         size = item.get("size_bytes")
+        tables = by_name.get(name, [])
         parts.append(f"- FILE: {name}" + (f" ({size} bytes)" if size is not None else ""))
-        for table in by_name.get(name, []):
+        parts.append(f"  Exact path in the sandbox: /data/{name}")
+        parts.append(f"  Read it with: {_code_read_example(name, tables[0] if tables else None)}")
+        for table in tables:
             if table.get("kind") == "text":
                 parts.append("  TEXT: first lines (the rest of the file is NOT shown)")
+                parts.append(f"  Encoding: {table.get('encoding') or 'utf-8'}")
                 for n, line in enumerate(table.get("lines") or [], 1):
                     parts.append(f"  LINE {n}: {line}")
                 continue
+            if table.get("kind") == "csv":
+                fmt = str(table.get("format") or "CSV")
+                delimiter = str(table.get("delimiter") or ",")
+                shown = "\\t" if delimiter == "\t" else delimiter
+                dname = str(table.get("delimiter_name") or
+                            {"\t": "tab", ",": "comma", ";": "semicolon"}.get(
+                                delimiter, "other"))
+                parts.append(f"  {fmt}: {dname}-separated values "
+                             f"(delimiter: {dname} \"{shown}\"); "
+                             f"encoding: {table.get('encoding') or 'utf-8'}; "
+                             f"header row: {'yes (line 1 has the column names)' if table.get('has_header', True) else 'no (line 1 is data)'}")
+                parts.append("  First lines exactly as in the file:")
+                for line in table.get("raw_lines") or []:
+                    parts.append(f"    {line}")
+                continue
             label = table.get("sheet") or "table"
             parts.append(f"  TABLE: {label}")
-            parts.append("  Columns: " + " | ".join(table.get("headers") or []))
+            parts.append("  Header row: " + json.dumps(
+                table.get("headers") or [], ensure_ascii=False))
             for n, row in enumerate(table.get("rows") or [], 1):
-                parts.append(f"  ROW {n}: " + " | ".join(row))
-        if not by_name.get(name):
+                parts.append(f"  ROW {n}: " + json.dumps(row, ensure_ascii=False))
+        if not tables:
             parts.append("  (no Markdown/CSV table was found; only the file name is shown)")
     if correction:
         parts += ["", f"{previous}: trapped={correction.get('trapped') or 'error'}.",
