@@ -1132,7 +1132,8 @@ class ChatService:
                     except Exception:
                         pairs_now = []
                 request.receipt_ctx["web_offer"] = web_search.propose_query_details(
-                    user_text, expansion.keywords if expansion else "", pairs_now)
+                    user_text, expansion.keywords if expansion else "", pairs_now,
+                    passages=[str(s.get("text") or "") for s in sources])
             proposals = None
             if capture and not request.memory_saved:
                 exp_model2 = ((cfg.get("lce") or {}).get("expansion_model")
@@ -1256,7 +1257,8 @@ class ChatService:
                     if web_found is None and request.receipt_ctx.get("web_offer") is None:
                         # "the sources do not say" comes with a way to look further
                         request.receipt_ctx["web_offer"] = web_search.propose_query_details(
-                            user_text, expansion.keywords if expansion else "")
+                            user_text, expansion.keywords if expansion else "",
+                            passages=[str(s.get("text") or "") for s in sources])
                 blocks.insert(0, block)
             if request.memory_saved and not request.memory_saved.get("error"):
                 blocks.append(_MEMORY_DONE.get(_lang(user_text), _MEMORY_DONE["en"]).format(

@@ -1122,7 +1122,18 @@ def create_app(state: AppState, guard: ApiGuard | None = None) -> FastAPI:
         # this response: the endpoint is a local proposal.
         extra = body.get("private") if isinstance(body.get("private"), list) else []
         private = [str(term)[:200] for term in extra if str(term).strip()][:50]
-        detail = propose_query_details(text, glossary, private=private)
+        passages: list[str] = []
+        if body.get("project_id"):
+            project = state.projects.get(str(body.get("project_id")))
+            if project is not None:
+                # A name the project's own documents call private is private
+                # even when the caller did not list it; these texts stay local.
+                try:
+                    passages = state.lce.passages_for_roots(roots=project.roots())
+                except Exception:
+                    passages = []
+        detail = propose_query_details(text, glossary, private=private,
+                                       passages=passages)
         detail["message"] = ("no public query remains after removing private terms"
                              if detail.get("empty") else "")
         return detail

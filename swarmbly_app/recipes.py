@@ -669,7 +669,8 @@ _NAME = re.compile(r"(?<=[^\W\d_])[\s,;:(«\"']+([A-ZÁÉÍÓÚÑ][\wáéíóú�
 
 
 def propose_query_details(text: str, glossary: list[tuple[str, str]] | None = None,
-                          private: list[str] | None = None) -> dict[str, Any]:
+                          private: list[str] | None = None,
+                          passages: list[str] | None = None) -> dict[str, Any]:
     """The query offered to the user before a research answer, with the private
     terms the guard removed.  Nothing is sent until the user approves the query
     (and may edit it).  The template's own words ("Compara … con lo que dicen
@@ -677,19 +678,35 @@ def propose_query_details(text: str, glossary: list[tuple[str, str]] | None = No
     "sobre", and the names the request gives ("la variedad Kanela")."""
     from .web_search import (is_distinctive, propose_query_details as propose,
                              public_glossary_terms, removed_private_terms,
-                             strip_private_details)
+                             strip_private_details, _public_targets)
     public = public_glossary_terms(glossary or [], text or "")
+    # The entity the request asks a public source about is public even when it
+    # is not in the glossary: it is kept by the merge below, not removed as an
+    # unknown capitalised run.  It is not added to ``public`` (the glossary
+    # equivalents), so a place cue in the same sentence still wins.
+    targets = [" ".join(target) for target in _public_targets(text or "", public)]
     m = _TOPIC.search(text or "")
     if m:
         # only the topic the user wrote for the public sources: the rest of
         # the request is about their documents ("el rendimiento del lote AB2"), and a
         # lot code or a name from it does not belong in a public query
-        detail = propose(m.group(1), "", glossary or [], private=private)
+        detail = propose(m.group(1), "", glossary or [], private=private,
+                         passages=passages)
     else:
-        detail = propose(text or "", "", glossary or [], private=private)
+        detail = propose(text or "", "", glossary or [], private=private,
+                         passages=passages)
         words = {w.lower() for w in detail["query"].split()}
+        target_words = {w.casefold() for name in targets for w in name.split()}
         names = [n for n in _NAME.findall(text or "")
-                 if n.lower() not in words and is_distinctive(n)]
+                 if n.lower() not in words and is_distinctive(n)
+                 and n.casefold() not in target_words]
+        # A target already in the query is not appended again; a target the
+        # translation dropped (the glossary definition replaced it) is added
+        # once, as the whole name.
+        missing_targets = [name for name in targets
+                           if not all(word.casefold() in words
+                                      for word in name.split())]
+        names = list(dict.fromkeys(missing_targets + names))
         # the names go through the same filter as the rest: a plot ("la Parcela
         # Sur"), a person ("la Dra. Ana Pérez") or a code is the user's, not a
         # topic (sealed bank v3.2: a plot name was proposed and, approved, sent)
@@ -720,10 +737,12 @@ def propose_query_details(text: str, glossary: list[tuple[str, str]] | None = No
 
 
 def propose_query(text: str, glossary: list[tuple[str, str]] | None = None,
-                  private: list[str] | None = None) -> str:
+                  private: list[str] | None = None,
+                  passages: list[str] | None = None) -> str:
     """The query offered to the user before a research answer (see
     :func:`propose_query_details`)."""
-    return propose_query_details(text, glossary, private)["query"]
+    return propose_query_details(text, glossary, private,
+                                 passages=passages)["query"]
 
 
 # ---------------------------------------------------------------------------
