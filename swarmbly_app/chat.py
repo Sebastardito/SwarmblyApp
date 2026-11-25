@@ -3141,14 +3141,16 @@ class ChatService:
         answer_status = status or str(metadata.get("status") or "complete")
         if answer_status == "failed":
             # Nothing usable completed: an honest failure, not a partial answer.
+            # The user reads the localised note that names every missing step,
+            # not the first raw English backend error.
             missing = list(metadata.get("missing_steps") or [])
-            detail = ""
-            for step in missing:
-                detail = str(step.get("detail") or step.get("reason") or "").strip()
-                if detail:
-                    break
-            reason = (" ".join(detail.split())[:240]
-                      or "no step could be completed")
+            reason = str(metadata.get("partial_note") or "").strip()
+            if not reason and missing:
+                from .engine.orchestrator import _missing_note
+                reason = _missing_note(request.lang or "en", missing)
+            if not reason:
+                reason = ("no step could be completed" if request.lang != "es"
+                          else "no se pudo completar ningún paso")
             return self._fail(request, reason, stages=stages, swarm=metadata)
         truncated = metadata.get("truncated_tasks") or []
         note = (f"output reached its token budget in {len(truncated)} task(s); the "
@@ -3341,6 +3343,12 @@ class ChatService:
                 consent=consent, passages=ctx.get("passages") or [],
                 fragments=fragments, extra_sends=extra_sends, model_destination=dest,
                 ignore_ledger_fragments=bool(distributed))
+            if distributed and distributed.get("role_fallbacks"):
+                # D-018: a step that ran on a generic worker or on this
+                # device's model is in the receipt too, with where it ran.
+                meta["receipt"]["role_fallbacks"] = [
+                    dict(item) for item in distributed["role_fallbacks"]
+                    if isinstance(item, dict)]
             if ctx.get("skill"):
                 # 3.4: which skill's body the model saw, by name and content hash
                 meta["receipt"]["skill"] = dict(ctx["skill"])
