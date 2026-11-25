@@ -1,5 +1,57 @@
 # Changelog
 
+## Unreleased — 0.8.1
+
+**Privacy of proposed public queries.**
+
+- **A private name is private in every form.** A capitalised word at the start
+  of a sentence ("Tiburcia anilló…") is treated as a probable private name
+  when it is not a common sentence starter, even when the full name appears
+  only in a project document that calls it private or in no loaded document.
+  The whole name or any distinctive word, at any position and in any case, is
+  removed and reported in the proposal's removed terms.
+- **The public entity survives.** A name the question asks a public source
+  about ("compara Marisma Alta con su registro público", "el dato público de
+  Marisma Alta") is kept, with its whole multi-word name, unless a private
+  signal marks it. Capitalised runs never cross commas, semicolons, colons or
+  closing quotes, and a possessive group no longer swallows the following
+  verb. The query proposal reports exactly the private terms removed.
+- **Private glossary rows in a Markdown table.** A row whose third cell (or a
+  `privado`/`private` column) says `privado` is read App-side as private, as
+  are the existing suffix and `= … | privado` forms. Its term and
+  definition/equivalents never enter a public query.
+
+**Teams and node roles.**
+
+- **A role advertises thinking only when the model supports it.** The
+  `reasoner` role is announced with `think: true` only when Ollama's
+  `/api/show` reports the `thinking` capability (cached); a model that does
+  not support it, or an unknown capability, is announced without the flag.
+  The requester sends `think` only for an advertisement that carries it, and
+  a worker whose backend refuses thinking retries once without it, recording
+  `think: false`.
+- **A step is completed only when something produced its output.** A generic
+  worker or the local model that stands in for an unavailable role is
+  recorded in `steps` (`role_fallback`, `ran_on`), in the run metadata
+  (`role_fallbacks`, `step_fallbacks`) and in the receipt. A step with no
+  output is `failed`, its dependants are `blocked`, the answer is
+  `partial`/`failed`, and the user reads the localised note naming the
+  missing steps instead of the first raw backend error.
+
+**Recipe 5 (data with code).**
+
+- **Bare input names work.** The sandbox runs the approved script with its
+  working directory at the read-only `/data`, so `pd.read_csv("hive.csv")`
+  and `./hive.csv` resolve; `/out` remains the only writable place and a
+  relative write is refused. The approved script text is not changed.
+- **CSV/TSV samples show the file as it is.** The prompt carries the first
+  lines raw, the detected delimiter in words (`comma ","`, `tab "\t"`), the
+  encoding and whether the first line is the header; XLSX samples name each
+  sheet and show its header without a pipe-joined form. Each file also gets
+  one concrete read line with its exact `/data/<name>` path. When a script
+  fails, the answer says a corrected script can be requested; nothing runs
+  until the user approves it.
+
 ## 0.8.0 — Teams and trusted circles (2026-11-21)
 
 Swarmbly AI 3.5. Teams and trusted circles. Trusted circles with signed
