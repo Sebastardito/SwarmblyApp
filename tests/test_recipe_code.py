@@ -362,7 +362,8 @@ def test_successful_run_meta_receipt_and_safe_download(app_state, tmp_path, monk
     message = approved.json()["assistant_message"]
     code = message["meta"]["code"]
     assert set(code) == {"script_sha256", "files_in", "trapped", "elapsed_s",
-                         "approved_by", "corrections", "model", "backend"}
+                         "approved_by", "corrections", "model", "backend",
+                         "files_partial"}
     assert code["approved_by"] == "user" and code["trapped"] is None
     assert code["model"] == "fake-model:1b"
     assert code["backend"]
@@ -545,6 +546,41 @@ def test_recipe5_bare_file_name_reads_the_provided_input(
         assert "RELATIVE_WRITE_REFUSED" in message["content"]
         assert [item["name"] for item in message["meta"]["code_run"]["files"]] == \
             ["summary.txt"]
+    finally:
+        if app_state.chat._code_runner is not None:
+            app_state.chat._code_runner.close()
+
+
+@pytest.mark.sandbox
+@pytest.mark.skipif(not available()[0], reason="the [sandbox] extra is not installed")
+def test_a_failed_script_reports_partial_files_and_not_a_result(
+        app_state, tmp_path, monkeypatch):
+    project, _ = _project(app_state, tmp_path)
+    fake = ScriptBackend(
+        "```python\n"
+        "with open('/out/partial.csv', 'w') as fh:\n"
+        "    fh.write('partial')\n"
+        "raise RuntimeError('stopped after writing')\n"
+        "```")
+    app_state.backends.resolve = lambda config=None: fake  # type: ignore[method-assign]
+    prepare_guest_for_test(app_state)
+    client = make_client(app_state)
+    proposal = client.post("/api/recipes/code/propose", json={
+        "project_id": project.id, "question": "write then fail",
+        "files": ["hive.csv"]}).json()
+    try:
+        approved = client.post("/api/recipes/code/approve",
+                               json={"proposal_id": proposal["proposal_id"]})
+        assert approved.status_code == 200, approved.text
+        message = approved.json()["assistant_message"]
+        assert message["meta"]["code"]["trapped"] == "error"
+        assert message["meta"]["code"]["files_partial"] is True
+        assert message["meta"]["code_run"]["partial_files"] is True
+        assert message["meta"]["code_run"]["files"][0]["partial"] is True
+        assert "partial.csv" in message["content"]
+        assert "Partial files" in message["content"]
+        assert "partial.csv" not in message["content"].split("File contents", 1)[0] \
+            or "File contents" not in message["content"]
     finally:
         if app_state.chat._code_runner is not None:
             app_state.chat._code_runner.close()

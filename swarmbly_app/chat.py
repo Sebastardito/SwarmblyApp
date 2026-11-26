@@ -2376,7 +2376,9 @@ class ChatService:
         cfg = self._code_cfg()
         destination = proposal.get("model_destination") or {"clase": egress.LOCAL, "host": ""}
 
-        previews = self._code_previews(run_id, files) if run_id else []
+        # A failed run may have left a partial file; never show its content as
+        # the result of the run.
+        previews = self._code_previews(run_id, files) if run_id and not trapped else []
         lines: list[str] = []
         if trapped:
             lines.append(f"**{'El script no terminó' if es else 'The script did not finish'}** — {reason}")
@@ -2415,11 +2417,17 @@ class ChatService:
         lines.append(self._code_clip(stderr, 4000, lang) if stderr else
                      ("(vacío)" if es else "(empty)"))
         lines.append("```")
-        lines += ["", f"### {'Archivos producidos' if es else 'Files produced'}"]
+        partial = bool(trapped)
+        heading = (("Archivos parciales; la ejecución falló" if es else
+                    "Partial files; the run failed") if partial else
+                   ("Archivos producidos" if es else "Files produced"))
+        lines += ["", f"### {heading}"]
         if files:
             for item in files:
                 size = int(item.get("size") or 0)
-                lines.append(f"- `{item.get('name')}` — {size} B — sha256 `{item.get('sha256')}`")
+                suffix = (" — parcial" if es else " — partial") if partial else ""
+                lines.append(f"- `{item.get('name')}` — {size} B — sha256 "
+                             f"`{item.get('sha256')}`{suffix}")
         else:
             lines.append("- " + ("Ninguno." if es else "None."))
         if previews:
@@ -2436,12 +2444,14 @@ class ChatService:
 
         sha = str(data.get("script_sha256") or proposal["script_sha256"])
         files_meta = []
+        files_partial = bool(trapped or data.get("files_partial"))
         for item in files:
             name = str(item.get("name") or "")
             files_meta.append({
                 "name": name,
                 "size": int(item.get("size") or 0),
                 "sha256": str(item.get("sha256") or ""),
+                "partial": bool(files_partial or item.get("partial")),
                 "url": (f"/api/recipes/code/runs/{run_id}/files/{quote(name, safe='/')}"
                         if run_id else ""),
             })
@@ -2463,6 +2473,7 @@ class ChatService:
                 "trapped": trapped,
                 "elapsed_s": float(data.get("elapsed_s") or 0.0),
                 "approved_by": "user",
+                "files_partial": files_partial,
                 "corrections": int(proposal.get("corrections") or 0),
                 "model": writer_model,
                 "backend": writer_backend,
@@ -2475,6 +2486,7 @@ class ChatService:
                 "file_refs": [str(item.get("rel")) for item in proposal.get("files") or []],
                 "question": proposal["question"],
                 "files": files_meta,
+                "partial_files": files_partial,
                 "max_corrections": cfg["max_corrections"],
                 "stdout_chars": len(stdout),
                 "stderr_chars": len(stderr),
