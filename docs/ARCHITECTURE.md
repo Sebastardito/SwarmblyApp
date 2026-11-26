@@ -166,11 +166,26 @@ goes away the run ends; there is no plan migration in 3.5.
 **Data with code (recipe 5).** The approved script runs in the WebAssembly
 sandbox with its working directory at the read-only `/data`, so a bare or
 `./` relative read of a provided input resolves without changing the script
-text; `/out` is the only writable place and a relative write is refused. The
-writer's prompt shows the first CSV/TSV lines raw with the detected delimiter,
+text. A fresh writable scratch is preopened at `/tmp` with `TMPDIR` pointing
+there (openpyxl/xlsxwriter need it); it counts against the disk quota, is
+never collected as output and is deleted with the run. `/out` is the only
+collected output, and a relative write elsewhere is refused. The writer's
+prompt shows the first CSV/TSV lines raw with the detected delimiter,
 encoding and header-row fact, names each XLSX sheet with its header, and gives
-one concrete read line with the exact `/data/<name>` path. A failed script
-offers a corrected proposal; nothing runs until the user approves it.
+one concrete read line with the exact `/data/<name>` path. Files left in
+`/out` by a failed or trapped run are flagged `partial`, not shown as the
+result; a failed script offers a corrected proposal, and nothing runs until
+the user approves it.
+
+**Public proposal and list preview.** The research guard keeps a private name
+private in every form and treats the entity the question asks a public source
+about as a public target. A passage-defined scientific name never takes a
+word of that target or of a public glossary term as a genus, so a multi-word
+entity stays contiguous and in question order; public-source words and its
+year stay unless the year is a figure from the user's documents. A removed
+term is reported once, without a sentence-initial imperative, and the list
+preview uses the same private glossary entries and document names to flag
+items and default to this device with the reason.
 
 **Reciprocity credits (3.5, D-020).** A credit is a **signed, non-transferable
 task receipt**, not money. When the requester accepts a verified result from a
@@ -392,13 +407,29 @@ no, se ejecutan en local o la tarea falla honestamente.
 **Datos con código (receta 5).** El script aprobado se ejecuta en el sandbox
 WebAssembly con su directorio de trabajo en `/data` (solo lectura), así que
 una lectura relativa por nombre o `./` de un archivo de entrada se resuelve
-sin cambiar el texto aprobado; `/out` es el único lugar escribible y una
-escritura relativa se rechaza. El prompt del escritor muestra las primeras
+sin cambiar el texto aprobado. Un directorio temporal escribible nuevo se
+preabre en `/tmp` con `TMPDIR` apuntando allí (openpyxl/xlsxwriter lo
+necesitan); cuenta para la cuota de disco, nunca se recoge como salida y se
+borra con la ejecución. `/out` es la única salida recogida y una escritura
+relativa fuera de él se rechaza. El prompt del escritor muestra las primeras
 líneas CSV/TSV tal cual, con el delimitador detectado, la codificación y si la
 primera línea es cabecera, nombra cada hoja XLSX con su cabecera y da una
-línea concreta de lectura con la ruta exacta `/data/<nombre>`. Un script
-fallido ofrece una propuesta corregida; nada se ejecuta hasta que el usuario
-la apruebe.
+línea concreta de lectura con la ruta exacta `/data/<nombre>`. Los archivos
+que deja una ejecución fallida o atrapada en `/out` se marcan `partial` y no
+se presentan como resultado; un script fallido ofrece una propuesta corregida
+y nada se ejecuta hasta que el usuario la apruebe.
+
+**Consulta pública y vista previa de listas.** El guardián de investigación
+mantiene privado un nombre en todas sus formas y trata la entidad que la
+pregunta consulta en una fuente pública como objetivo público. Un nombre
+científico definido por los pasajes nunca toma como género una palabra de ese
+objetivo ni de un término público del glosario, así que una entidad de dos
+palabras queda contigua y en el orden de la pregunta; las palabras de la
+fuente pública y su año se quedan salvo que el año sea una cifra de los
+documentos del usuario. Un término eliminado se informa una vez, sin un
+imperativo inicial de la frase, y la vista previa de la lista usa las mismas
+entradas privadas del glosario y nombres de documentos para marcar elementos
+y proponer este equipo con la razón.
 
 **Créditos de reciprocidad (3.5, D-020).** Un crédito es un **recibo de tarea
 firmado y no transferible**, no dinero. Cuando el solicitante acepta un

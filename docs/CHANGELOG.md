@@ -42,8 +42,9 @@
 
 - **Bare input names work.** The sandbox runs the approved script with its
   working directory at the read-only `/data`, so `pd.read_csv("hive.csv")`
-  and `./hive.csv` resolve; `/out` remains the only writable place and a
-  relative write is refused. The approved script text is not changed.
+  and `./hive.csv` resolve; `/out` remains the only collected output, with a
+  per-run writable `/tmp` for scratch (below). The approved script text is not
+  changed.
 - **CSV/TSV samples show the file as it is.** The prompt carries the first
   lines raw, the detected delimiter in words (`comma ","`, `tab "\t"`), the
   encoding and whether the first line is the header; XLSX samples name each
@@ -51,6 +52,34 @@
   one concrete read line with its exact `/data/<name>` path. When a script
   fails, the answer says a corrected script can be requested; nothing runs
   until the user approves it.
+
+
+- **A writable scratch `/tmp`.** Each run gets a fresh writable temporary
+  directory preopened as `/tmp` and `TMPDIR` points there, so openpyxl,
+  xlsxwriter and tempfile can stage a file; `/data` stays read-only, `/out`
+  is the only collected output, scratch bytes and entries count against the
+  disk quota, and the directory is deleted with the run (never visible to the
+  next run).
+- **Partial files are not a result.** When the script exits with an error or
+  is trapped, files left in `/out` are flagged `partial` (in the run, the
+  metadata and the answer) and are not shown as the computed result; the
+  answer still says the run failed.
+
+**Public query proposal and list preview.**
+
+- **The public entity stays whole and in order.** Passage-defined scientific
+  names can no longer take a capitalised word of the public target or a
+  glossary public term as a genus, so the entity keeps its original word
+  order and contiguity with or without project passages; public-source words
+  and a public-source year stay when they are not figures from the user's
+  documents.
+- **Removed terms are exact.** A sentence-initial imperative is not glued to
+  a private glossary term and is not reported as removed; the term appears
+  once.
+- **The list preview uses the same private sources.** Items containing a
+  private glossary term (including a Markdown table row) or a name a project
+  document marks as private are flagged and the default destination becomes
+  this device, with the reason.
 
 ## 0.8.0 — Teams and trusted circles (2026-11-21)
 
