@@ -167,3 +167,46 @@ def test_the_query_api_reads_a_private_name_from_the_project_documents(
     assert "Tiburcia" not in _words(body["query"])
     assert "Marisma Alta" in body["query"]
     assert "Tiburcia" in body["removed_terms"]
+
+
+ENTITY_DOC = DOC + (" El registro público de Marisma Alta se publica cada año.")
+
+
+def test_project_passages_do_not_split_or_reorder_the_public_entity():
+    """Regression: a capitalised entity word ending in -a was read as a genus
+    from the passages, splitting "Marisma Alta" and reversing its words."""
+    cases = {
+        "Roca Tiburcia es importante para mí; compara Marisma Alta con su "
+        "registro público de 2025.":
+            "Marisma Alta registro público 2025",
+        "Mi Roca Tiburcia describe otra cosa: contrasta Marisma Alta con el "
+        "registro público actual.":
+            "Marisma Alta registro público actual",
+        "¿Qué diferencia hay entre «Roca Tiburcia» y el dato público de Marisma Alta?":
+            "dato público Marisma Alta",
+        "Tiburcia anilló mi ave; compara nuestra cobertura de Marisma Alta con "
+        "el registro público.":
+            "Marisma Alta registro público",
+        "Roca Tiburcia está en mi contexto; verifica la diferencia entre "
+        "Marisma Alta interno y público sin compartir lo privado.":
+            "Marisma Alta interno público",
+    }
+    for question, expected in cases.items():
+        without = W.propose_query_details(question)
+        with_docs = W.propose_query_details(question, passages=[ENTITY_DOC])
+        assert with_docs["query"] == expected, question
+        assert with_docs["query"] == without["query"], question
+        words = with_docs["query"].split()
+        assert words.index("Marisma") + 1 == words.index("Alta"), question
+        assert "Roca" not in words and "Tiburcia" not in words, question
+        assert with_docs["removed_terms"] == ["Roca Tiburcia"] or \
+            with_docs["removed_terms"] == ["Tiburcia"], question
+
+
+def test_a_sentence_initial_imperative_is_not_glued_to_a_private_term():
+    question = "Georreferencia Roca Tiburcia en el registro público de Marisma Alta."
+    detail = W.propose_query_details(
+        question, glossary=[("Roca Tiburcia", "Sitio privado | privado")])
+    assert detail["removed_terms"] == ["Roca Tiburcia"]
+    assert "Georreferencia" not in detail["removed"]
+    assert "Roca" not in detail["query"] and "Tiburcia" not in detail["query"]

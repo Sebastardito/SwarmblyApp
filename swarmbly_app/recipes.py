@@ -586,20 +586,49 @@ def _lane_for(text: str) -> str:
         return "SENSITIVE"
 
 
-def classify_list_job(job: ListJob, cfg: dict[str, Any]) -> dict[str, Any]:
+def classify_list_job(job: ListJob, cfg: dict[str, Any], *,
+                      private: list[str] | None = None,
+                      glossary: Any = None,
+                      passages: list[str] | None = None) -> dict[str, Any]:
     """Tier and lane over the operation and every item, never the combined
-    text alone: one personal item is enough to make the default local."""
+    text alone: one personal item is enough to make the default local.
+
+    ``private``/``glossary``/``passages`` use the same private-name sources as
+    the research guard: an explicit term, a private glossary entry (including a
+    Markdown table row) or a name a project document marks as the user's own.
+    """
+    from .web_search import (matched_private_terms, private_glossary_terms,
+                             private_names_from_documents)
     privacy_cfg = (cfg or {}).get("privacy") or {}
+    private_all = [str(term).strip() for term in private or [] if str(term).strip()]
+    for term in [*private_glossary_terms(glossary),
+                 *private_names_from_documents(passages)]:
+        if term and term not in private_all:
+            private_all.append(term)
     operation_tier = _tier_for(job.operation, privacy_cfg)
     operation_lane = _lane_for(job.operation)
+    operation_hits = matched_private_terms(job.operation, private_all)
     items: list[dict[str, Any]] = []
     top_tier = operation_tier["tier"]
     top_lane = operation_lane
+    private_hit = bool(operation_hits)
     for n, item in enumerate(job.items, 1):
-        decision = _tier_for(item, privacy_cfg)
-        tier, lane = decision["tier"], _lane_for(item)
-        items.append({"n": n, "tier": tier, "auto_tier": decision["auto_tier"],
-                      "lane": lane})
+        hits = matched_private_terms(item, private_all)
+        if hits:
+            decision = {"tier": "LOCAL", "auto_tier": "LOCAL"}
+            tier, lane = "LOCAL", "SENSITIVE"
+            private_hit = True
+        else:
+            decision = _tier_for(item, privacy_cfg)
+            tier, lane = decision["tier"], _lane_for(item)
+        entry = {"n": n, "tier": tier, "auto_tier": decision["auto_tier"],
+                 "lane": lane}
+        if hits:
+            # The preview says why this item stays here, without echoing the
+            # item's content beyond the private term itself.
+            entry.update({"private": True, "private_terms": hits[:5],
+                          "reason": "private term or document name: local only"})
+        items.append(entry)
         if _TIER_ORDER.get(tier, 2) > _TIER_ORDER.get(top_tier, 2):
             top_tier = tier
         if LANE_ORDER.get(lane, 0) > LANE_ORDER.get(top_lane, 0):
@@ -607,9 +636,19 @@ def classify_list_job(job: ListJob, cfg: dict[str, Any]) -> dict[str, Any]:
     sensitive = top_tier in ("LOCAL", "TRUSTED") or top_lane in ("SENSITIVE", "SANITISABLE")
     flagged = [x for x in items
                if x["auto_tier"] != "GLOBAL" or x["lane"] in ("SENSITIVE", "SANITISABLE")]
-    if operation_tier["auto_tier"] != "GLOBAL" or operation_lane in ("SENSITIVE", "SANITISABLE"):
-        flagged.insert(0, {"n": 0, "tier": operation_tier["auto_tier"], "lane": operation_lane})
-    if top_lane == "SENSITIVE":
+    if operation_hits or operation_tier["auto_tier"] != "GLOBAL" \
+            or operation_lane in ("SENSITIVE", "SANITISABLE"):
+        entry = {"n": 0, "tier": ("LOCAL" if operation_hits
+                                  else operation_tier["auto_tier"]),
+                 "lane": ("SENSITIVE" if operation_hits else operation_lane)}
+        if operation_hits:
+            entry.update({"private": True, "private_terms": operation_hits[:5],
+                          "reason": "private term in the operation: local only"})
+        flagged.insert(0, entry)
+    if private_hit:
+        reason = ("private glossary term or project document name: "
+                  "local execution only")
+    elif top_lane == "SENSITIVE":
         reason = "personal or sensitive content classified SENSITIVE: local execution only"
     elif top_lane == "SANITISABLE":
         reason = ("content classified SANITISABLE: pseudonymisation is not implemented, "
@@ -623,13 +662,18 @@ def classify_list_job(job: ListJob, cfg: dict[str, Any]) -> dict[str, Any]:
     return {"tier": top_tier, "lane": top_lane, "sensitive": sensitive,
             "rationale": operation_tier.get("rationale", ""),
             "operation": {"tier": operation_tier["tier"], "lane": operation_lane},
-            "items_flagged": flagged, "local_reason": reason}
+            "items_flagged": flagged, "local_reason": reason,
+            "private_terms": private_all}
 
 
 def preview_list(job: ListJob, *, cfg: dict[str, Any], nodes_available: int = 0,
-                 nodes: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+                 nodes: list[dict[str, Any]] | None = None,
+                 private: list[str] | None = None,
+                 glossary: Any = None,
+                 passages: list[str] | None = None) -> dict[str, Any]:
     """What would leave, plus the privacy result. Sends nothing."""
-    privacy = classify_list_job(job, cfg)
+    privacy = classify_list_job(job, cfg, private=private, glossary=glossary,
+                                passages=passages)
     duplicates = duplicate_rows(job.items)
     nodes_available = max(0, int(nodes_available or 0))
     if privacy["sensitive"]:
@@ -678,9 +722,18 @@ def propose_query_details(text: str, glossary: list[tuple[str, str]] | None = No
     las fuentes públicas sobre …") are not the topic: the query is what follows
     "sobre", and the names the request gives ("la variedad Kanela")."""
     from .web_search import (is_distinctive, propose_query_details as propose,
+                             private_glossary_terms, private_names_from_documents,
                              public_glossary_terms, removed_private_terms,
                              strip_private_details, _public_targets)
     public = public_glossary_terms(glossary or [], text or "")
+    # The merge below must use the same private sources as the web guard: an
+    # entry marked private in the glossary, or a name a project document marks
+    # as the user's own, is not public just because it follows a lookup verb.
+    merge_private = [str(term).strip() for term in private or [] if str(term).strip()]
+    for term in [*private_glossary_terms(glossary or []),
+                 *private_names_from_documents(passages)]:
+        if term and term not in merge_private:
+            merge_private.append(term)
     # The entity the request asks a public source about is public even when it
     # is not in the glossary: it is kept by the merge below, not removed as an
     # unknown capitalised run.  It is not added to ``public`` (the glossary
@@ -712,7 +765,7 @@ def propose_query_details(text: str, glossary: list[tuple[str, str]] | None = No
         # Sur"), a person ("la Dra. Ana Pérez") or a code is the user's, not a
         # topic (sealed bank v3.2: a plot name was proposed and, approved, sent)
         merged = strip_private_details(" ".join([detail["query"], *names]),
-                                       text or "", private=private,
+                                       text or "", private=merge_private,
                                        public_terms=public)
         merged["removed"] = list(dict.fromkeys([*detail.get("removed", []),
                                                 *merged.get("removed", [])]))
@@ -721,7 +774,7 @@ def propose_query_details(text: str, glossary: list[tuple[str, str]] | None = No
     # kept out (T9.16): a public glossary name is not one of them, while an
     # explicit private term is even if it looks public.
     detail["removed_terms"] = removed_private_terms(
-        text or "", detail["query"], private=private, glossary=glossary,
+        text or "", detail["query"], private=merge_private, glossary=glossary,
         candidates=" ".join([detail["query"], *[n for n in _NAME.findall(text or "")
                                                 if n.lower() not in
                                                 {w.lower() for w in detail["query"].split()}]]))

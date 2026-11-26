@@ -114,6 +114,37 @@ def relevant(hit: dict[str, Any], terms: list[str],
     return (bool(in_title) and len(in_text) >= need) or len(in_text) >= n
 
 
+def _keep_phrases_whole(words: list[str], all_words: list[str],
+                        phrases: list[str], cap: int = 6) -> None:
+    """Keep a multi-word public name contiguous at its first word's place."""
+    for phrase in phrases:
+        folded = [_fold(w) for w in _term_words(phrase)]
+        if not folded:
+            continue
+        start = next((i for i in range(len(all_words) - len(folded) + 1)
+                      if [_fold(w) for w in all_words[i:i + len(folded)]] == folded),
+                     None)
+        if start is None:
+            continue
+        if start >= cap:
+            # The name is past the six-word cap: keep it whole, in order.
+            for word in all_words[start:start + len(folded)]:
+                if not any(_same_word(word, x) for x in words):
+                    words.append(word)
+            continue
+        first = next((i for i, word in enumerate(words)
+                      if _fold(word) == folded[0]), None)
+        if first is None:
+            continue
+        position = first
+        for wanted in folded[1:]:
+            if position + 1 < len(words) and _fold(words[position + 1]) == wanted:
+                position += 1
+                continue
+            words.insert(position + 1, all_words[start + folded.index(wanted)])
+            position += 1
+
+
 def propose_query_details(question: str, keywords: str = "",
                           glossary: list[tuple[str, str]] | None = None,
                           passages: list[str] | None = None,
@@ -164,13 +195,9 @@ def propose_query_details(question: str, keywords: str = "",
     all_words = [w for w in rest.split() if len(w) > 2 and _public_word(w, spans)]
     words = all_words[:6]
     # A multi-word public entity is one name: the six-word cap may not keep
-    # "Marisma" and drop "Alta".  Its words are added in their original order.
-    keep = {_fold(w) for term in [*public_terms, *(" ".join(t) for t in targets)]
-            for w in _term_words(term)}
-    if keep:
-        for word in all_words[6:]:
-            if _fold(word) in keep:
-                words.append(word)
+    # "Marisma" and drop "Alta", or leave the second word after other words.
+    phrases = [*public_terms, *(" ".join(t) for t in targets)]
+    _keep_phrases_whole(words, all_words, phrases)
     # The topic, defined from the user's own material: scientific names that
     # appear next to a word of the question in the retrieved passages or notes
     # ("cucujos (cucuyos) son el género Pyrophorus de la familia Elateridae").
@@ -178,6 +205,13 @@ def propose_query_details(question: str, keywords: str = "",
     anchors = [_fold(w)[:5] for w in words + translated if len(w) >= 4]
     hidden_names = {_fold(word) for term in private_all for word in _term_words(term)}
     hidden_names |= {_fold(word) for word in spans}
+    # A capitalised word of the question or of the public target/glossary term
+    # is never a passage-defined genus ("Marisma" ends in -a but is half of
+    # "Marisma Alta"); taking it would split and reorder the entity.
+    protected_names = set(hidden_names)
+    protected_names |= {_fold(w) for term in phrases for w in _term_words(term)}
+    protected_names |= {_fold(w) for run in _capital_runs(_question_entries(question)[1])
+                        for w in run["words"]}
     for text in passages or []:
         for sentence in re.split(r"(?<=[.;!?])\s+", text or ""):
             if any(a in _fold(sentence) for a in anchors):
@@ -187,7 +221,7 @@ def propose_query_details(question: str, keywords: str = "",
                 for name in _binomial_names(sentence):
                     name_words = _term_words(name)
                     if any(_VERB.fullmatch(w) or _FILLER.fullmatch(w)
-                           or _fold(w) in hidden_names for w in name_words):
+                           or _fold(w) in protected_names for w in name_words):
                         continue
                     defined.append(name)
     defined = list(dict.fromkeys(defined))[:3]
@@ -200,6 +234,12 @@ def propose_query_details(question: str, keywords: str = "",
         for w in _FILLER.sub(" ", piece).split():
             if len(w) > 2 and not any(_same_word(w, x) for x in out):
                 out.append(w)
+    # A year of the public source may stay ("de 2025") when it is not a figure
+    # from the user's documents; every other figure is still removed.
+    passage_text = _fold(" ".join(str(text or "") for text in passages or []))
+    for year in _public_source_years(question):
+        if year not in passage_text:
+            out.append(year)
     detail = strip_private_details(" ".join(out), question, private=private_all,
                                    public_terms=public_terms)
     # Terms the model offered (or the question defined) and the guard kept out
@@ -505,7 +545,13 @@ quienes quiénes cuanto cuánto cuanta cuánta cuantos cuántos cuantas cuántas
 compara comparar contrasta contrastar busca buscar verifica verificar dime di
 explica explicar describe describir resume resumir redacta redactar escribe
 escribir calcula calcular analiza analizar revisa revisar consulta consultar
-lista listar enumera enumerar muestra mostrar dame quiero necesito puedes
+lista listar enumera enumerar muestra mostrar anota anotar registra registrar
+marca marcar apunta apuntar consigna consignar mide medir pesa pesar cuenta
+contar observa observar detecta detectar identifica identificar localiza
+localizar comprueba comprobar examina examinar evalua evalúa estima estimar
+traduce traducir convierte convertir genera generar crea crear abre abrir
+carga cargar ejecuta ejecutar imprime imprimir exporta exportar dibuja dibujar
+grafica graficar dame quiero necesito puedes
 podrias podrías sabes cuentame cuéntame hola buenos buenas
 el la los las un una unos unas al del de en y o pero aunque si no lo le les se todo toda
 todos todas este esta estos estas ese esa esos esas aquel aquella aquellos
@@ -645,6 +691,29 @@ def _marker_run(run: dict[str, Any]) -> bool:
         for w in run["words"])
 
 
+_PUBLIC_YEAR = re.compile(r"^(?:19|20|21)\d{2}$")
+
+
+def _is_public_year(clause: list[dict[str, Any]], index: int) -> bool:
+    """A year that belongs to the public source ("registro público de 2025")."""
+    word = str(clause[index]["word"] if index < len(clause) else "")
+    if not _PUBLIC_YEAR.fullmatch(word):
+        return False
+    prior = clause[max(0, index - 4):index]
+    return any(_is_marker_word(entry) or _PUBLIC_NOUN.match(entry["word"])
+               for entry in prior)
+
+
+def _public_source_years(question: str) -> list[str]:
+    _entries, clauses = _question_entries(question)
+    out: list[str] = []
+    for clause in clauses:
+        for index, entry in enumerate(clause):
+            if _is_public_year(clause, index) and entry["word"] not in out:
+                out.append(entry["word"])
+    return out
+
+
 def _public_targets(question: str,
                     public_terms: list[str] | None = None) -> list[list[str]]:
     """The capitalised names the question explicitly asks a public source about.
@@ -769,7 +838,8 @@ def _classify_question(question: str,
                     phrase([item["word"] for item in group])
                 i = max(j, i + 1)
                 continue
-            if any(c.isdigit() for c in word["word"]):
+            if any(c.isdigit() for c in word["word"]) \
+                    and not _is_public_year(clause, i):
                 mark(word)
             i += 1
 
@@ -927,6 +997,21 @@ def private_spans(question: str, public_terms: list[str] | None = None) -> set[s
     return _private_details(question, public_terms=public_terms)[0]
 
 
+def _extra_before_explicit(words: list[str],
+                          explicit_folded: list[list[str]]) -> list[str]:
+    """Leading words of a run that are not part of a known private term.
+
+    A sentence-initial imperative ("Anota Roca Tiburcia") is grammar, not part
+    of the name; if the rest of the run is an explicit private term, the extra
+    words are returned so the report never glues the public verb to the term.
+    """
+    folded = [_fold(word) for word in words]
+    for known in explicit_folded:
+        if len(folded) > len(known) and folded[-len(known):] == known:
+            return folded[:len(folded) - len(known)]
+    return []
+
+
 def private_terms(question: str, private: list[str] | None = None,
                   public_terms: list[str] | None = None) -> list[str]:
     """The private *terms* of a question: its capitalised private runs (with
@@ -938,15 +1023,20 @@ def private_terms(question: str, private: list[str] | None = None,
     a public glossary equivalent of the same words.
     """
     _words, phrases = _private_details(question, public_terms=public_terms)
+    explicit = [str(term).strip() for term in private or [] if str(term).strip()]
+    explicit_folded = [[_fold(w) for w in _term_words(term)] for term in explicit]
     out: list[str] = []
     for words in phrases:
         if not any(word[:1].isupper() or any(c.isdigit() for c in word)
                    for word in words):
             continue
+        if _extra_before_explicit(words, explicit_folded):
+            # The explicit term below is the exact private term; the leading
+            # imperative is not part of it and is not reported.
+            continue
         term = " ".join(words)
         if term and term not in out:
             out.append(term)
-    explicit = [str(term).strip() for term in private or [] if str(term).strip()]
     for term in explicit:
         if term not in out:
             out.append(term)
@@ -1022,8 +1112,19 @@ def strip_private_details(query: str, question: str = "",
     documented at ``_PRIVATE_COMMON`` and ``is_distinctive``.
     """
     spans, question_phrases = _private_details(question, public_terms=public_terms)
-    question_terms = [" ".join(words) for words in question_phrases]
     explicit_terms = [str(t).strip() for t in private or [] if str(t).strip()]
+    explicit_folded = [[_fold(w) for w in _term_words(term)] for term in explicit_terms]
+    starter_words: set[str] = set()
+    question_terms: list[str] = []
+    for words in question_phrases:
+        extra = _extra_before_explicit(words, explicit_folded)
+        if extra:
+            # "Anota Roca Tiburcia": the named term is removed by its explicit
+            # entry; the imperative is a public sentence starter, not a term.
+            starter_words.update(extra)
+            continue
+        question_terms.append(" ".join(words))
+    spans = {word for word in spans if word not in starter_words}
     phrases: list[list[str]] = []
     distinctive: set[str] = set()
     owner: dict[str, str] = {}
@@ -1107,8 +1208,10 @@ def strip_private_details(query: str, question: str = "",
         if f in distinctive:
             record(index, owner.get(f, token.strip(".,;:()[]{}«»\"'’")))
     kept = [token for index, token in enumerate(tokens) if not removed_at[index]]
+    public_years = {_fold(year) for year in _public_source_years(question)}
     kept = [token for token in kept
-            if _public_word(token, set())
+            if (_token_word(token) in public_years
+                or _public_word(token, set()))
             and not _FILLER.fullmatch(token.strip(".,;:()[]{}«»\"'’"))]
     cleaned = " ".join(kept).strip()
     meaningful = [w for w in kept
@@ -1118,6 +1221,31 @@ def strip_private_details(query: str, question: str = "",
     empty = not meaningful
     return {"query": "" if empty else cleaned, "removed": removed,
             "removed_terms": matched, "empty": empty}
+
+
+def matched_private_terms(text: str, private: list[str] | None = None) -> list[str]:
+    """The private terms or distinctive fragments present in ``text``.
+
+    Uses the same whole-term and single-distinctive-word rule as the public
+    query guard, so a list item that says only "Tiburcia" for "Roca Tiburcia"
+    is still recognised as the user's own.
+    """
+    out: list[str] = []
+    for term in private or []:
+        term = str(term or "").strip()
+        if not term:
+            continue
+        found = ""
+        if _contains_private_phrase(text or "", term):
+            found = term
+        else:
+            for word in _term_words(term):
+                if is_distinctive(word) and _contains_private_phrase(text or "", word):
+                    found = word
+                    break
+        if found and found.casefold() not in {item.casefold() for item in out}:
+            out.append(found)
+    return out
 
 
 def contains_private_terms(text: str, private: list[str] | None = None) -> bool:
@@ -1142,15 +1270,33 @@ _VERB = re.compile(
     r"puede|pueden|podemos|hace|hacen|hizo|hicimos|dio|dieron|dan|vimos|vi|vio|vieron|"
     r"anot[oó]|anot[eé]|anotamos|cont[oó]|contamos|registr[oó]|registramos|midi[oó]|medimos|"
     r"sali[oó]|salieron|dijo|dicen|qued[oó]|quedaron|obtuvo|obtuvimos|logr[oó]|lleg[oó]|"
-    r"is|are|was|were|be|been|has|have|had|did|does|do|can|could|saw|seen|got|get|counted|"
-    r"recorded|measured|found)$", re.I)
+    r"describe|describir|describa|explica|explicar|contrasta|contrastar|verifica|verificar|"
+    r"compara|comparar|busca|buscar|consulta|consultar|revisa|revisar|muestra|mostrar|"
+    r"indica|indicar|is|are|was|were|be|been|has|have|had|did|does|do|can|could|saw|seen|"
+    r"got|get|counted|recorded|measured|found)$", re.I)
+
+
+_QUERY_STOP = re.compile(
+    r"^(importante[s]?|interesante[s]?|otra|otro|otras|otros|cosa|cosas|algo|"
+    r"realmente|bastante|muy|tan|solo|sólo|entre|sin|"
+    r"privad[oa]s?|private|propio|propia|propios|propias)$", re.I)
 
 
 def _public_word(w: str, spans: set[str]) -> bool:
-    f = _fold(w.strip(".,;:()«»\"'"))
+    raw = w.strip(".,;:()«»\"'").lower()
+    f = _fold(raw)
+    if _PUBLIC_SOURCE.match(f) or raw in {
+            "público", "pública", "públicos", "públicas",
+            "public", "publicly", "open"}:
+        # "registro" also matches the first-person verb "registro"; in a
+        # public-source phrase it is the noun the query needs.  "publica"
+        # without the accent is the verb and stays out.
+        return bool(f) and f not in spans and not any(c.isdigit() for c in f)
     return bool(f) and f not in spans and not any(c.isdigit() for c in f) \
         and not _INSTRUCTION.match(f) and not _VERB.match(f) and not _PERSON_CUE.match(f) \
-        and not _NUMBER_WORD.match(f) and not _ARTICLE.match(f)
+        and not _NUMBER_WORD.match(f) and not _ARTICLE.match(f) \
+        and not _QUERY_STOP.match(f) and not re.fullmatch(r"[a-záéíóúñü]+ó", raw) \
+        and f not in _SENTENCE_STARTERS
 
 
 _NUMBER_WORD = re.compile(
