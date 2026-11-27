@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased — 0.8.1
+## 0.8.1 — Privacy, team and recipe fixes (2026-11-27)
+
+Swarmbly AI 3.5.1. The fixes for what the sealed bank v5 found in 0.8.0. Bank
+v5 measured 0.8.0 once (two banks, 96 observations each): the circle,
+permission and honest-team criteria were met, zero unauthorised sends was not
+(a proposed public query kept the distinctive word of a private name, or the
+definition of a private glossary term), and exact results with code stayed
+far below 90 %. The fixes below were measured only on open batteries and on a
+non-blind repeat of bank v5.2, whose defects were used to write them; the
+blind measurement is a new sealed bank, v6, run once on this release.
 
 **Privacy of proposed public queries.**
 
@@ -52,8 +61,6 @@
   one concrete read line with its exact `/data/<name>` path. When a script
   fails, the answer says a corrected script can be requested; nothing runs
   until the user approves it.
-
-
 - **A writable scratch `/tmp`.** Each run gets a fresh writable temporary
   directory preopened as `/tmp` and `TMPDIR` points there, so openpyxl,
   xlsxwriter and tempfile can stage a file; `/data` stays read-only, `/out`
