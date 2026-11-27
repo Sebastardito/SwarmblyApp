@@ -537,8 +537,11 @@ def main(argv: list[str] | None = None) -> int:
         script_sha256 = hashlib.sha256(script.encode("utf-8")).hexdigest()
         data_dir = job_dir / "data"
         out_dir = job_dir / "out"
-        tmp_dir = job_dir / "tmp"
-        tmp_dir.mkdir(parents=True, exist_ok=True)
+        # The guest's scratch /tmp is per job.  It must not shadow the
+        # worker's own ``tmp_dir``: the metered pre-warm below reads its
+        # ``warm-data`` from there.
+        scratch_dir = job_dir / "tmp"
+        scratch_dir.mkdir(parents=True, exist_ok=True)
     except Exception as exc:
         _write_json(result_file, {
             "ok": False, "stdout": "", "stderr": f"bad job: {type(exc).__name__}: {exc}",
@@ -596,7 +599,7 @@ def main(argv: list[str] | None = None) -> int:
             # No RLIMIT_FSIZE here: the watchdog is the only disk guard.
             platform_guard = "watchdog"
 
-    result = _run_guest(script, data_dir, out_dir, tmp_dir, limits, wasi,
+    result = _run_guest(script, data_dir, out_dir, scratch_dir, limits, wasi,
                         cache_dir, platform_guard, script_sha256)
     _write_json(result_file, result)
     return 0
