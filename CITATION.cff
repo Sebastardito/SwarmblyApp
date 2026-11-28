@@ -1,7 +1,7 @@
 cff-version: 1.2.0
-# Each release gets a version DOI from the Zenodo GitHub integration. Until
-# the DOI of v0.8.1 is minted, the DOI below is the concept DOI (all versions,
-# resolves to the latest); it is replaced by the version DOI after the release.
+# Each release gets a version DOI from the Zenodo GitHub integration. The DOI
+# below is the record of v0.8.1; the concept DOI 10.5281/zenodo.23322638 cites
+# all versions and resolves to the latest.
 # Previous releases: v0.8.0, 10.5281/zenodo.24431441; v0.7.0,
 # 10.5281/zenodo.24412215; v0.6.0, 10.5281/zenodo.24330450; v0.5.0,
 # 10.5281/zenodo.24265875; v0.4.0, 10.5281/zenodo.24070622; v0.3.1 (version
@@ -17,8 +17,11 @@ authors:
 version: 0.8.1
 date-released: "2026-11-27"
 license: AGPL-3.0-or-later
-doi: "10.5281/zenodo.23322638"   # concept DOI until the v0.8.1 record is minted
+doi: "10.5281/zenodo.24617539"   # version 0.8.1 (Zenodo, GitHub integration)
 identifiers:
+  - type: doi
+    value: "10.5281/zenodo.24617539"
+    description: "Version 0.8.1 (this release)"
   - type: doi
     value: "10.5281/zenodo.24431441"
     description: "Version 0.8.0 (earlier release)"
